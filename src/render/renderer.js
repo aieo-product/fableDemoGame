@@ -1,7 +1,8 @@
 /**
  * @file renderer.js — WebGLRenderer setup, resize, pixel-ratio cap (1.5),
- * dynamic-resolution governor (3s rolling avg > FRAME_BUDGET_MS drops the
- * pixel ratio toward 1.0), debug overlay (backquote: fps / draw calls / tris /
+ * dynamic-resolution governor (3s window of over-budget frame COUNTS — drops
+ * the pixel ratio toward 1.0 under sustained misses, recovers when clean;
+ * vsync-immune and pause-proof), debug overlay (backquote: fps / draw calls / tris /
  * alive / heap delta), force-rescale dev key (KeyR, DEV builds) and the
  * `?r=` start-radius dev param parser.
  *
@@ -34,8 +35,20 @@ const CAMERA_NEAR = 0.05;
 const CAMERA_FAR = 4000;
 /** Governor pixel-ratio step per 3s window decision. */
 const GOVERNOR_STEP = 0.125;
-/** Recover resolution only when rolling avg < this fraction of the budget (hysteresis). */
-const GOVERNOR_RECOVER_FRAC = 0.7;
+/**
+ * Governor counts OVER-BUDGET FRAMES instead of averaging intervals: on a
+ * vsync-locked 60Hz display every healthy frame measures ~16.7ms, so an
+ * absolute ms average can never dip low enough to recover. A frame counts as
+ * over budget only above FRAME_BUDGET_MS + GOVERNOR_OVER_SLACK_MS (a real
+ * missed 60Hz vsync is ~33ms, comfortably above; vsync jitter is not).
+ */
+const GOVERNOR_OVER_SLACK_MS = 4;
+/** Drop resolution when more than this fraction of window frames were over budget. */
+const GOVERNOR_DROP_FRAC = 0.1;
+/** Recover resolution when fewer than this fraction were over budget (hysteresis). */
+const GOVERNOR_RECOVER_FRAC = 0.02;
+/** Ignore frame intervals above this (tab switch / window drag) — they would poison the window. */
+const GOVERNOR_OUTLIER_MS = 250;
 /** Debug overlay text refresh period (s) while visible. */
 const OVERLAY_PERIOD_S = 0.2;
 
@@ -97,7 +110,7 @@ export class Renderer {
     /* --- resolution / governor state --- */
     /** @type {number} */ this._basePixelRatio = this._computeBasePixelRatio();
     /** @type {number} */ this._pixelRatio = this._basePixelRatio;
-    /** @type {number} ms accumulated in the current governor window. */ this._winMs = 0;
+    /** @type {number} over-budget frames in the current governor window. */ this._winOver = 0;
     /** @type {number} frames in the current governor window. */ this._winFrames = 0;
     /** @type {number} seconds elapsed in the current governor window. */ this._winElapsed = 0;
 
@@ -232,28 +245,30 @@ export class Renderer {
   }
 
   /**
-   * Dynamic-resolution governor: accumulate the frame interval into a
-   * GOVERNOR_WINDOW_S window; on window close, if the average exceeded
-   * FRAME_BUDGET_MS, drop the pixel ratio one step toward 1.0; if it was
-   * comfortably under (GOVERNOR_RECOVER_FRAC hysteresis), step back toward
-   * the base cap.
+   * Dynamic-resolution governor: count over-budget frames over a
+   * GOVERNOR_WINDOW_S window (vsync-immune — see GOVERNOR_OVER_SLACK_MS).
+   * On window close: too many over-budget frames -> drop the pixel ratio one
+   * step toward 1.0; (almost) none -> step back toward the base cap.
+   * Pause/tab-switch intervals are discarded so a single multi-second frame
+   * can never force a spurious permanent drop.
    * @param {number} frameMs Last frame interval (ms).
    */
   _governorTick(frameMs) {
-    this._winMs += frameMs;
+    if (frameMs > GOVERNOR_OUTLIER_MS) return; // pause artifact, not a real frame cost
     this._winFrames++;
+    if (frameMs > FRAME_BUDGET_MS + GOVERNOR_OVER_SLACK_MS) this._winOver++;
     this._winElapsed += frameMs / 1000;
     if (this._winElapsed < GOVERNOR_WINDOW_S) return;
 
-    const avg = this._winMs / this._winFrames;
-    this._winMs = 0;
+    const overFrac = this._winFrames > 0 ? this._winOver / this._winFrames : 0;
+    this._winOver = 0;
     this._winFrames = 0;
     this._winElapsed = 0;
 
-    if (avg > FRAME_BUDGET_MS && this._pixelRatio > 1.0) {
+    if (overFrac > GOVERNOR_DROP_FRAC && this._pixelRatio > 1.0) {
       this._pixelRatio = Math.max(1.0, this._pixelRatio - GOVERNOR_STEP);
       this._applyResolution();
-    } else if (avg < FRAME_BUDGET_MS * GOVERNOR_RECOVER_FRAC && this._pixelRatio < this._basePixelRatio) {
+    } else if (overFrac < GOVERNOR_RECOVER_FRAC && this._pixelRatio < this._basePixelRatio) {
       this._pixelRatio = Math.min(this._basePixelRatio, this._pixelRatio + GOVERNOR_STEP);
       this._applyResolution();
     }

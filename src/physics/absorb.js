@@ -29,6 +29,8 @@ import {
   FIXED_DT,
   ABSORB_RATIO,
   GROWTH_K,
+  PICKUP_FORGIVE_K,
+  PICKUP_FORGIVE_MAX_RATIO,
   RADIUS_SLEW_K,
   BOUNCE_RESTITUTION,
   BONK_SPEED_FRAC,
@@ -37,6 +39,7 @@ import {
   COMBO_WINDOW_S,
   SPEED_K,
   SLUGGISH_FACTOR,
+  SLUGGISH_MIN,
   SIM_RADIUS_MIN,
   START_RADIUS_M,
 } from '../config/tuning.js';
@@ -172,11 +175,16 @@ export class Absorb {
         const r = radius[i];
         const rEff = r * collisionScale[store.archetype[i]];
         const sum = ballR + rEff;
+        // Pickup forgiveness: clearly-smaller objects (always absorbable,
+        // since PICKUP_FORGIVE_MAX_RATIO < ABSORB_RATIO) get a widened
+        // overlap test; pushback candidates keep the honest `sum`.
+        const reach =
+          r <= PICKUP_FORGIVE_MAX_RATIO * ballR ? sum + PICKUP_FORGIVE_K * ballR : sum;
         const dx = pos.x - px[i];
         const dy = pos.y - py[i];
         const dz = pos.z - pz[i];
         const d2 = dx * dx + dy * dy + dz * dz;
-        if (d2 >= sum * sum) continue;
+        if (d2 >= reach * reach) continue;
 
         if (r <= ABSORB_RATIO * ballR) {
           this._absorbOne(i, hash, store, ball);
@@ -200,6 +208,7 @@ export class Absorb {
     const R = ball.radiusSim;
     ball.radiusSim = Math.cbrt(R * R * R + GROWTH_K * r * r * r);
     ball.sluggish *= SLUGGISH_FACTOR;
+    if (ball.sluggish < SLUGGISH_MIN) ball.sluggish = SLUGGISH_MIN;
 
     this._combo = this._comboTimer > 0 ? this._combo + 1 : 1;
     this._comboTimer = COMBO_WINDOW_S;

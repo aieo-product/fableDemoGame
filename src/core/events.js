@@ -14,6 +14,7 @@
  *   'knockOff' {count}
  *   'tierUp'   {tierIndex, name, trueRadius}                    (COSMETIC ONLY)
  *   'rescale'  {S}
+ *   'rebase'   {sx, sz}   (floating-origin shift subtracted from the world)
  *   'frameStats' {ms, drawCalls, tris, alive}                   (dev builds)
  */
 
@@ -28,6 +29,7 @@ export const EVT = Object.freeze({
   KNOCK_OFF: 'knockOff',
   TIER_UP: 'tierUp',
   RESCALE: 'rescale',
+  REBASE: 'rebase',
   FRAME_STATS: 'frameStats',
 });
 
@@ -55,6 +57,8 @@ export const PAYLOADS = {
   tierUp: { tierIndex: 0, name: '', trueRadius: 0 },
   /** @type {import('../types.js').RescaleEvent} */
   rescale: { S: 0 },
+  /** @type {{sx: number, sz: number}} Floating-origin rebase shift (integer-snapped sim units). */
+  rebase: { sx: 0, sz: 0 },
   /** @type {import('../types.js').FrameStatsEvent} */
   frameStats: { ms: 0, drawCalls: 0, tris: 0, alive: 0 },
 };

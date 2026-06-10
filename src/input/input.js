@@ -1,6 +1,7 @@
 /**
  * @file input.js — Keyboard (WASD/arrows) + optional mouse yaw drag + touch
- * joystick -> normalized Intent {x, y, boost}.
+ * joystick (with a visible base-ring + thumb-dot overlay anchored at the
+ * first touch) -> normalized Intent {x, y, boost}.
  *
  * Camera-relative mapping is applied in physics/ballPhysics.js, NOT here
  * (keeps the touch path rewrite-free). Conventions:
@@ -65,6 +66,26 @@ export class Input {
     /** @type {number} Accumulated yaw delta (radians) since last takeYawDrag(). */
     this._yawDragAccum = 0;
 
+    // -- virtual joystick visual (base ring + thumb dot; pointer-events:none)
+    /** @type {HTMLElement|null} */ this._joyBaseEl = null;
+    /** @type {HTMLElement|null} */ this._joyThumbEl = null;
+    if (typeof document !== 'undefined' && document.body) {
+      const base = document.createElement('div');
+      base.style.cssText =
+        'position:fixed;width:128px;height:128px;margin:-64px 0 0 -64px;' +
+        'border:2px solid rgba(255,255,255,0.35);border-radius:50%;' +
+        'background:rgba(255,255,255,0.06);pointer-events:none;z-index:15;display:none;';
+      const thumb = document.createElement('div');
+      thumb.style.cssText =
+        'position:fixed;width:48px;height:48px;margin:-24px 0 0 -24px;' +
+        'border-radius:50%;background:rgba(255,255,255,0.45);' +
+        'box-shadow:0 0 12px rgba(255,255,255,0.35);pointer-events:none;z-index:16;display:none;';
+      document.body.appendChild(base);
+      document.body.appendChild(thumb);
+      this._joyBaseEl = base;
+      this._joyThumbEl = thumb;
+    }
+
     // Bound handlers (kept for dispose()).
     this._onKeyDown = this._handleKeyDown.bind(this);
     this._onKeyUp = this._handleKeyUp.bind(this);
@@ -128,8 +149,16 @@ export class Input {
     return v;
   }
 
-  /** Remove all DOM listeners (tests / teardown). */
+  /** Remove all DOM listeners + joystick visuals (tests / teardown). */
   dispose() {
+    if (this._joyBaseEl !== null && this._joyBaseEl.parentNode !== null) {
+      this._joyBaseEl.parentNode.removeChild(this._joyBaseEl);
+    }
+    if (this._joyThumbEl !== null && this._joyThumbEl.parentNode !== null) {
+      this._joyThumbEl.parentNode.removeChild(this._joyThumbEl);
+    }
+    this._joyBaseEl = null;
+    this._joyThumbEl = null;
     const t = this._target;
     t.removeEventListener('keydown', this._onKeyDown);
     t.removeEventListener('keyup', this._onKeyUp);
@@ -210,6 +239,7 @@ export class Input {
     this._joyX = this._joyY = 0;
     this._touchCount = 0;
     this._mouseDown = false;
+    this._hideJoystick();
   }
 
   /* ---------------------------------------------------------------- */
@@ -229,6 +259,7 @@ export class Input {
     this._joyAnchorY = t.clientY;
     this._joyX = 0;
     this._joyY = 0;
+    this._showJoystick(t.clientX, t.clientY);
     if (e.cancelable) e.preventDefault();
   }
 
@@ -247,6 +278,11 @@ export class Input {
       }
       this._joyX = dx;
       this._joyY = -dy; // screen-up = forward
+      if (this._joyThumbEl !== null) {
+        // Thumb dot rides the (clamped) deflection in screen space.
+        this._joyThumbEl.style.left = this._joyAnchorX + dx * JOY_RADIUS_PX + 'px';
+        this._joyThumbEl.style.top = this._joyAnchorY + dy * JOY_RADIUS_PX + 'px';
+      }
       if (e.cancelable) e.preventDefault();
       break;
     }
@@ -260,9 +296,31 @@ export class Input {
         this._joyId = -1;
         this._joyX = 0;
         this._joyY = 0;
+        this._hideJoystick();
         break;
       }
     }
+  }
+
+  /**
+   * Show the joystick visual anchored at the first touch point.
+   * @param {number} x Anchor clientX. @param {number} y Anchor clientY.
+   */
+  _showJoystick(x, y) {
+    if (this._joyBaseEl === null || this._joyThumbEl === null) return;
+    this._joyBaseEl.style.left = x + 'px';
+    this._joyBaseEl.style.top = y + 'px';
+    this._joyBaseEl.style.display = 'block';
+    this._joyThumbEl.style.left = x + 'px';
+    this._joyThumbEl.style.top = y + 'px';
+    this._joyThumbEl.style.display = 'block';
+  }
+
+  /** Hide the joystick visual (joystick touch ended / window blur). */
+  _hideJoystick() {
+    if (this._joyBaseEl === null || this._joyThumbEl === null) return;
+    this._joyBaseEl.style.display = 'none';
+    this._joyThumbEl.style.display = 'none';
   }
 
   /* ---------------------------------------------------------------- */

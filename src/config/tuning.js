@@ -41,8 +41,14 @@ export const MAX_FRAME_DT = 0.1;
 /* Ball physics (physics/ballPhysics.js)                               */
 /* ================================================================== */
 
-/** Acceleration = ACCEL_K * simRadius along camera-relative input (sim/s^2 per r). */
-export const ACCEL_K = 22;
+/**
+ * Acceleration = ACCEL_K * simRadius along camera-relative input (sim/s^2 per r).
+ * MUST satisfy ACCEL_K * FIXED_DT * f/(1-f) >= SPEED_K (f = FRICTION_PER_FRAME)
+ * or the SPEED_K cap is unreachable and cruise speed silently drops below it
+ * (at 22 the ball cruised at ~4.2r, half the 8.5r cap — pickup rate halved).
+ * 45 * (1/60) * 0.92/0.08 = 8.6r, so the cap binds (~0.6s ramp to cruise).
+ */
+export const ACCEL_K = 45;
 /** Speed cap = SPEED_K * simRadius (sim/s per r) — identical screen-space feel at every scale. */
 export const SPEED_K = 8.5;
 /** Friction: vel *= FRICTION_PER_FRAME ^ (dt * 60). */
@@ -53,8 +59,18 @@ export const BALL_Y_OMEGA = 16;
 export const BALL_Y_ZETA = 0.6;
 /** Each absorb multiplies the transient accel factor by this (mass feel). */
 export const SLUGGISH_FACTOR = 0.97;
-/** Sluggishness recovers back to 1.0 over this many seconds. */
+/**
+ * Sluggishness returns toward 1.0 PROPORTIONALLY with this time constant (s):
+ * ds/dt = (1 - s) / SLUGGISH_RECOVERY_S — a single dip recovers in ~1.5s and
+ * deep dips recover fast at first, so absorb streaks never park the ball.
+ */
 export const SLUGGISH_RECOVERY_S = 1.5;
+/** Hard floor on the sluggish multiplier — burst absorbs can never zero out accel. */
+export const SLUGGISH_MIN = 0.6;
+/** Boost (Shift / second touch): acceleration multiplier while held. */
+export const BOOST_ACCEL_MUL = 1.5;
+/** Boost: speed-cap multiplier while held. */
+export const BOOST_CAP_MUL = 1.25;
 
 /* ================================================================== */
 /* Absorb / collision (physics/absorb.js)                              */
@@ -62,8 +78,22 @@ export const SLUGGISH_RECOVERY_S = 1.5;
 
 /** Absorbable when objRadius <= ABSORB_RATIO * ballRadius. NEVER tier-gated. */
 export const ABSORB_RATIO = 0.65;
-/** Volume growth: newR = cbrt(R^3 + GROWTH_K * r^3). Tuned so each tier takes 60-90s. */
-export const GROWTH_K = 0.45;
+/**
+ * Volume growth: newR = cbrt(R^3 + GROWTH_K * r^3). With the T0 catalog
+ * (mean r^3 ~ 0.0076 sim^3) and PICKUP_FORGIVE_K below, GROWTH_K = 10 puts
+ * tier 0 at ~60s / ~170 absorbs (mean gap ~0.35s, so combos actually fire).
+ * Retune against a measured tier-0 playthrough, not arithmetic alone.
+ */
+export const GROWTH_K = 10;
+/**
+ * Pickup forgiveness: for objects whose radius <= PICKUP_FORGIVE_MAX_RATIO *
+ * ballRadius the absorb overlap test is widened by PICKUP_FORGIVE_K *
+ * ballRadius — generous for clearly-smaller objects, honest near the
+ * ABSORB_RATIO threshold (forgiven objects are always absorbable, so the
+ * widened reach can never trigger a pushback). Continuous in radius.
+ */
+export const PICKUP_FORGIVE_K = 0.45;
+export const PICKUP_FORGIVE_MAX_RATIO = 0.5;
 /** Visual radius slew limit: radiusVisualSim approaches radiusSim at <= RADIUS_SLEW_K * r per second. */
 export const RADIUS_SLEW_K = 1.5;
 /** Pushback: normal velocity reflected * this; tangential preserved. */

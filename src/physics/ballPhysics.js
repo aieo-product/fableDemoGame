@@ -26,10 +26,11 @@ import * as THREE from 'three';
 import {
   ACCEL_K,
   SPEED_K,
+  BOOST_ACCEL_MUL,
+  BOOST_CAP_MUL,
   FRICTION_PER_FRAME,
   BALL_Y_OMEGA,
   BALL_Y_ZETA,
-  SLUGGISH_FACTOR,
   SLUGGISH_RECOVERY_S,
   SIM_RADIUS_MIN,
 } from '../config/tuning.js';
@@ -37,9 +38,6 @@ import { springDamped } from '../core/mathUtils.js';
 
 /** @typedef {import('../types.js').BallState} BallState */
 /** @typedef {import('../types.js').Intent} Intent */
-
-/** Sluggishness regain per second: one absorb's dip recovers in exactly SLUGGISH_RECOVERY_S. */
-const SLUGGISH_RECOVERY_RATE = (1 - SLUGGISH_FACTOR) / SLUGGISH_RECOVERY_S;
 /** Below this horizontal speed (sim/s) we skip the rolling quaternion update. */
 const ROLL_SPEED_EPS = 1e-5;
 
@@ -81,6 +79,7 @@ export class BallPhysics {
   step(dt, intent, camYaw) {
     const s = this.state;
     const vel = s.vel;
+    const boost = intent.boost === true;
 
     /* --- Camera-relative acceleration ------------------------------- */
     let ix = intent.x;
@@ -97,7 +96,7 @@ export class BallPhysics {
       // world dir = right * ix + forward * iy (see convention in file header)
       const dirX = cosY * ix - sinY * iy;
       const dirZ = -sinY * ix - cosY * iy;
-      const a = ACCEL_K * s.radiusSim * s.sluggish;
+      const a = ACCEL_K * s.radiusSim * s.sluggish * (boost ? BOOST_ACCEL_MUL : 1);
       vel.x += dirX * a * dt;
       vel.z += dirZ * a * dt;
     }
@@ -107,7 +106,7 @@ export class BallPhysics {
     vel.x *= f;
     vel.z *= f;
 
-    const cap = SPEED_K * s.radiusSim;
+    const cap = SPEED_K * s.radiusSim * (boost ? BOOST_CAP_MUL : 1);
     let speed2 = vel.x * vel.x + vel.z * vel.z;
     if (speed2 > cap * cap) {
       const k = cap / Math.sqrt(speed2);
@@ -135,9 +134,12 @@ export class BallPhysics {
       s.quat.normalize();
     }
 
-    /* --- Sluggishness recovery (mass feel) --------------------------- */
+    /* --- Sluggishness recovery (mass feel) ---------------------------
+       Proportional return toward 1 with time constant SLUGGISH_RECOVERY_S:
+       a single absorb's dip recovers in ~1.5s and deep multiplicative dips
+       (absorb streaks) recover fast at first instead of crawling linearly. */
     if (s.sluggish < 1) {
-      s.sluggish += SLUGGISH_RECOVERY_RATE * dt;
+      s.sluggish += (1 - s.sluggish) * (dt / SLUGGISH_RECOVERY_S);
       if (s.sluggish > 1) s.sluggish = 1;
     }
   }

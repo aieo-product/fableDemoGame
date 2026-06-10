@@ -395,7 +395,9 @@ export class Spawner {
    * (ballistic pop, then static + hash insert on landing). Copies the
    * WorldReentry — caller may reuse its vectors.
    * @param {WorldReentry} re Reentry record from ball.knockOff().
-   * @returns {boolean} False if the store/pool/flight capacity refused it.
+   * @returns {boolean} False only if the store (or archetype id) refused it —
+   *   render-pool exhaustion falls back to an invisible-but-collidable
+   *   instance and flight-pool exhaustion lands the object immediately.
    */
   reinject(re) {
     const archIdx = archetypeIndexFor(re.archetypeId);
@@ -404,11 +406,10 @@ export class Spawner {
     const idx = store.alloc();
     if (idx < 0) return false;
     const pool = this._getPool(archIdx);
+    // Pool exhausted: fall back to instanceSlot = -1 (invisible but
+    // collidable/re-absorbable) — the ejected object must not silently
+    // vanish just because the archetype's render pool is full.
     const slot = pool !== null ? pool.alloc() : -1;
-    if (slot < 0) {
-      store.free(idx);
-      return false;
-    }
     const r = re.radiusSim;
     const restY = r * (1 + this._yOff[archIdx]);
     store.px[idx] = re.pos.x;
@@ -423,12 +424,14 @@ export class Spawner {
     this._placementOf[idx] = -1;
     this._aliveCount++;
 
-    const pal = this._palettes[archIdx];
-    pool.setColor(slot, pal[idx % pal.length]);
     const yaw = (idx * 2.399963) % TWO_PI; // deterministic-ish golden-angle yaw
-    _QUAT.setFromAxisAngle(_AXIS, yaw);
-    _POS.set(re.pos.x, re.pos.y, re.pos.z);
-    pool.setTransform(slot, _POS, _QUAT, r);
+    if (pool !== null && slot >= 0) {
+      const pal = this._palettes[archIdx];
+      pool.setColor(slot, pal[idx % pal.length]);
+      _QUAT.setFromAxisAngle(_AXIS, yaw);
+      _POS.set(re.pos.x, re.pos.y, re.pos.z);
+      pool.setTransform(slot, _POS, _QUAT, r);
+    }
 
     /* Find a flight slot; if none free, land it immediately. */
     for (let i = 0; i < REENTRY_CAP; i++) {

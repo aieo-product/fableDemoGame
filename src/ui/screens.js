@@ -55,6 +55,15 @@ export class Screens {
     this._startBtn.addEventListener('click', this._onStartClick);
     this._restartBtn.addEventListener('click', this._onRestartClick);
 
+    /* Touch devices get touch controls guidance instead of the keyboard rows
+       (the drag joystick is otherwise undiscoverable on phones). */
+    const hints = document.getElementById('key-hints');
+    if (hints !== null && typeof window !== 'undefined' && 'ontouchstart' in window) {
+      hints.innerHTML =
+        '<span><kbd>ドラッグ / Drag</kbd>うごく / Move</span>' +
+        '<span><kbd>2本指 / 2nd finger</kbd>ブースト / Boost</span>';
+    }
+
     bus.on(EVT.GAME_START, this._onGameStart);
     bus.on(EVT.GAME_RESET, this._onGameReset);
     bus.on(EVT.GAME_WIN, this._onGameWin);
@@ -69,9 +78,14 @@ export class Screens {
     this._bus.emit(EVT.GAME_START, PAYLOADS.gameStart);
   }
 
-  /** ROLL AGAIN — full world reset back to the title screen. */
+  /**
+   * ROLL AGAIN — the label promises an immediate replay, so emit reset THEN
+   * start (well-ordered: reset rebuilds the world and shows the title, start
+   * hides the overlays and play resumes in the freshly preloaded world).
+   */
   _onRestartClick() {
     this._bus.emit(EVT.GAME_RESET, PAYLOADS.gameReset);
+    this._bus.emit(EVT.GAME_START, PAYLOADS.gameStart);
   }
 
   /* ---------------------------------------------------------------- */

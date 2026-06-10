@@ -4,7 +4,9 @@
  *
  * Mechanics (DESIGN.md レンダリング):
  * - free-list slots; dead/hidden slots get a ZERO-SCALE matrix; mesh.count
- *   stays at the high-water mark (degenerate tris are pre-raster rejected).
+ *   stays at the high-water mark while ANY slot is live (degenerate tris are
+ *   pre-raster rejected), and collapses to 0 + mesh.visible=false the moment
+ *   the pool fully drains — empty pools never cost a draw call.
  * - all spawn/fade/despawn transitions animate per-instance matrix SCALE,
  *   never material opacity (one opaque shader program, no sorting).
  * - instanceMatrix/instanceColor use DynamicDrawUsage + r177 updateRanges
@@ -78,6 +80,7 @@ export class InstancedPool {
     /** @type {THREE.InstancedMesh} Add to scene (world pools) or ballGroup (stuck pools). */
     this.mesh = new THREE.InstancedMesh(geometry, material, capacity);
     this.mesh.count = 0;
+    this.mesh.visible = false; // empty pools must not cost a draw call
     this.mesh.frustumCulled = false;
     this.mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     // Eager instanceColor (default white) so the shader program never rebuilds.
@@ -88,7 +91,7 @@ export class InstancedPool {
 
     /** @type {FreeList} */
     this._free = new FreeList(capacity);
-    /** @type {number} High-water mark — mesh.count never shrinks below it (except reset). */
+    /** @type {number} High-water mark — mesh.count tracks it while live; resets when the pool drains. */
     this._highWater = 0;
 
     /* --- per-slot TRS store (source of truth for matrix recomposition) --- */
@@ -148,6 +151,7 @@ export class InstancedPool {
       this._highWater = slot + 1;
       this.mesh.count = this._highWater;
     }
+    if (!this.mesh.visible) this.mesh.visible = true; // first live instance
     return slot;
   }
 
@@ -164,6 +168,13 @@ export class InstancedPool {
     this._curF[slot] = 0;
     this._zeroMatrix(slot);
     this._free.free(slot);
+    if (this._free.allocatedCount === 0) {
+      // Fully drained: shed the draw call AND the high-water mark so old-band
+      // pools stop costing degenerate-instance vertex work for the whole run.
+      this._highWater = 0;
+      this.mesh.count = 0;
+      this.mesh.visible = false;
+    }
   }
 
   /**
@@ -364,6 +375,7 @@ export class InstancedPool {
     this._free.reset();
     this._highWater = 0;
     this.mesh.count = 0;
+    this.mesh.visible = false;
     this._dirtyMin = -1;
     this._dirtyMax = -1;
     this._colorDirtyMin = -1;

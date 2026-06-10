@@ -73,7 +73,7 @@
  * @typedef {Object} Intent
  * @property {number}  x     Strafe axis in [-1, 1].
  * @property {number}  y     Forward axis in [-1, 1].
- * @property {boolean} boost Reserved boost flag.
+ * @property {boolean} boost Boost held (Shift / second touch): ballPhysics applies BOOST_ACCEL_MUL / BOOST_CAP_MUL.
  */
 
 /**

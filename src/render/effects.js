@@ -10,8 +10,8 @@
  *
  * Event-driven (bus): ABSORB / KNOCK_OFF / TIER_UP queue bursts which are
  * materialized at the ball's surface in update(dt, ballState); RESCALE
- * multiplies live particle state by S (world sim positions); GAME_RESET
- * kills everything.
+ * multiplies live particle state by S (world sim positions); REBASE shifts
+ * live particle positions by (sx, sz); GAME_RESET kills everything.
  *
  * NOTE for integration: update needs the ball — call
  * effects.update(frameDt, ballPhys.state) in frame-order step 6.
@@ -214,15 +214,16 @@ class QuadPool {
   }
 
   /**
-   * Floating-origin rebase: shift live particle positions.
-   * @param {THREE.Vector3} offset Shift subtracted from world positions.
+   * Floating-origin rebase: shift live particle positions. (sx, sz) scalar
+   * convention matches every other rebase hook; y is unaffected by rebase.
+   * @param {number} sx Integer-snapped X shift, sim units.
+   * @param {number} sz Integer-snapped Z shift, sim units.
    */
-  rebase(offset) {
+  rebase(sx, sz) {
     for (let i = 0; i < this.cap; i++) {
       if (this.alive[i] === 0) continue;
-      this.px[i] -= offset.x;
-      this.py[i] -= offset.y;
-      this.pz[i] -= offset.z;
+      this.px[i] -= sx;
+      this.pz[i] -= sz;
     }
   }
 }
@@ -273,6 +274,9 @@ export class Effects {
       this._pops.rescale(p.S);
       this._ring.rescale(p.S);
       this._lines.rescale(p.S);
+    });
+    eventBus.on(EVT.REBASE, (p) => {
+      this.rebase(p.sx, p.sz);
     });
     eventBus.on(EVT.GAME_RESET, () => {
       this.reset();
@@ -371,14 +375,16 @@ export class Effects {
   }
 
   /**
-   * Floating-origin rebase hook (optional wiring — particles are short-lived
-   * and fog-hidden if missed, but call it for correctness).
-   * @param {THREE.Vector3} offset Shift subtracted from every world position.
+   * Floating-origin rebase hook — driven by EVT.REBASE (emitted by
+   * ScaleManager.maybeRebase after all direct world mutations) so live
+   * particles never teleport on the rebase frame.
+   * @param {number} sx Integer-snapped X shift, sim units.
+   * @param {number} sz Integer-snapped Z shift, sim units.
    */
-  rebase(offset) {
-    this._pops.rebase(offset);
-    this._ring.rebase(offset);
-    this._lines.rebase(offset);
+  rebase(sx, sz) {
+    this._pops.rebase(sx, sz);
+    this._ring.rebase(sx, sz);
+    this._lines.rebase(sx, sz);
   }
 
   /** Kill all live particles and pending bursts (game reset). */

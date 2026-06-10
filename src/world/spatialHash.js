@@ -109,8 +109,15 @@ export class SpatialHash {
    * rescaleAll()/rebaseAll() (positions changed); also used at game reset.
    * @param {import('./objects.js').ObjectStore} store The SoA object store.
    * @param {number} tierBand Tier index this hash instance owns.
+   * @param {number} [cellSizeCur] The band's cell size in CURRENT sim units
+   *   (ScaleManager.bandCellSizeCur). Re-banding a hash MUST carry the band's
+   *   cell size or queryBall's maxObjR bound (cellSize * 0.5) goes wrong.
    */
-  rebuild(store, tierBand) {
+  rebuild(store, tierBand, cellSizeCur) {
+    if (cellSizeCur !== undefined && cellSizeCur > 0 && cellSizeCur !== this.cellSize) {
+      this.cellSize = cellSizeCur;
+      this._invCell = 1 / cellSizeCur;
+    }
     const cap = store.capacity;
     const flags = store.flags;
     const tierOf = store.tierOf;
@@ -293,18 +300,30 @@ export class SpatialHash {
   queryBall(x, y, z, r, maxObjR, outI32) {
     const reach = r + maxObjR;
     const invCell = this._invCell;
-    const x0 = Math.floor((x - reach) * invCell);
+    let x0 = Math.floor((x - reach) * invCell);
     let x1 = Math.floor((x + reach) * invCell);
-    const z0 = Math.floor((z - reach) * invCell);
+    let z0 = Math.floor((z - reach) * invCell);
     let z1 = Math.floor((z + reach) * invCell);
-    if (x1 - x0 >= MAX_CELLS_PER_AXIS) x1 = x0 + MAX_CELLS_PER_AXIS - 1;
-    if (z1 - z0 >= MAX_CELLS_PER_AXIS) z1 = z0 + MAX_CELLS_PER_AXIS - 1;
+    // Pathological query radii: clamp CENTERED on the ball cell (a one-sided
+    // clamp would scan a rect offset from the ball and miss near contacts).
+    const half = MAX_CELLS_PER_AXIS >> 1;
+    if (x1 - x0 >= MAX_CELLS_PER_AXIS) {
+      const cx = Math.floor(x * invCell);
+      x0 = cx - half + 1;
+      x1 = cx + half;
+    }
+    if (z1 - z0 >= MAX_CELLS_PER_AXIS) {
+      const cz = Math.floor(z * invCell);
+      z0 = cz - half + 1;
+      z1 = cz + half;
+    }
 
     const visited = this._visited;
     const cellStart = this._cellStart;
     const entries = this._entries;
     const outCap = outI32.length;
     let visitedCount = 0;
+    let visitedSat = false; // dedup scratch overflowed — loose pass must be over-inclusive
     let count = 0;
 
     for (let zi = z0; zi <= z1; zi++) {
@@ -319,6 +338,7 @@ export class SpatialHash {
         }
         if (seen) continue;
         if (visitedCount < visited.length) visited[visitedCount++] = key;
+        else visitedSat = true;
 
         const end = cellStart[key + 1];
         for (let p = cellStart[key]; p < end; p++) {
@@ -331,11 +351,19 @@ export class SpatialHash {
     }
 
     // Loose buffer: include entries whose cached key matches a scanned key.
+    // If the visited scratch saturated, keys may be missing from it — fall
+    // back to including ALL loose entries (over-inclusive is allowed; the
+    // caller narrowphases) so touching objects are never silently dropped.
     const loose = this._loose;
     const keyOf = this._keyOf;
     const looseCount = this._looseCount;
     for (let l = 0; l < looseCount; l++) {
       const i = loose[l];
+      if (visitedSat) {
+        if (count >= outCap) return count;
+        outI32[count++] = i;
+        continue;
+      }
       const key = keyOf[i];
       for (let v = 0; v < visitedCount; v++) {
         if (visited[v] === key) {

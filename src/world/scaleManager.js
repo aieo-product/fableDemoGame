@@ -16,7 +16,7 @@
  * the SoA store (store.rescaleAll), every InstancedPool matrix
  * (pool.rewriteAll(S): elements [0..14] *= S, one needsUpdate), the camera
  * spring state (cameraRig.rescaleState(S)), and optional environment params
- * (env.onRescale(S)); then rebuild the three per-band spatial hashes. Because
+ * (env.rescale(S)); then rebuild the three per-band spatial hashes. Because
  * every visual quantity is radius-proportional (SEAMLESSNESS LAW), the rescale
  * frame renders pixel-identical to the no-rescale frame. The spawner and the
  * render ball ride along via the synchronous EVT.RESCALE emission.
@@ -50,9 +50,6 @@ import {
 /** @typedef {import('../types.js').BallState} BallState */
 
 const DEV = typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.DEV;
-
-/** Exit radius of the last tier (T5 Skyline 150 m - 750 m). */
-const LAST_TIER_EXIT_M = TIERS[TIERS.length - 1].enterTrueRadius * 5;
 
 /**
  * Owns the sim-units <-> real-meters bridge and the two pixel-identity
@@ -143,7 +140,7 @@ export class ScaleManager {
    * @param {Map<string, object>|Object<string, object>} instances
    *   InstancedPool per archetype id — rewriteAll(S).
    * @param {object} cameraRig Camera rig — rescaleState(S) (optional until wired).
-   * @param {object} env Environment — onRescale(S) (optional hook).
+   * @param {object} env Environment — rescale(S) (optional hook).
    * @returns {boolean} True if a rescale and/or tier change happened.
    */
   maybeTierUp(ball, store, hashes, instances, cameraRig, env) {
@@ -178,8 +175,10 @@ export class ScaleManager {
     if (now - this._lastGrowMs >= this._growIntervalMs) {
       this._lastGrowMs = now;
       const enter = TIERS[this.tierIndex].enterTrueRadius;
+      // Last tier's progress target is the WIN radius so the bar hits exactly
+      // 100% as 'game:win' fires.
       const exit =
-        this.tierIndex < TIERS.length - 1 ? TIERS[this.tierIndex + 1].enterTrueRadius : LAST_TIER_EXIT_M;
+        this.tierIndex < TIERS.length - 1 ? TIERS[this.tierIndex + 1].enterTrueRadius : WIN_RADIUS_M;
       let p = (tr - enter) / (exit - enter);
       if (p < 0) p = 0;
       else if (p > 1) p = 1;
@@ -220,7 +219,7 @@ export class ScaleManager {
    *   InstancedPool per archetype id — rebaseAll(sx, sz) (translation-only
    *   matrix rewrite; REQUIRED on the pool for rebase to work).
    * @param {object} cameraRig Camera rig — rebaseState(sx, sz) (optional hook).
-   * @param {object} env Environment — onRebase(sx, sz) (optional hook).
+   * @param {object} env Environment — rebase(sx, sz) (optional hook).
    * @param {object} spawner Spawner — onRebase(sx, sz) origin re-keying.
    * @returns {boolean} True if a rebase happened this frame.
    */
@@ -247,8 +246,17 @@ export class ScaleManager {
     eachPool(instances, rebasePool, sx, sz);
     this._rebuildHashes(store, hashes);
     if (cameraRig && typeof cameraRig.rebaseState === 'function') cameraRig.rebaseState(sx, sz);
+    else if (DEV && cameraRig) console.warn('[scaleManager] cameraRig.rebaseState(sx, sz) missing');
     if (env && typeof env.rebase === 'function') env.rebase(sx, sz);
+    else if (DEV && env) console.warn('[scaleManager] env.rebase(sx, sz) missing');
     if (spawner && typeof spawner.onRebase === 'function') spawner.onRebase(sx, sz);
+    else if (DEV && spawner) console.warn('[scaleManager] spawner.onRebase(sx, sz) missing');
+
+    /* Emitted AFTER all direct mutations (mirrors EVT.RESCALE) so listeners
+       with world-sim-space state (effects particle pools) ride along. */
+    PAYLOADS.rebase.sx = sx;
+    PAYLOADS.rebase.sz = sz;
+    this._bus.emit(EVT.REBASE, PAYLOADS.rebase);
     return true;
   }
 
@@ -281,16 +289,32 @@ export class ScaleManager {
     if (store && typeof store.rescaleAll === 'function') store.rescaleAll(S);
     eachPool(instances, rescalePool, S, 0);
     if (cameraRig && typeof cameraRig.rescaleState === 'function') cameraRig.rescaleState(S);
+    else if (DEV && cameraRig) console.warn('[scaleManager] cameraRig.rescaleState(S) missing');
     if (env && typeof env.rescale === 'function') env.rescale(S);
+    else if (DEV && env) console.warn('[scaleManager] env.rescale(S) missing');
 
     PAYLOADS.rescale.S = S;
     this._bus.emit(EVT.RESCALE, PAYLOADS.rescale);
   }
 
   /**
+   * Cell size of a tier band in CURRENT sim units: the band's native
+   * cellSizeSim (defined for when it is the current tier, worldScale_b =
+   * 0.1 * 5^b) converted by 5^(band - rescaleCount). Out-of-range bands
+   * (e.g. -1 at tier 0 — always empty) borrow the nearest tier's native cell.
+   * @param {number} band Tier band (may be tierIndex - 1 .. tierIndex + 1).
+   * @returns {number} Cell size in current sim units.
+   */
+  bandCellSizeCur(band) {
+    const b = band < 0 ? 0 : band >= TIERS.length ? TIERS.length - 1 : band;
+    return TIERS[b].cellSizeSim * Math.pow(5, band - this.rescaleCount);
+  }
+
+  /**
    * Re-band + rebuild the three live spatial hashes:
-   * hashes[i] holds band tierIndex - 1 + i. Mandatory after any rescale
-   * (positions changed), tier change (bands shifted) or rebase (cells moved).
+   * hashes[i] holds band tierIndex - 1 + i, at that band's CURRENT-unit cell
+   * size. Mandatory after any rescale (positions changed), tier change
+   * (bands shifted) or rebase (cells moved).
    * @param {object} store
    * @param {object[]} hashes
    */
@@ -298,7 +322,8 @@ export class ScaleManager {
     if (!store || !hashes) return;
     for (let i = 0; i < 3; i++) {
       const h = hashes[i];
-      if (h && typeof h.rebuild === 'function') h.rebuild(store, this.tierIndex - 1 + i);
+      const band = this.tierIndex - 1 + i;
+      if (h && typeof h.rebuild === 'function') h.rebuild(store, band, this.bandCellSizeCur(band));
     }
   }
 

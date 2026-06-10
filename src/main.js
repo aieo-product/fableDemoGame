@@ -13,8 +13,10 @@
  *  - ABSORB: absorb.js emits 'absorb' BEFORE store.free(i); the handler here
  *    reads the world-instance tint, frees the world pool slot, and hands the
  *    object to ball.attachStuck — all synchronously during the emit.
- *  - KNOCK_OFF: absorb.js emits the count; the handler here ejects from the
- *    render ball and re-injects the reused WorldReentry records via spawner.
+ *  - KNOCK_OFF: absorb.js emits a rolled count; the handler here (subscribed
+ *    FIRST, before Effects/Sfx) ejects from the render ball, re-injects the
+ *    reused WorldReentry records via spawner, then writes the ACTUAL ejected
+ *    count back into the payload for the downstream cosmetic handlers.
  *  - RESCALE: ScaleManager scales BallState/store/pools/camera/env itself and
  *    emits 'rescale'; the handler here covers the two pieces ScaleManager has
  *    no reference to: ball.rescaleState(S) and ballPhys.rescaleSpring(S).
@@ -87,11 +89,16 @@ const renderer = new Renderer(
   /** @type {HTMLCanvasElement} */ (document.getElementById('game-canvas'))
 );
 const store = new ObjectStore();
-/** 3 live tier-band hashes: hashes[i] owns band scaleMgr.tierIndex - 1 + i. */
+/**
+ * 3 live tier-band hashes: hashes[i] owns band scaleMgr.tierIndex - 1 + i.
+ * Each band's cell size is its NATIVE cellSizeSim converted to CURRENT sim
+ * units (x5 per band step at boot, scaleExp 0) — ScaleManager._rebuildHashes
+ * keeps them in sync via bandCellSizeCur on every re-band/rescale/rebase.
+ */
 const hashes = [
-  new SpatialHash(TIERS[0].cellSizeSim),
-  new SpatialHash(TIERS[0].cellSizeSim),
-  new SpatialHash(TIERS[0].cellSizeSim),
+  new SpatialHash(TIERS[0].cellSizeSim / 5), // band -1 (empty at boot)
+  new SpatialHash(TIERS[0].cellSizeSim), // band 0
+  new SpatialHash(TIERS[1].cellSizeSim * 5), // band +1 scenery, current units
 ];
 const geos = buildAllGeometries(CATALOG);
 
@@ -118,6 +125,24 @@ const scaleMgr = new ScaleManager(bus, worldSeed);
 const absorb = new Absorb(bus, scaleMgr, CATALOG);
 const spawner = new Spawner(worldSeed, store, hashes, instances, bus, CATALOG);
 const ball = new Ball(renderer.scene, geos, bus);
+
+/**
+ * 'knockOff' (hard bonk): eject the newest stuck objects from the render
+ * ball and re-inject them as re-absorbable world instances. The returned
+ * records are REUSED — consumed synchronously here, never retained.
+ *
+ * REGISTERED BEFORE Effects/Sfx construct (subscription order = dispatch
+ * order) so this handler runs first and can write the ACTUAL ejected count
+ * back into the payload — effects burst sizing and the knock sfx then see
+ * what really left the ball, not the pre-roll from absorb.js.
+ * @param {import('./types.js').KnockOffEvent} p Reused payload.
+ */
+bus.on(EVT.KNOCK_OFF, (p) => {
+  const records = ball.knockOff(p.count, ballPhys.state);
+  for (let i = 0; i < records.length; i++) spawner.reinject(records[i]);
+  p.count = records.length; // honesty: downstream handlers see the actual count
+});
+
 const input = new Input(window);
 const cameraRig = new CameraRig(renderer.camera, bus);
 const effects = new Effects(renderer.scene, bus);
@@ -157,17 +182,6 @@ bus.on(EVT.ABSORB, (p) => {
 });
 
 /**
- * 'knockOff' (hard bonk): eject the newest stuck objects from the render
- * ball and re-inject them as re-absorbable world instances. The returned
- * records are REUSED — consumed synchronously here, never retained.
- * @param {import('./types.js').KnockOffEvent} p Reused payload (read-only).
- */
-bus.on(EVT.KNOCK_OFF, (p) => {
-  const records = ball.knockOff(p.count, ballPhys.state);
-  for (let i = 0; i < records.length; i++) spawner.reinject(records[i]);
-});
-
-/**
  * 'rescale' (emitted synchronously inside ScaleManager._applyRescale, after
  * BallState/store/pools/camera/env were scaled): cover the two hooks
  * ScaleManager has no reference to.
@@ -203,10 +217,15 @@ function startRadiusSim() {
 function resetWorld() {
   spawner.reset();
   store.reset();
-  for (let i = 0; i < hashes.length; i++) hashes[i].clear();
   for (let i = 0; i < poolList.length; i++) poolList[i].reset();
   absorb.reset();
   scaleMgr.reset();
+  // Re-band + re-cell the hashes from the fresh tier/scale (empty store —
+  // rebuild doubles as clear and restores each band's cell size).
+  for (let i = 0; i < hashes.length; i++) {
+    const band = scaleMgr.tierIndex - 1 + i;
+    hashes[i].rebuild(store, band, scaleMgr.bandCellSizeCur(band));
+  }
   ball.reset();
   ballPhys.reset(startRadiusSim());
   spawner.preloadStartArea(ballPhys.state.pos, scaleMgr.tierIndex, ballPhys.state.radiusSim);
@@ -241,11 +260,20 @@ function onGameWin() {
   sfx.setRollIntensity(0);
 }
 
-/* Populate the start area while the title screen is up (a few ms, once). */
-spawner.preloadStartArea(ballPhys.state.pos, scaleMgr.tierIndex, ballPhys.state.radiusSim);
+/* Populate the start area while the title screen is up (a few ms, once).
+   Mirrors resetWorld(): the ?r= dev radius is applied BEFORE the preload so
+   the preloaded world matches the actual start state, and the environment
+   palette lands directly on the requested tier (per Environment's contract)
+   instead of crossfading through every TIER_UP on the first playing frame. */
 if (startRadiusM !== null) {
   ballPhys.reset(startRadiusSim());
+  let devTier = 0;
+  while (devTier < TIERS.length - 1 && startRadiusM >= TIERS[devTier + 1].enterTrueRadius) {
+    devTier++;
+  }
+  env.setTierPaletteImmediate(devTier);
 }
+spawner.preloadStartArea(ballPhys.state.pos, scaleMgr.tierIndex, ballPhys.state.radiusSim);
 
 /* ------------------------------------------------------------------ */
 /* Fixed-timestep 60Hz accumulator loop                                */
