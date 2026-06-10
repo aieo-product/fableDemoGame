@@ -1,0 +1,291 @@
+/**
+ * @file input.js — Keyboard (WASD/arrows) + optional mouse yaw drag + touch
+ * joystick -> normalized Intent {x, y, boost}.
+ *
+ * Camera-relative mapping is applied in physics/ballPhysics.js, NOT here
+ * (keeps the touch path rewrite-free). Conventions:
+ *   intent.y = +1 -> push the ball ALONG the camera forward direction.
+ *   intent.x = +1 -> push toward screen-right.
+ *   boost     -> Shift held (keyboard) or a second active touch.
+ *
+ * Mouse yaw drag: horizontal primary-button mouse drags accumulate a yaw
+ * delta (radians). main.js drains it once per frame via takeYawDrag() and
+ * forwards it to cameraRig.update(dt, ball, yawDrag). If never drained the
+ * feature simply stays inert — safe degradation.
+ *
+ * Zero-allocation discipline: read() returns one REUSED Intent object;
+ * handlers mutate numeric fields only.
+ */
+
+/** @typedef {import('../types.js').Intent} Intent */
+
+/** Virtual joystick radius in CSS pixels (full deflection). */
+const JOY_RADIUS_PX = 64;
+/** Joystick deadzone as a fraction of JOY_RADIUS_PX. */
+const JOY_DEADZONE = 0.15;
+/** Mouse yaw drag sensitivity (radians per CSS pixel). Drag right = look right. */
+const YAW_DRAG_SENS = 0.005;
+
+/**
+ * Player input aggregator. Construct once at boot; call read() exactly once
+ * per render frame (step 1 of the frame order).
+ */
+export class Input {
+  /**
+   * @param {Window} [target] Event target (injectable for tests); defaults to window.
+   */
+  constructor(target = window) {
+    /** @type {Window} */
+    this._target = target;
+
+    /** @type {Intent} The single reused intent object returned by read(). */
+    this._intent = { x: 0, y: 0, boost: false };
+
+    // -- keyboard state ------------------------------------------------
+    this._kUp = false;
+    this._kDown = false;
+    this._kLeft = false;
+    this._kRight = false;
+    this._kBoost = false;
+
+    // -- touch joystick state -------------------------------------------
+    /** @type {number} Identifier of the joystick touch, or -1. */
+    this._joyId = -1;
+    this._joyAnchorX = 0;
+    this._joyAnchorY = 0;
+    /** Normalized joystick output in [-1,1] (y = +1 forward / screen-up). */
+    this._joyX = 0;
+    this._joyY = 0;
+    /** @type {number} Count of currently active touches (2nd touch = boost). */
+    this._touchCount = 0;
+
+    // -- mouse yaw drag state ---------------------------------------------
+    this._mouseDown = false;
+    this._mouseLastX = 0;
+    /** @type {number} Accumulated yaw delta (radians) since last takeYawDrag(). */
+    this._yawDragAccum = 0;
+
+    // Bound handlers (kept for dispose()).
+    this._onKeyDown = this._handleKeyDown.bind(this);
+    this._onKeyUp = this._handleKeyUp.bind(this);
+    this._onTouchStart = this._handleTouchStart.bind(this);
+    this._onTouchMove = this._handleTouchMove.bind(this);
+    this._onTouchEnd = this._handleTouchEnd.bind(this);
+    this._onMouseDown = this._handleMouseDown.bind(this);
+    this._onMouseMove = this._handleMouseMove.bind(this);
+    this._onMouseUp = this._handleMouseUp.bind(this);
+    this._onBlur = this._handleBlur.bind(this);
+
+    target.addEventListener('keydown', this._onKeyDown);
+    target.addEventListener('keyup', this._onKeyUp);
+    // passive:false so the joystick can preventDefault page scroll/zoom.
+    target.addEventListener('touchstart', this._onTouchStart, { passive: false });
+    target.addEventListener('touchmove', this._onTouchMove, { passive: false });
+    target.addEventListener('touchend', this._onTouchEnd);
+    target.addEventListener('touchcancel', this._onTouchEnd);
+    target.addEventListener('mousedown', this._onMouseDown);
+    target.addEventListener('mousemove', this._onMouseMove);
+    target.addEventListener('mouseup', this._onMouseUp);
+    target.addEventListener('blur', this._onBlur);
+  }
+
+  /**
+   * Snapshot the current intent. Returns the SAME reused object every call —
+   * read-only for callers, never retain across frames. Zero allocation.
+   * @returns {Intent}
+   */
+  read() {
+    const it = this._intent;
+    // Keyboard axes.
+    let x = (this._kRight ? 1 : 0) - (this._kLeft ? 1 : 0);
+    let y = (this._kUp ? 1 : 0) - (this._kDown ? 1 : 0);
+    // Touch joystick overrides keyboard when deflected past the deadzone.
+    const jl = Math.sqrt(this._joyX * this._joyX + this._joyY * this._joyY);
+    if (jl > JOY_DEADZONE) {
+      x = this._joyX;
+      y = this._joyY;
+    }
+    // Normalize so diagonals aren't faster.
+    const len = Math.sqrt(x * x + y * y);
+    if (len > 1) {
+      x /= len;
+      y /= len;
+    }
+    it.x = x;
+    it.y = y;
+    it.boost = this._kBoost || this._touchCount >= 2;
+    return it;
+  }
+
+  /**
+   * Drain the accumulated mouse yaw drag (radians) since the previous call.
+   * Forward the return value to cameraRig.update()'s yawDrag parameter.
+   * @returns {number} Accumulated yaw delta, radians (positive = look right).
+   */
+  takeYawDrag() {
+    const v = this._yawDragAccum;
+    this._yawDragAccum = 0;
+    return v;
+  }
+
+  /** Remove all DOM listeners (tests / teardown). */
+  dispose() {
+    const t = this._target;
+    t.removeEventListener('keydown', this._onKeyDown);
+    t.removeEventListener('keyup', this._onKeyUp);
+    t.removeEventListener('touchstart', this._onTouchStart);
+    t.removeEventListener('touchmove', this._onTouchMove);
+    t.removeEventListener('touchend', this._onTouchEnd);
+    t.removeEventListener('touchcancel', this._onTouchEnd);
+    t.removeEventListener('mousedown', this._onMouseDown);
+    t.removeEventListener('mousemove', this._onMouseMove);
+    t.removeEventListener('mouseup', this._onMouseUp);
+    t.removeEventListener('blur', this._onBlur);
+  }
+
+  /* ---------------------------------------------------------------- */
+  /* Keyboard                                                          */
+  /* ---------------------------------------------------------------- */
+
+  /** @param {KeyboardEvent} e */
+  _handleKeyDown(e) {
+    switch (e.code) {
+      case 'KeyW':
+      case 'ArrowUp':
+        this._kUp = true;
+        break;
+      case 'KeyS':
+      case 'ArrowDown':
+        this._kDown = true;
+        break;
+      case 'KeyA':
+      case 'ArrowLeft':
+        this._kLeft = true;
+        break;
+      case 'KeyD':
+      case 'ArrowRight':
+        this._kRight = true;
+        break;
+      case 'ShiftLeft':
+      case 'ShiftRight':
+        this._kBoost = true;
+        break;
+      default:
+        return;
+    }
+    // Arrows/WASD handled — stop page scroll on arrow keys.
+    if (e.code.indexOf('Arrow') === 0) e.preventDefault();
+  }
+
+  /** @param {KeyboardEvent} e */
+  _handleKeyUp(e) {
+    switch (e.code) {
+      case 'KeyW':
+      case 'ArrowUp':
+        this._kUp = false;
+        break;
+      case 'KeyS':
+      case 'ArrowDown':
+        this._kDown = false;
+        break;
+      case 'KeyA':
+      case 'ArrowLeft':
+        this._kLeft = false;
+        break;
+      case 'KeyD':
+      case 'ArrowRight':
+        this._kRight = false;
+        break;
+      case 'ShiftLeft':
+      case 'ShiftRight':
+        this._kBoost = false;
+        break;
+    }
+  }
+
+  /** Window blur: release everything so keys don't stick across tab switches. */
+  _handleBlur() {
+    this._kUp = this._kDown = this._kLeft = this._kRight = this._kBoost = false;
+    this._joyId = -1;
+    this._joyX = this._joyY = 0;
+    this._touchCount = 0;
+    this._mouseDown = false;
+  }
+
+  /* ---------------------------------------------------------------- */
+  /* Touch joystick (first touch = stick anchor, second touch = boost) */
+  /* ---------------------------------------------------------------- */
+
+  /** @param {TouchEvent} e */
+  _handleTouchStart(e) {
+    this._touchCount = e.touches.length;
+    if (this._joyId !== -1) return;
+    // Ignore touches that begin on UI controls (title/win buttons).
+    const tgt = /** @type {Element|null} */ (e.changedTouches[0].target);
+    if (tgt !== null && typeof tgt.closest === 'function' && tgt.closest('button') !== null) return;
+    const t = e.changedTouches[0];
+    this._joyId = t.identifier;
+    this._joyAnchorX = t.clientX;
+    this._joyAnchorY = t.clientY;
+    this._joyX = 0;
+    this._joyY = 0;
+    if (e.cancelable) e.preventDefault();
+  }
+
+  /** @param {TouchEvent} e */
+  _handleTouchMove(e) {
+    if (this._joyId === -1) return;
+    for (let i = 0; i < e.changedTouches.length; i++) {
+      const t = e.changedTouches[i];
+      if (t.identifier !== this._joyId) continue;
+      let dx = (t.clientX - this._joyAnchorX) / JOY_RADIUS_PX;
+      let dy = (t.clientY - this._joyAnchorY) / JOY_RADIUS_PX;
+      const l = Math.sqrt(dx * dx + dy * dy);
+      if (l > 1) {
+        dx /= l;
+        dy /= l;
+      }
+      this._joyX = dx;
+      this._joyY = -dy; // screen-up = forward
+      if (e.cancelable) e.preventDefault();
+      break;
+    }
+  }
+
+  /** @param {TouchEvent} e */
+  _handleTouchEnd(e) {
+    this._touchCount = e.touches.length;
+    for (let i = 0; i < e.changedTouches.length; i++) {
+      if (e.changedTouches[i].identifier === this._joyId) {
+        this._joyId = -1;
+        this._joyX = 0;
+        this._joyY = 0;
+        break;
+      }
+    }
+  }
+
+  /* ---------------------------------------------------------------- */
+  /* Mouse yaw drag                                                    */
+  /* ---------------------------------------------------------------- */
+
+  /** @param {MouseEvent} e */
+  _handleMouseDown(e) {
+    if (e.button !== 0) return;
+    const tgt = /** @type {Element|null} */ (e.target);
+    if (tgt !== null && typeof tgt.closest === 'function' && tgt.closest('button') !== null) return;
+    this._mouseDown = true;
+    this._mouseLastX = e.clientX;
+  }
+
+  /** @param {MouseEvent} e */
+  _handleMouseMove(e) {
+    if (!this._mouseDown) return;
+    this._yawDragAccum += (e.clientX - this._mouseLastX) * YAW_DRAG_SENS;
+    this._mouseLastX = e.clientX;
+  }
+
+  _handleMouseUp() {
+    this._mouseDown = false;
+  }
+}

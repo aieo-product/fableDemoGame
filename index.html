@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <meta name="theme-color" content="#0b0c14" />
+  <title>Fable Katamari — 転がして、世界を呑み込め</title>
+  <style>
+    /* ============ reset / base ============ */
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body {
+      width: 100%; height: 100%;
+      overflow: hidden;
+      background: #0b0c14;
+      color: #eef0f8;
+      font-family: 'Avenir Next', 'Hiragino Kaku Gothic ProN', 'Segoe UI', system-ui, sans-serif;
+      -webkit-user-select: none; user-select: none;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .hidden { display: none !important; }
+
+    /* ============ canvas ============ */
+    #game-canvas {
+      position: fixed; inset: 0;
+      width: 100%; height: 100%;
+      display: block;
+      touch-action: none;
+    }
+
+    /* ============ HUD (corner overlays) ============ */
+    #hud {
+      position: fixed; inset: 0;
+      pointer-events: none;
+      z-index: 10;
+    }
+    .hud-panel {
+      position: absolute;
+      background: rgba(10, 12, 22, 0.55);
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      border-radius: 12px;
+      backdrop-filter: blur(6px);
+      padding: 10px 16px;
+    }
+    /* size odometer — top left */
+    #size-odometer {
+      top: 16px; left: 16px;
+      min-width: 170px;
+      text-align: left;
+    }
+    #size-odometer .hud-label {
+      font-size: 11px; letter-spacing: 0.18em;
+      color: #9aa3c0; text-transform: uppercase;
+    }
+    #size-value {
+      font-size: 34px; font-weight: 800;
+      font-variant-numeric: tabular-nums;
+      color: #ffe27a;
+      text-shadow: 0 0 18px rgba(255, 226, 122, 0.35);
+      line-height: 1.1;
+    }
+    #size-unit {
+      font-size: 18px; font-weight: 700;
+      color: #ffc14d; margin-left: 4px;
+      display: inline-block;
+      transition: transform 0.25s ease;
+    }
+    /* absorbed counter — top right */
+    #absorbed-counter {
+      top: 16px; right: 16px;
+      text-align: right; min-width: 130px;
+    }
+    #absorbed-counter .hud-label {
+      font-size: 11px; letter-spacing: 0.18em;
+      color: #9aa3c0; text-transform: uppercase;
+    }
+    #absorbed-value {
+      font-size: 28px; font-weight: 800;
+      font-variant-numeric: tabular-nums;
+      color: #8fe3ff;
+      text-shadow: 0 0 16px rgba(143, 227, 255, 0.3);
+    }
+    /* tier banner — top center, pops on tierUp (cosmetic only) */
+    #tier-banner {
+      position: absolute;
+      top: 14vh; left: 50%;
+      transform: translateX(-50%) scale(0.9);
+      font-size: 42px; font-weight: 900;
+      letter-spacing: 0.12em;
+      color: #fff;
+      text-shadow: 0 2px 24px rgba(120, 160, 255, 0.65);
+      opacity: 0;
+      transition: opacity 0.4s ease, transform 0.4s cubic-bezier(0.2, 1.4, 0.4, 1);
+      pointer-events: none;
+      white-space: nowrap;
+    }
+    #tier-banner.show {
+      opacity: 1;
+      transform: translateX(-50%) scale(1);
+    }
+    /* progress bar — bottom center */
+    #progress-bar {
+      position: absolute;
+      left: 50%; bottom: 22px;
+      transform: translateX(-50%);
+      width: min(46vw, 420px); height: 10px;
+      background: rgba(255, 255, 255, 0.10);
+      border: 1px solid rgba(255, 255, 255, 0.16);
+      border-radius: 6px;
+      overflow: hidden;
+    }
+    #progress-fill {
+      width: 0%; height: 100%;
+      background: linear-gradient(90deg, #58d6a3, #ffe27a);
+      border-radius: 6px;
+      transition: width 0.2s linear;
+    }
+    #tier-label {
+      position: absolute;
+      left: 50%; bottom: 38px;
+      transform: translateX(-50%);
+      font-size: 12px; letter-spacing: 0.22em;
+      color: #aab3d0; text-transform: uppercase;
+    }
+
+    /* ============ full-screen overlays (title / win) ============ */
+    .overlay {
+      position: fixed; inset: 0;
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      gap: 22px;
+      background:
+        radial-gradient(1200px 700px at 50% 30%, rgba(80, 95, 180, 0.28), transparent 65%),
+        linear-gradient(180deg, #0b0c14 0%, #131630 60%, #1c1438 100%);
+      z-index: 20;
+      text-align: center;
+    }
+    .game-title {
+      font-size: clamp(44px, 9vw, 96px);
+      font-weight: 900;
+      letter-spacing: 0.06em;
+      line-height: 1.05;
+      background: linear-gradient(180deg, #ffffff 20%, #ffd76a 70%, #ff9d5c 100%);
+      -webkit-background-clip: text; background-clip: text;
+      -webkit-text-fill-color: transparent;
+      text-shadow: 0 0 60px rgba(255, 200, 90, 0.18);
+    }
+    .game-subtitle {
+      font-size: clamp(15px, 2.4vw, 22px);
+      color: #b9c2e2;
+      letter-spacing: 0.08em;
+    }
+    .btn {
+      pointer-events: auto;
+      font: inherit;
+      font-size: 20px; font-weight: 800;
+      letter-spacing: 0.14em;
+      color: #101225;
+      background: linear-gradient(180deg, #ffe27a, #ffb84d);
+      border: none; border-radius: 999px;
+      padding: 16px 56px;
+      cursor: pointer;
+      box-shadow: 0 6px 28px rgba(255, 190, 80, 0.35);
+      transition: transform 0.12s ease, box-shadow 0.12s ease;
+    }
+    .btn:hover { transform: translateY(-2px) scale(1.03); box-shadow: 0 10px 36px rgba(255, 190, 80, 0.5); }
+    .btn:active { transform: translateY(0) scale(0.98); }
+    .key-hints {
+      display: flex; gap: 26px; flex-wrap: wrap;
+      align-items: center; justify-content: center;
+      color: #9aa3c0; font-size: 14px;
+    }
+    .key-hints kbd {
+      display: inline-block;
+      font: inherit; font-size: 12px; font-weight: 700;
+      color: #eef0f8;
+      background: rgba(255, 255, 255, 0.08);
+      border: 1px solid rgba(255, 255, 255, 0.22);
+      border-bottom-width: 3px;
+      border-radius: 6px;
+      padding: 3px 9px;
+      margin-right: 6px;
+    }
+    .seed-line { font-size: 13px; color: #6f7796; letter-spacing: 0.1em; }
+
+    /* win overlay specifics */
+    #win-overlay .game-title {
+      background: linear-gradient(180deg, #ffffff 15%, #8fe3ff 60%, #b48bff 100%);
+      -webkit-background-clip: text; background-clip: text;
+    }
+    #win-size {
+      font-size: clamp(34px, 6vw, 64px);
+      font-weight: 900;
+      color: #ffe27a;
+      text-shadow: 0 0 36px rgba(255, 226, 122, 0.4);
+      font-variant-numeric: tabular-nums;
+    }
+
+    /* ============ debug overlay (backquote) ============ */
+    #debug-overlay {
+      position: fixed;
+      bottom: 12px; left: 12px;
+      z-index: 30;
+      font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+      font-size: 11px; line-height: 1.5;
+      color: #7dffa8;
+      background: rgba(0, 0, 0, 0.65);
+      border: 1px solid rgba(125, 255, 168, 0.25);
+      border-radius: 8px;
+      padding: 8px 12px;
+      pointer-events: none;
+      white-space: pre;
+    }
+  </style>
+</head>
+<body>
+  <!-- WebGL mount -->
+  <canvas id="game-canvas"></canvas>
+
+  <!-- ============ HUD (hidden until game:start) ============ -->
+  <div id="hud" class="hidden" aria-hidden="true">
+    <div id="size-odometer" class="hud-panel">
+      <div class="hud-label">おおきさ / SIZE</div>
+      <div><span id="size-value">5.0</span><span id="size-unit">cm</span></div>
+    </div>
+    <div id="absorbed-counter" class="hud-panel">
+      <div class="hud-label">まきこんだ / ABSORBED</div>
+      <div><span id="absorbed-value">0</span></div>
+    </div>
+    <div id="tier-banner"></div>
+    <div id="tier-label">DESK</div>
+    <div id="progress-bar"><div id="progress-fill"></div></div>
+  </div>
+
+  <!-- ============ Title overlay ============ -->
+  <div id="title-overlay" class="overlay">
+    <h1 class="game-title">FABLE<br />KATAMARI</h1>
+    <p class="game-subtitle">転がして、世界を呑み込め。 / Roll it. Grow it. Swallow the world.</p>
+    <button id="start-button" class="btn" type="button">スタート / START</button>
+    <div class="key-hints">
+      <span><kbd>W A S D</kbd><kbd>&#8592;&#8593;&#8595;&#8594;</kbd>うごく / Move</span>
+      <span><kbd>Mouse</kbd>カメラ / Camera</span>
+      <span><kbd>`</kbd>デバッグ / Debug</span>
+    </div>
+    <p class="seed-line">5cm のたまから 500m へ — From a 5cm ball to 500m.</p>
+  </div>
+
+  <!-- ============ Win overlay (hidden until game:win) ============ -->
+  <div id="win-overlay" class="overlay hidden">
+    <h1 class="game-title">でっかくなった！<br />YOU ARE COLOSSAL</h1>
+    <div id="win-size">500m</div>
+    <p class="seed-line">SEED: <span id="win-seed">—</span>（同じシードで同じ世界 / same seed, same world）</p>
+    <button id="restart-button" class="btn" type="button">もういちど / ROLL AGAIN</button>
+  </div>
+
+  <!-- ============ Debug overlay (toggled with backquote, dev) ============ -->
+  <div id="debug-overlay" class="hidden"></div>
+
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>
