@@ -8,6 +8,17 @@
  *   speedCap = SPEED_K * simRadius
  *   friction = vel *= FRICTION_PER_FRAME ^ (dt * 60)
  *
+ * v2 DASH (docs/DESIGN-V2.md §ゲームシステム): BallState gains dashGauge01
+ * (starts 1.0; += dt / DASH_RECHARGE_S, clamped; absorb.js adds
+ * DASH_ABSORB_GAIN per absorb) and dashTimer. On intent.dash (edge-latched by
+ * input.js) with a full gauge: vel += dir * DASH_IMPULSE_K * radiusSim where
+ * dir = horizontal vel dir if |vel| >= DASH_DIR_SPEED_K * speedCap else
+ * camera forward; 'dash' emitted; while dashTimer > 0 speedCap *= DASH_CAP_MUL
+ * and accel *= DASH_ACCEL_MUL. 'dashReady' fires ONCE per refill (this class
+ * is the SINGLE emitter — absorb.js only adds gauge). Gauge is dimensionless
+ * and the timer is seconds, so the dash state is rescale/rebase-invariant —
+ * no hooks needed. The injected bus is optional (null-safe headless tests).
+ *
  * Rolling without slipping: axis = up x v-hat, angle = |v| * dt / simRadius,
  * quat = axisAngle o quat — module scratch, zero allocation.
  *
@@ -33,7 +44,14 @@ import {
   BALL_Y_ZETA,
   SLUGGISH_RECOVERY_S,
   SIM_RADIUS_MIN,
+  DASH_RECHARGE_S,
+  DASH_DURATION_S,
+  DASH_CAP_MUL,
+  DASH_ACCEL_MUL,
+  DASH_IMPULSE_K,
+  DASH_DIR_SPEED_K,
 } from '../config/tuning.js';
+import { EVT, PAYLOADS } from '../core/events.js';
 import { springDamped } from '../core/mathUtils.js';
 
 /** @typedef {import('../types.js').BallState} BallState */
@@ -52,10 +70,17 @@ const SCRATCH_ROLL_Q = new THREE.Quaternion();
  * state fields directly or the y-spring will pop).
  */
 export class BallPhysics {
-  constructor() {
+  /**
+   * @param {import('../core/events.js').EventBus} [bus] Shared event bus for
+   *   'dash' / 'dashReady' emission. Optional — null-safe for headless tests
+   *   (dash mechanics run, events are simply not emitted).
+   */
+  constructor(bus = null) {
+    /** @type {import('../core/events.js').EventBus|null} */
+    this._bus = bus;
     /**
-     * Single source of ball truth — absorb.js mutates radiusSim/sluggish,
-     * bounce response mutates pos/vel; everyone else reads only.
+     * Single source of ball truth — absorb.js mutates radiusSim/sluggish/
+     * dashGauge01, bounce response mutates pos/vel; everyone else reads only.
      * @type {BallState}
      */
     this.state = {
@@ -65,9 +90,18 @@ export class BallPhysics {
       radiusSim: SIM_RADIUS_MIN,
       radiusVisualSim: SIM_RADIUS_MIN,
       sluggish: 1,
+      dashGauge01: 1,
+      dashTimer: 0,
     };
     /** @type {{ value: number, vel: number }} Ground y-spring (underdamped). */
     this._ySpring = { value: SIM_RADIUS_MIN, vel: 0 };
+    /**
+     * @type {boolean} 'dashReady' edge guard — true once announced for the
+     * current refill (starts true: the gauge starts full, no chime at boot).
+     * Cleared on dash trigger; absorb.js gauge gains are announced here on
+     * the NEXT step (single-emitter rule).
+     */
+    this._dashReadyAnnounced = true;
   }
 
   /**
@@ -80,6 +114,43 @@ export class BallPhysics {
     const s = this.state;
     const vel = s.vel;
     const boost = intent.boost === true;
+
+    /* --- Dash gauge recharge + 'dashReady' edge ---------------------- */
+    if (s.dashGauge01 < 1) {
+      s.dashGauge01 += dt / DASH_RECHARGE_S;
+      if (s.dashGauge01 > 1) s.dashGauge01 = 1;
+    }
+    if (s.dashGauge01 >= 1 && !this._dashReadyAnnounced) {
+      this._dashReadyAnnounced = true;
+      if (this._bus !== null) this._bus.emit(EVT.DASH_READY, PAYLOADS.dashReady);
+    }
+
+    /* --- Dash trigger (intent.dash is edge-latched by input.js) ------ */
+    if (intent.dash === true && s.dashGauge01 >= 1) {
+      s.dashGauge01 = 0;
+      s.dashTimer = DASH_DURATION_S;
+      this._dashReadyAnnounced = false;
+      // dir = horizontal vel dir if moving past the threshold, else camera
+      // forward (same forward convention as the intent mapping below).
+      const sp = Math.sqrt(vel.x * vel.x + vel.z * vel.z);
+      let dx;
+      let dz;
+      if (sp >= DASH_DIR_SPEED_K * SPEED_K * s.radiusSim) {
+        dx = vel.x / sp;
+        dz = vel.z / sp;
+      } else {
+        dx = -Math.sin(camYaw);
+        dz = -Math.cos(camYaw);
+      }
+      const imp = DASH_IMPULSE_K * s.radiusSim;
+      vel.x += dx * imp;
+      vel.z += dz * imp;
+      if (this._bus !== null) {
+        PAYLOADS.dash.gauge01 = 0;
+        this._bus.emit(EVT.DASH, PAYLOADS.dash);
+      }
+    }
+    const dashing = s.dashTimer > 0;
 
     /* --- Camera-relative acceleration ------------------------------- */
     let ix = intent.x;
@@ -96,7 +167,12 @@ export class BallPhysics {
       // world dir = right * ix + forward * iy (see convention in file header)
       const dirX = cosY * ix - sinY * iy;
       const dirZ = -sinY * ix - cosY * iy;
-      const a = ACCEL_K * s.radiusSim * s.sluggish * (boost ? BOOST_ACCEL_MUL : 1);
+      const a =
+        ACCEL_K *
+        s.radiusSim *
+        s.sluggish *
+        (boost ? BOOST_ACCEL_MUL : 1) *
+        (dashing ? DASH_ACCEL_MUL : 1);
       vel.x += dirX * a * dt;
       vel.z += dirZ * a * dt;
     }
@@ -106,13 +182,20 @@ export class BallPhysics {
     vel.x *= f;
     vel.z *= f;
 
-    const cap = SPEED_K * s.radiusSim * (boost ? BOOST_CAP_MUL : 1);
+    const cap =
+      SPEED_K * s.radiusSim * (boost ? BOOST_CAP_MUL : 1) * (dashing ? DASH_CAP_MUL : 1);
     let speed2 = vel.x * vel.x + vel.z * vel.z;
     if (speed2 > cap * cap) {
       const k = cap / Math.sqrt(speed2);
       vel.x *= k;
       vel.z *= k;
       speed2 = cap * cap;
+    }
+
+    /* --- Dash burst timer -------------------------------------------- */
+    if (dashing) {
+      s.dashTimer -= dt;
+      if (s.dashTimer < 0) s.dashTimer = 0;
     }
 
     /* --- Integrate position ----------------------------------------- */
@@ -197,6 +280,9 @@ export class BallPhysics {
     s.radiusSim = radiusSim;
     s.radiusVisualSim = radiusSim;
     s.sluggish = 1;
+    s.dashGauge01 = 1; // fresh run starts with a full gauge
+    s.dashTimer = 0;
+    this._dashReadyAnnounced = true; // full at boot — no spurious chime
     this._ySpring.value = radiusSim;
     this._ySpring.vel = 0;
   }

@@ -12,6 +12,19 @@
  * overshoot "breath") + speed bonus above 80% of speed cap, bonk micro-shake
  * (SHAKE_AMP_K * r amplitude, SHAKE_DECAY_S exponential decay).
  *
+ * v2 (moon update):
+ *  - EVT.DASH additive FOV kick: +DASH_FOV_BONUS deg swelling/decaying over
+ *    DASH_DURATION_S (same clock+envelope idiom as the tierUp kick).
+ *  - CINEMATIC MODE (finale CONTACT onward): beginCinematic() latches a flag
+ *    (springs keep their state — no pop); finale then drives
+ *    cinematicUpdate(dt, posTarget, lookTarget, fovTarget) per frame instead
+ *    of main calling update() (main gates on finale.cameraOwned). The injected
+ *    targets are DERIVED per frame by the finale (pure functions of moon pose
+ *    + ball radius => rescale-safe with zero cached camera state here).
+ *    endCinematic() / reset() (GAME_RESET) clear the flag. While latched,
+ *    update()/updateIdle() early-return so the WIN-state idle orbit cannot
+ *    yank the final moon shot from behind the result screen.
+ *
  * Spring state lives in SIM SPACE: ScaleManager multiplies it by S at the
  * one-frame similarity rescale via rescaleState(S) so the camera pose stays a
  * pure function of scaled state (pixel-identity guarantee).
@@ -30,6 +43,8 @@ import {
   CAM_LOOKAHEAD_S,
   CAM_POS_OMEGA,
   CAM_LOOK_OMEGA,
+  DASH_DURATION_S,
+  DASH_FOV_BONUS,
   FOV_BASE,
   FOV_KICK_PEAK,
   FOV_KICK_S,
@@ -56,6 +71,8 @@ const FOV_SPEED_HALFLIFE_S = 0.15;
 const KICK_OMEGA_DIP = 0.4;
 /** Title-screen idle orbit angular speed (rad/s) and pose. */
 const IDLE_ORBIT_SPEED = 0.12;
+/** Cinematic FOV approach halflife (s) toward the injected fovTarget. */
+const CINE_FOV_HALFLIFE_S = 0.25;
 
 const TWO_PI = Math.PI * 2;
 
@@ -110,6 +127,10 @@ export class CameraRig {
 
     /** @type {number} FOV kick clock; >= FOV_KICK_S means inactive. */
     this._kickT = FOV_KICK_S;
+    /** @type {number} v2 dash FOV kick clock; >= DASH_DURATION_S means inactive. */
+    this._dashKickT = DASH_DURATION_S;
+    /** @type {boolean} v2 finale cinematic latch (finale drives cinematicUpdate). */
+    this._cinematic = false;
     /** @type {number} Smoothed speed-FOV bonus (deg). */
     this._speedFov = 0;
     /** @type {number} Current shake amplitude (sim units), exponentially decaying. */
@@ -125,6 +146,9 @@ export class CameraRig {
     this._onTierUp = eventBus.on(EVT.TIER_UP, () => {
       this._kickT = 0;
     });
+    this._onDash = eventBus.on(EVT.DASH, () => {
+      this._dashKickT = 0; // v2: additive FOV kick over DASH_DURATION_S
+    });
     this._onBounce = eventBus.on(EVT.BOUNCE, (p) => {
       const amp = SHAKE_AMP_K * this._lastRadius * (0.4 + 0.6 * p.impactSpeed01);
       if (amp > this._shakeAmp) this._shakeAmp = amp;
@@ -139,13 +163,15 @@ export class CameraRig {
 
   /**
    * Reset rig state (game start/restart): clears yaw, offsets, kicks, shake,
-   * and requests a lag-free snap on the next update.
+   * the v2 cinematic latch, and requests a lag-free snap on the next update.
    */
   reset() {
     this.yaw = 0;
     this._followYaw = 0;
     this._yawOffset = 0;
     this._kickT = FOV_KICK_S;
+    this._dashKickT = DASH_DURATION_S;
+    this._cinematic = false;
     this._speedFov = 0;
     this._shakeAmp = 0;
     this._needSnap = true;
@@ -158,6 +184,7 @@ export class CameraRig {
    * @param {number} [yawDrag] Mouse yaw delta this frame (radians) from input.takeYawDrag().
    */
   update(dt, ball, yawDrag = 0) {
+    if (this._cinematic) return; // finale owns the camera (belt-and-suspenders; main gates too)
     const r = ball.radiusVisualSim > 0 ? ball.radiusVisualSim : ball.radiusSim;
     this._lastRadius = ball.radiusSim;
     this._clock += dt;
@@ -223,15 +250,22 @@ export class CameraRig {
     );
     cam.lookAt(this._look);
 
-    // ---- FOV: base + kick + smoothed speed bonus ---------------------------
+    // ---- FOV: base + kick + dash kick + smoothed speed bonus ---------------
     const kick =
       this._kickT < FOV_KICK_S
         ? (FOV_KICK_PEAK - FOV_BASE) * Math.sin(Math.PI * clamp01(this._kickT / FOV_KICK_S))
         : 0;
+    // v2 dash kick: additive DASH_FOV_BONUS swell/decay over DASH_DURATION_S
+    // (same clock+sin envelope idiom as the tierUp kick above).
+    let dashKick = 0;
+    if (this._dashKickT < DASH_DURATION_S) {
+      this._dashKickT += dt;
+      dashKick = DASH_FOV_BONUS * Math.sin(Math.PI * clamp01(this._dashKickT / DASH_DURATION_S));
+    }
     const speedBonusTarget =
       FOV_SPEED_BONUS * clamp01((speed01 - FOV_SPEED_FRAC) / (1 - FOV_SPEED_FRAC));
     this._speedFov = damp(this._speedFov, speedBonusTarget, FOV_SPEED_HALFLIFE_S, dt);
-    const fov = FOV_BASE + kick + this._speedFov;
+    const fov = FOV_BASE + kick + dashKick + this._speedFov;
     if (Math.abs(fov - cam.fov) > 0.005) {
       cam.fov = fov;
       cam.updateProjectionMatrix();
@@ -244,6 +278,7 @@ export class CameraRig {
    * @param {number} dt Frame delta (s).
    */
   updateIdle(dt) {
+    if (this._cinematic) return; // hold the finale's final moon shot behind the result screen
     this._clock += dt;
     const a = this._clock * IDLE_ORBIT_SPEED;
     const r = Math.max(this._lastRadius, 0.5);
@@ -255,6 +290,60 @@ export class CameraRig {
       cam.fov = FOV_BASE;
       cam.updateProjectionMatrix();
     }
+  }
+
+  /* ---------------------------------------------------------------- */
+  /* v2 finale cinematic (game/finale.js drives these from CONTACT)    */
+  /* ---------------------------------------------------------------- */
+
+  /**
+   * Latch cinematic mode (finale CONTACT). Springs keep their state so the
+   * first cinematicUpdate continues seamlessly from the gameplay pose — no
+   * snap, no pop. While latched, update()/updateIdle() are inert.
+   */
+  beginCinematic() {
+    this._cinematic = true;
+  }
+
+  /**
+   * Per-frame cinematic camera drive (frame-order step 4.5, called by
+   * finale.update INSTEAD of main calling update()). Drives the existing
+   * position/look springs toward the INJECTED targets (read-only — derived
+   * per frame by the finale from moon pose + ball radius, so rescale-safe
+   * with zero cached camera state) and eases FOV toward fovTarget. The
+   * gameplay FOV bonuses (kick/dash/speed) are intentionally ignored here.
+   * @param {number} dt Render-frame delta (s).
+   * @param {THREE.Vector3} posTarget  Camera position target (sim space, read-only).
+   * @param {THREE.Vector3} lookTarget Look-at target (sim space, read-only).
+   * @param {number} fovTarget Vertical FOV target (deg).
+   */
+  cinematicUpdate(dt, posTarget, lookTarget, fovTarget) {
+    this._clock += dt;
+    if (this._needSnap) {
+      this._needSnap = false;
+      this._pos.copy(posTarget);
+      this._vel.set(0, 0, 0);
+      this._look.copy(lookTarget);
+      this._lookVel.set(0, 0, 0);
+    } else {
+      springVec3(this._pos, this._vel, posTarget, CAM_POS_OMEGA, dt);
+      springVec3(this._look, this._lookVel, lookTarget, CAM_LOOK_OMEGA, dt);
+    }
+    // Residual bonk shake decays out naturally (no new shake post-contact).
+    this._shakeAmp *= Math.exp(-dt / SHAKE_DECAY_S);
+    const cam = this.camera;
+    cam.position.copy(this._pos);
+    cam.lookAt(this._look);
+    const fov = damp(cam.fov, fovTarget, CINE_FOV_HALFLIFE_S, dt);
+    if (Math.abs(fov - cam.fov) > 0.005) {
+      cam.fov = fov;
+      cam.updateProjectionMatrix();
+    }
+  }
+
+  /** Clear the cinematic latch (also cleared by reset() on GAME_RESET). */
+  endCinematic() {
+    this._cinematic = false;
   }
 
   /**

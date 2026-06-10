@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover" />
   <meta name="theme-color" content="#0b0c14" />
-  <title>Fable Katamari — 転がして、世界を呑み込め</title>
+  <title>Fable Katamari — 転がして、月までとどけ</title>
   <style>
     /* ============ reset / base ============ */
     * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -25,6 +25,14 @@
       width: 100%; height: 100%;
       display: block;
       touch-action: none;
+    }
+
+    /* ============ vignette (v2 — always on, zero GPU cost) ============ */
+    #vignette {
+      position: fixed; inset: 0;
+      pointer-events: none;
+      z-index: 5;
+      background: radial-gradient(ellipse 75% 65% at 50% 48%, transparent 60%, rgba(10, 8, 30, 0.32) 100%);
     }
 
     /* ============ HUD (corner overlays) ============ */
@@ -64,6 +72,59 @@
       display: inline-block;
       transition: transform 0.25s ease;
     }
+    /* timer — top center (v2, EVT.TIME mm:ss.t) */
+    #timer {
+      top: 16px; left: 50%;
+      transform: translateX(-50%);
+      font-size: 26px; font-weight: 800;
+      font-variant-numeric: tabular-nums;
+      color: #eef0f8;
+      letter-spacing: 0.04em;
+      text-align: center;
+      min-width: 132px;
+      padding: 8px 18px;
+    }
+    /* score panel — left, under size odometer (v2, EVT.SCORE) */
+    #score-panel {
+      top: 100px; left: 16px;
+      min-width: 170px;
+      text-align: left;
+    }
+    #score-panel .hud-label {
+      font-size: 11px; letter-spacing: 0.18em;
+      color: #9aa3c0; text-transform: uppercase;
+    }
+    #score-value {
+      font-size: 26px; font-weight: 800;
+      font-variant-numeric: tabular-nums;
+      color: #8fffc6;
+      text-shadow: 0 0 16px rgba(143, 255, 198, 0.3);
+    }
+    /* floating '+N' layer — pooled spans, animated by hud.js (v2) */
+    #score-float-layer {
+      position: absolute;
+      top: 96px; left: 200px;
+      width: 220px; height: 220px;
+      pointer-events: none;
+      overflow: visible;
+    }
+    .score-float {
+      position: absolute;
+      left: 0; top: 0;
+      font-size: 18px; font-weight: 800;
+      font-variant-numeric: tabular-nums;
+      color: #b6ffd9;
+      text-shadow: 0 0 12px rgba(143, 255, 198, 0.5);
+      opacity: 0;
+      will-change: transform, opacity;
+    }
+    .score-float.rare { color: #ffd84a; text-shadow: 0 0 14px rgba(255, 216, 74, 0.7); }
+    .score-float.fly { animation: score-fly 0.9s ease-out both; }
+    @keyframes score-fly {
+      0%   { opacity: 0; transform: translateY(8px) scale(0.9); }
+      15%  { opacity: 1; transform: translateY(0) scale(1.05); }
+      100% { opacity: 0; transform: translateY(-44px) scale(1); }
+    }
     /* absorbed counter — top right */
     #absorbed-counter {
       top: 16px; right: 16px;
@@ -79,6 +140,22 @@
       color: #8fe3ff;
       text-shadow: 0 0 16px rgba(143, 227, 255, 0.3);
     }
+    /* mute button — top right, under absorbed counter (v2 -> EVT.MUTE_REQUEST) */
+    #mute-button {
+      position: absolute;
+      top: 100px; right: 16px;
+      width: 44px; height: 44px;
+      pointer-events: auto;
+      font-size: 20px; line-height: 1;
+      color: #eef0f8;
+      background: rgba(10, 12, 22, 0.55);
+      border: 1px solid rgba(255, 255, 255, 0.18);
+      border-radius: 50%;
+      backdrop-filter: blur(6px);
+      cursor: pointer;
+      transition: transform 0.12s ease, border-color 0.12s ease;
+    }
+    #mute-button:hover { transform: scale(1.08); border-color: rgba(255, 255, 255, 0.4); }
     /* tier banner — top center, pops on tierUp (cosmetic only) */
     #tier-banner {
       position: absolute;
@@ -96,6 +173,50 @@
     #tier-banner.show {
       opacity: 1;
       transform: translateX(-50%) scale(1);
+    }
+    /* hud toast — center, queue-of-1 (v2: moonCall / rare / 月へ向かえ) */
+    #hud-toast {
+      position: absolute;
+      top: 24vh; left: 50%;
+      transform: translateX(-50%) translateY(6px);
+      font-size: 24px; font-weight: 800;
+      letter-spacing: 0.08em;
+      color: #ffe9b0;
+      text-shadow: 0 2px 20px rgba(255, 210, 110, 0.55);
+      background: rgba(10, 12, 22, 0.5);
+      border: 1px solid rgba(255, 226, 122, 0.25);
+      border-radius: 999px;
+      padding: 10px 28px;
+      opacity: 0;
+      pointer-events: none;
+      white-space: nowrap;
+      transition: opacity 0.3s ease, transform 0.3s cubic-bezier(0.2, 1.4, 0.4, 1);
+    }
+    #hud-toast.show {
+      opacity: 1;
+      transform: translateX(-50%) translateY(0);
+    }
+    /* moon arrow — screen-edge guide (v2, EVT.MOON_GUIDE; hud.js sets left/top/rotation) */
+    #moon-arrow {
+      position: absolute;
+      left: 50%; top: 20%;
+      width: 56px; height: 56px;
+      margin: -28px 0 0 -28px;
+      pointer-events: none;
+      font-size: 34px; line-height: 56px;
+      text-align: center;
+      filter: drop-shadow(0 0 14px rgba(255, 240, 180, 0.8));
+      will-change: transform, left, top;
+    }
+    #moon-arrow .arrow-tip {
+      position: absolute;
+      left: 50%; top: -12px;
+      transform: translateX(-50%) rotate(var(--arrow-rot, 0deg));
+      transform-origin: 50% 40px;
+      width: 0; height: 0;
+      border-left: 9px solid transparent;
+      border-right: 9px solid transparent;
+      border-bottom: 14px solid #ffe9b0;
     }
     /* progress bar — bottom center */
     #progress-bar {
@@ -121,13 +242,70 @@
       font-size: 12px; letter-spacing: 0.22em;
       color: #aab3d0; text-transform: uppercase;
     }
+    /* dash gauge + button — bottom right (v2) */
+    #dash-gauge {
+      position: absolute;
+      right: 24px; bottom: 104px;
+      width: 120px; height: 8px;
+      background: rgba(255, 255, 255, 0.10);
+      border: 1px solid rgba(255, 255, 255, 0.16);
+      border-radius: 5px;
+      overflow: hidden;
+    }
+    #dash-gauge-fill {
+      width: 100%; height: 100%;
+      background: linear-gradient(90deg, #6fb7ff, #b48bff);
+      border-radius: 5px;
+      transform-origin: left center;
+      transition: width 0.12s linear;
+    }
+    #dash-gauge.flash { animation: gauge-flash 0.5s ease-out 1; }
+    @keyframes gauge-flash {
+      0%   { box-shadow: 0 0 0 0 rgba(180, 200, 255, 0.0); }
+      30%  { box-shadow: 0 0 18px 4px rgba(180, 200, 255, 0.9); }
+      100% { box-shadow: 0 0 0 0 rgba(180, 200, 255, 0.0); }
+    }
+    #dash-button {
+      position: absolute;
+      right: 24px; bottom: 24px;
+      width: 64px; height: 64px;
+      pointer-events: auto;
+      font-size: 13px; font-weight: 800;
+      letter-spacing: 0.08em;
+      color: #eef0f8;
+      background: radial-gradient(circle at 35% 30%, rgba(140, 170, 255, 0.5), rgba(40, 50, 110, 0.6));
+      border: 2px solid rgba(170, 195, 255, 0.55);
+      border-radius: 50%;
+      backdrop-filter: blur(6px);
+      cursor: pointer;
+      touch-action: none;
+      transition: transform 0.1s ease, box-shadow 0.1s ease;
+    }
+    #dash-button:active { transform: scale(0.92); box-shadow: 0 0 22px rgba(150, 180, 255, 0.7); }
+
+    /* ============ flash overlay (v2 — moon contact white flash) ============ */
+    #flash-overlay {
+      position: fixed; inset: 0;
+      background: #fff;
+      opacity: 0;
+      pointer-events: none;
+      z-index: 40;
+      /* screens.js drives: add .flash for the 0.12s-in / FLASH_S(0.45s)-out pop */
+    }
+    #flash-overlay.flash { animation: contact-flash 0.57s ease-out 1; }
+    @keyframes contact-flash {
+      0%   { opacity: 0; }
+      21%  { opacity: 1; }   /* 0.12s in */
+      100% { opacity: 0; }   /* 0.45s out */
+    }
 
     /* ============ full-screen overlays (title / win) ============ */
     .overlay {
       position: fixed; inset: 0;
       display: flex; flex-direction: column;
       align-items: center; justify-content: center;
-      gap: 22px;
+      overflow-y: auto; /* short viewports: content must stay reachable */
+      gap: 18px;
       background:
         radial-gradient(1200px 700px at 50% 30%, rgba(80, 95, 180, 0.28), transparent 65%),
         linear-gradient(180deg, #0b0c14 0%, #131630 60%, #1c1438 100%);
@@ -164,6 +342,12 @@
     }
     .btn:hover { transform: translateY(-2px) scale(1.03); box-shadow: 0 10px 36px rgba(255, 190, 80, 0.5); }
     .btn:active { transform: translateY(0) scale(0.98); }
+    .btn.btn-secondary {
+      color: #eef0f8;
+      background: rgba(255, 255, 255, 0.08);
+      border: 1px solid rgba(255, 255, 255, 0.25);
+      box-shadow: none;
+    }
     .key-hints {
       display: flex; gap: 26px; flex-wrap: wrap;
       align-items: center; justify-content: center;
@@ -181,17 +365,111 @@
       margin-right: 6px;
     }
     .seed-line { font-size: 13px; color: #6f7796; letter-spacing: 0.1em; }
+    #title-best-line { font-size: 14px; color: #b9c2e2; letter-spacing: 0.08em; }
 
-    /* win overlay specifics */
+    /* ============ win overlay — v2 staged result ============ */
+    /* vh-compacted so TIME..buttons fit a 720px-tall window without scroll
+       (buttons sat below the fold on short viewports otherwise). */
+    #win-overlay { gap: clamp(8px, 1.8vh, 18px); padding: 18px 0; }
     #win-overlay .game-title {
       background: linear-gradient(180deg, #ffffff 15%, #8fe3ff 60%, #b48bff 100%);
       -webkit-background-clip: text; background-clip: text;
+      font-size: clamp(30px, min(9vw, 6.4vh), 96px);
+    }
+    #result-rows {
+      display: flex; flex-direction: column;
+      gap: clamp(4px, 1.1vh, 10px);
+      min-width: min(78vw, 460px);
+    }
+    .result-row {
+      display: flex;
+      align-items: baseline; justify-content: space-between;
+      gap: 18px;
+      font-size: clamp(16px, 2.6vw, 22px);
+      color: #b9c2e2;
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid rgba(255, 255, 255, 0.10);
+      border-radius: 12px;
+      padding: clamp(4px, 1vh, 10px) 20px;
+    }
+    .result-label { letter-spacing: 0.1em; white-space: nowrap; }
+    .result-value {
+      font-weight: 900;
+      font-variant-numeric: tabular-nums;
+      color: #ffe27a;
+      text-shadow: 0 0 24px rgba(255, 226, 122, 0.35);
+      font-size: clamp(22px, 3.6vw, 34px);
+    }
+    #result-time { color: #8fe3ff; text-shadow: 0 0 24px rgba(143, 227, 255, 0.35); }
+    #result-score { color: #8fffc6; text-shadow: 0 0 24px rgba(143, 255, 198, 0.35); }
+    #result-detail {
+      justify-content: center;
+      font-size: clamp(14px, 2.2vw, 18px);
+    }
+    #result-detail .result-num {
+      font-weight: 800; color: #eef0f8;
+      font-variant-numeric: tabular-nums;
+      margin: 0 4px;
+    }
+    #result-rares { color: #ffd84a; }
+    /* rank stamp — scale 3 -> 1 bounce + white flash (screens.js adds .stamp) */
+    #result-rank-wrap {
+      position: relative;
+      height: clamp(56px, 12vh, 128px);
+      display: flex; align-items: center; justify-content: center;
+      gap: 18px;
+    }
+    #result-rank {
+      font-size: clamp(48px, 10.5vh, 116px);
+      font-weight: 900;
+      line-height: 1;
+      color: #ffe27a;
+      text-shadow: 0 0 48px rgba(255, 226, 122, 0.55);
+      opacity: 0;
+      transform: scale(3);
+    }
+    #result-rank.stamp { animation: rank-stamp 0.55s cubic-bezier(0.2, 1.2, 0.3, 1) both; }
+    @keyframes rank-stamp {
+      0%   { opacity: 0; transform: scale(3); filter: brightness(3); }
+      55%  { opacity: 1; transform: scale(0.92); filter: brightness(2.2); }
+      75%  { transform: scale(1.07); filter: brightness(1.4); }
+      100% { opacity: 1; transform: scale(1); filter: brightness(1); }
+    }
+    #new-record-badge {
+      font-size: clamp(14px, 2vw, 18px);
+      font-weight: 900;
+      letter-spacing: 0.12em;
+      color: #101225;
+      background: linear-gradient(180deg, #ffe27a, #ff9d5c);
+      border-radius: 999px;
+      padding: 8px 18px;
+      transform: rotate(-6deg);
+      box-shadow: 0 4px 22px rgba(255, 190, 80, 0.5);
+      animation: badge-pop 0.45s cubic-bezier(0.2, 1.5, 0.4, 1) both;
+    }
+    @keyframes badge-pop {
+      0%   { opacity: 0; transform: rotate(-6deg) scale(0.4); }
+      100% { opacity: 1; transform: rotate(-6deg) scale(1); }
+    }
+    /* staged reveal machinery: screens.js adds .staged to #win-overlay, then
+       .result-reveal per element on its cue (0.0/0.4/0.9/1.6/2.2s).
+       Without .staged (v1 path) everything is visible immediately. */
+    #win-overlay.staged .result-row,
+    #win-overlay.staged #result-best,
+    #win-overlay.staged #result-seed,
+    #win-overlay.staged .result-buttons { opacity: 0; }
+    .result-reveal { animation: result-reveal 0.45s ease-out both; }
+    @keyframes result-reveal {
+      0%   { opacity: 0; transform: translateY(16px); }
+      100% { opacity: 1; transform: translateY(0); }
+    }
+    .result-buttons {
+      display: flex; gap: 16px;
+      flex-wrap: wrap; align-items: center; justify-content: center;
     }
     #win-size {
-      font-size: clamp(34px, 6vw, 64px);
       font-weight: 900;
       color: #ffe27a;
-      text-shadow: 0 0 36px rgba(255, 226, 122, 0.4);
       font-variant-numeric: tabular-nums;
     }
 
@@ -216,41 +494,89 @@
   <!-- WebGL mount -->
   <canvas id="game-canvas"></canvas>
 
+  <!-- v2: static vignette (always on) -->
+  <div id="vignette" aria-hidden="true"></div>
+
   <!-- ============ HUD (hidden until game:start) ============ -->
   <div id="hud" class="hidden" aria-hidden="true">
     <div id="size-odometer" class="hud-panel">
       <div class="hud-label">おおきさ / SIZE</div>
       <div><span id="size-value">5.0</span><span id="size-unit">cm</span></div>
     </div>
+    <div id="timer" class="hud-panel">0:00.0</div>
+    <div id="score-panel" class="hud-panel">
+      <div class="hud-label">スコア / SCORE</div>
+      <div><span id="score-value">0</span></div>
+    </div>
+    <div id="score-float-layer" aria-hidden="true"></div>
     <div id="absorbed-counter" class="hud-panel">
       <div class="hud-label">まきこんだ / ABSORBED</div>
       <div><span id="absorbed-value">0</span></div>
     </div>
+    <button id="mute-button" type="button" aria-label="mute">🔊</button>
     <div id="tier-banner"></div>
+    <div id="hud-toast"></div>
+    <div id="moon-arrow" class="hidden"><span class="arrow-tip"></span>🌕</div>
     <div id="tier-label">DESK</div>
     <div id="progress-bar"><div id="progress-fill"></div></div>
+    <div id="dash-gauge"><div id="dash-gauge-fill"></div></div>
+    <button id="dash-button" type="button" aria-label="dash">DASH</button>
   </div>
 
   <!-- ============ Title overlay ============ -->
   <div id="title-overlay" class="overlay">
     <h1 class="game-title">FABLE<br />KATAMARI</h1>
-    <p class="game-subtitle">転がして、世界を呑み込め。 / Roll it. Grow it. Swallow the world.</p>
+    <p class="game-subtitle">転がして、月までとどけ。 / Roll it. Grow it. Reach the moon.</p>
     <button id="start-button" class="btn" type="button">スタート / START</button>
     <div class="key-hints" id="key-hints">
       <span><kbd>W A S D</kbd><kbd>&#8592;&#8593;&#8595;&#8594;</kbd>うごく / Move</span>
       <span><kbd>Shift</kbd>ブースト / Boost</span>
+      <span><kbd>Space</kbd>ダッシュ / Dash</span>
+      <span><kbd>M</kbd>ミュート / Mute</span>
       <span><kbd>Mouse</kbd>カメラ / Camera</span>
     </div>
-    <p class="seed-line">5cm のたまから 500m へ — From a 5cm ball to 500m.</p>
+    <p id="title-best-line" class="hidden">自己ベスト: <span id="title-best-value">—</span></p>
+    <p class="seed-line">5cm のたまから 500m、そして月へ — From a 5cm ball to the moon.</p>
   </div>
 
-  <!-- ============ Win overlay (hidden until game:win) ============ -->
+  <!-- ============ Win / result overlay (hidden until game:win) ============ -->
+  <!-- v2 staged result: screens.js adds .staged then reveals rows at
+       0.0s time / 0.4s score count-up / 0.9s size+counts / 1.6s rank stamp /
+       2.2s record badge + best + buttons. v1 ids #win-size / #win-seed kept. -->
   <div id="win-overlay" class="overlay hidden">
-    <h1 class="game-title">でっかくなった！<br />YOU ARE COLOSSAL</h1>
-    <div id="win-size">500m</div>
-    <p class="seed-line">SEED: <span id="win-seed">—</span>（同じシードで同じ世界 / same seed, same world）</p>
-    <button id="restart-button" class="btn" type="button">もういちど / ROLL AGAIN</button>
+    <h1 class="game-title">月にとどいた！<br />YOU REACHED THE MOON</h1>
+    <div id="result-rows">
+      <div class="result-row" id="result-row-time">
+        <span class="result-label">⏱ タイム / TIME</span>
+        <span id="result-time" class="result-value">--:--.-</span>
+      </div>
+      <div class="result-row" id="result-row-score">
+        <span class="result-label">⭐ スコア / SCORE</span>
+        <span id="result-score" class="result-value">0</span>
+      </div>
+      <div class="result-row" id="result-row-size">
+        <span class="result-label">📏 さいごの大きさ / SIZE</span>
+        <span id="result-size" class="result-value"><span id="win-size">500m</span></span>
+      </div>
+      <div class="result-row" id="result-detail">
+        <span>まきこんだ <span id="result-absorbed" class="result-num">0</span> こ ・
+          レア <span id="result-rares" class="result-num">0</span> コ</span>
+      </div>
+    </div>
+    <div id="result-rank-wrap">
+      <div id="result-rank">S</div>
+      <div id="new-record-badge" class="hidden">NEW RECORD!</div>
+    </div>
+    <p id="result-best" class="seed-line"></p>
+    <p id="result-seed" class="seed-line">SEED: <span id="win-seed">—</span>（同じシードで同じ世界 / same seed, same world）</p>
+    <div class="result-buttons">
+      <button id="post-x-button" class="btn" type="button">Xでシェア / POST</button>
+      <button id="restart-button" class="btn btn-secondary" type="button">もういちど / ROLL AGAIN</button>
+    </div>
   </div>
+
+  <!-- v2: moon-contact white flash (above HUD and overlays) -->
+  <div id="flash-overlay" aria-hidden="true"></div>
 
   <!-- ============ Debug overlay (toggled with backquote, dev) ============ -->
   <div id="debug-overlay" class="hidden"></div>

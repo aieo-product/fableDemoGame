@@ -22,9 +22,10 @@
  * ARCHETYPE FAMILY: with one geometry per InstancedMesh and a hard 8-mesh
  * stuck budget, each of the 8 families renders a generic low-poly PROXY shape
  * (box/sphere/cylinder/cone/slab/pillar/ring/gem) tinted per-instance with
- * the absorbed object's color. family = archetypeCode & 7, where the
- * ObjectStore archetype code is the flat catalog index tier*8 + slotInTier
- * (the order frozen in config/tiers.js archetypeIds).
+ * the absorbed object's color. family = (code % ARCH_PER_TIER) & 7, where the
+ * ObjectStore archetype code is the flat catalog index
+ * tier*ARCH_PER_TIER + slotInTier (order frozen in config/tiers.js
+ * archetypeIds; v2 landmark slots 8/9 fold onto proxy families 0/1).
  *
  * Zero-allocation discipline: all records, rings and scratch are
  * preallocated; per-frame code writes matrices via module-level scratch only.
@@ -43,7 +44,8 @@ import {
   KNOCKOFF_MAX,
   KNOCKOFF_POP_SPEED_K,
 } from '../config/tuning.js';
-import { TIERS } from '../config/tiers.js';
+import { TIERS, ARCH_PER_TIER } from '../config/tiers.js';
+import { ARCHETYPE_ID_BY_CODE } from '../world/objects.js';
 import { FreeList, IntRing } from '../core/pool.js';
 import { mulberry32 } from '../core/rng.js';
 import { easeOutCubic, lerp, damp } from '../core/mathUtils.js';
@@ -103,15 +105,36 @@ const FAMILY_PALETTES = [
   [0xc0c5ce, 0xe3e6ea, 0x9aa1ad, 0xf5f6f8],
 ];
 
-/** Flat archetype-id table: code = tier*8 + slot -> id (frozen in tiers.js). */
+/** Flat archetype-id table: code = tier*ARCH_PER_TIER + slot -> id (frozen
+ *  in tiers.js; 60 entries incl. landmark slots 8/9 — knockOff must resolve
+ *  ANY absorbed code back to its catalog id). */
 const ARCHETYPE_IDS = (() => {
-  const ids = new Array(48);
+  const ids = new Array(TIERS.length * ARCH_PER_TIER);
   for (let t = 0; t < TIERS.length; t++) {
     const a = TIERS[t].archetypeIds;
-    for (let s = 0; s < 8; s++) ids[t * 8 + s] = a[s];
+    for (let s = 0; s < ARCH_PER_TIER; s++) ids[t * ARCH_PER_TIER + s] = a[s];
   }
   return ids;
 })();
+
+/* Boot DEV cross-assert (v2 stride migration): this table must agree with
+   objects.js ARCHETYPE_ID_BY_CODE entry-for-entry across all 60 codes. */
+if (import.meta.env && import.meta.env.DEV) {
+  if (ARCHETYPE_IDS.length !== 60 || ARCHETYPE_ID_BY_CODE.length !== 60) {
+    throw new Error(
+      `[ball.js invariant] archetype code tables must both have 60 entries ` +
+        `(ball ${ARCHETYPE_IDS.length}, objects ${ARCHETYPE_ID_BY_CODE.length})`
+    );
+  }
+  for (let c = 0; c < 60; c++) {
+    if (ARCHETYPE_IDS[c] !== ARCHETYPE_ID_BY_CODE[c]) {
+      throw new Error(
+        `[ball.js invariant] code ${c} mismatch vs objects.js: ` +
+          `'${ARCHETYPE_IDS[c]}' !== '${ARCHETYPE_ID_BY_CODE[c]}'`
+      );
+    }
+  }
+}
 
 /**
  * Build the 8 low-poly proxy geometries (unit bounding radius each).
@@ -296,7 +319,9 @@ export class Ball {
    */
   attachStuck(objIndex, store, ball, colorHex = -1) {
     const code = store.archetype[objIndex];
-    const family = code & 7;
+    // v2 stride 10: slot-in-tier folds to the 8 proxy families; landmark
+    // slots 8/9 land on families 0/1 (boxy/roundish proxies).
+    const family = (code % ARCH_PER_TIER) & 7;
     const objR = store.radius[objIndex];
     const sg = this.group.scale.x;
 
@@ -524,6 +549,15 @@ export class Ball {
     }
   }
 
+  /**
+   * v2 FROZEN INTERFACE (consumer: game/finale.js MERGE state): show/hide the
+   * whole katamari group (core + stuck pools) in one flag flip.
+   * @param {boolean} b Visible.
+   */
+  setVisible(b) {
+    this.group.visible = b;
+  }
+
   /** Full reset (game restart): drop all stuck objects, reset core memory. */
   reset() {
     for (let i = 0; i < STUCK_CAP; i++) {
@@ -551,6 +585,7 @@ export class Ball {
     this.group.scale.set(1, 1, 1);
     this.group.position.set(0, 0, 0);
     this.group.quaternion.identity();
+    this.group.visible = true; // v2: undo finale MERGE setVisible(false) on restart
   }
 
   /* ---------------------------------------------------------------- */

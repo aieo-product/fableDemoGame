@@ -8,6 +8,12 @@
  *   intent.y = +1 -> push the ball ALONG the camera forward direction.
  *   intent.x = +1 -> push toward screen-right.
  *   boost     -> Shift held (keyboard) or a second active touch.
+ *   dash      -> v2 EDGE LATCH: Space keydown or #dash-button pointerdown
+ *                sets it true for exactly ONE read() (consumed on read).
+ *                No double-tap/flick recognizers (deliberately dropped).
+ *
+ * v2 mute edge: 'M' keyup latches a toggle request; main.js (the single mute
+ * owner) drains it once per frame via takeMuteToggle().
  *
  * Mouse yaw drag: horizontal primary-button mouse drags accumulate a yaw
  * delta (radians). main.js drains it once per frame via takeYawDrag() and
@@ -40,7 +46,7 @@ export class Input {
     this._target = target;
 
     /** @type {Intent} The single reused intent object returned by read(). */
-    this._intent = { x: 0, y: 0, boost: false };
+    this._intent = { x: 0, y: 0, boost: false, dash: false };
 
     // -- keyboard state ------------------------------------------------
     this._kUp = false;
@@ -48,6 +54,12 @@ export class Input {
     this._kLeft = false;
     this._kRight = false;
     this._kBoost = false;
+
+    // -- v2 edge latches -------------------------------------------------
+    /** @type {boolean} Dash request (Space keydown / #dash-button pointerdown); consumed by read(). */
+    this._dashLatch = false;
+    /** @type {boolean} Mute toggle request ('M' keyup); consumed by takeMuteToggle(). */
+    this._muteLatch = false;
 
     // -- touch joystick state -------------------------------------------
     /** @type {number} Identifier of the joystick touch, or -1. */
@@ -84,6 +96,20 @@ export class Input {
       document.body.appendChild(thumb);
       this._joyBaseEl = base;
       this._joyThumbEl = thumb;
+    }
+
+    // -- v2 dash button (#dash-button, Phase-0 frozen DOM id) -------------
+    /** @type {HTMLElement|null} */
+    this._dashBtn = null;
+    this._onDashPointerDown = this._handleDashPointerDown.bind(this);
+    if (typeof document !== 'undefined') {
+      const btn = document.getElementById('dash-button');
+      if (btn !== null) {
+        // It is a <button>, so the joystick/yaw-drag handlers already ignore
+        // touches/clicks that begin on it (closest('button') exclusion).
+        btn.addEventListener('pointerdown', this._onDashPointerDown);
+        this._dashBtn = btn;
+      }
     }
 
     // Bound handlers (kept for dispose()).
@@ -135,6 +161,9 @@ export class Input {
     it.x = x;
     it.y = y;
     it.boost = this._kBoost || this._touchCount >= 2;
+    // v2: dash edge latch — true for exactly this one read, then consumed.
+    it.dash = this._dashLatch;
+    this._dashLatch = false;
     return it;
   }
 
@@ -149,6 +178,17 @@ export class Input {
     return v;
   }
 
+  /**
+   * v2: drain the mute-toggle edge ('M' keyup). main.js — the single mute
+   * owner — calls this once per frame (frame step 1) and toggles bgm/sfx.
+   * @returns {boolean} True exactly once per 'M' keyup.
+   */
+  takeMuteToggle() {
+    const v = this._muteLatch;
+    this._muteLatch = false;
+    return v;
+  }
+
   /** Remove all DOM listeners + joystick visuals (tests / teardown). */
   dispose() {
     if (this._joyBaseEl !== null && this._joyBaseEl.parentNode !== null) {
@@ -159,6 +199,10 @@ export class Input {
     }
     this._joyBaseEl = null;
     this._joyThumbEl = null;
+    if (this._dashBtn !== null) {
+      this._dashBtn.removeEventListener('pointerdown', this._onDashPointerDown);
+      this._dashBtn = null;
+    }
     const t = this._target;
     t.removeEventListener('keydown', this._onKeyDown);
     t.removeEventListener('keyup', this._onKeyUp);
@@ -199,6 +243,13 @@ export class Input {
       case 'ShiftRight':
         this._kBoost = true;
         break;
+      case 'Space':
+        // v2 dash edge: latch on the PHYSICAL press only — OS key repeat must
+        // not re-latch (the latch is consumed every read, so repeats would
+        // retrigger a dash each repeat otherwise).
+        if (e.repeat !== true) this._dashLatch = true;
+        e.preventDefault(); // Space scrolls the page
+        return;
       default:
         return;
     }
@@ -229,17 +280,35 @@ export class Input {
       case 'ShiftRight':
         this._kBoost = false;
         break;
+      case 'KeyM':
+        // v2 mute edge on KEYUP (not keydown) so holding M can't machine-gun
+        // the toggle; consumed via takeMuteToggle().
+        this._muteLatch = true;
+        break;
     }
   }
 
   /** Window blur: release everything so keys don't stick across tab switches. */
   _handleBlur() {
     this._kUp = this._kDown = this._kLeft = this._kRight = this._kBoost = false;
+    this._dashLatch = false;
+    this._muteLatch = false;
     this._joyId = -1;
     this._joyX = this._joyY = 0;
     this._touchCount = 0;
     this._mouseDown = false;
     this._hideJoystick();
+  }
+
+  /**
+   * v2: #dash-button pointerdown — latch a dash request. preventDefault stops
+   * the compatibility mouse event and keeps focus off the button (Space must
+   * remain a dash, not a button re-click).
+   * @param {PointerEvent} e
+   */
+  _handleDashPointerDown(e) {
+    this._dashLatch = true;
+    if (e.cancelable) e.preventDefault();
   }
 
   /* ---------------------------------------------------------------- */

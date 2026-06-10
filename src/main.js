@@ -1,10 +1,38 @@
 /**
  * @file main.js — Bootstrap + fixed-timestep 60Hz accumulator loop + game
- * state machine (title/playing/win).
+ * state machine (title/playing/finale/win).
  *
  * main.js owns the PER-FRAME CALL ORDER (plain function calls, NOT events)
  * and wires all modules via constructor injection + the event bus.
  * NO GAME LOGIC lives here.
+ *
+ * ============ v2 (moon update) — BINDING FRAME ORDER ============
+ * (docs/DESIGN-V2.md §インターフェース; stub call sites below are marked
+ *  "V2-WIRE" for the integrator; stubs no-op so v1 mode keeps running.)
+ *  1   intent = input.read(); if (finale.inputLocked) zero x/y/boost/dash
+ *  2   fixed steps { ballPhys.step(dt, intent, yaw+PI);
+ *                    if (!finale.inputLocked) absorb.resolve(...) }
+ *  3   if (!finale.inputLocked) spawner.update(...)
+ *  4   scaleMgr.maybeTierUp(...); if (!finale.inputLocked) scaleMgr.maybeRebase(...)
+ *  4.5 finale.update(frameDt, ballPhys.state)   // moon drive, render-frame
+ *      contact test, cinematic camera (drives cameraRig.cinematicUpdate)
+ *  5   ball.update(...)
+ *  6   if (!finale.cameraOwned) cameraRig.update(...);
+ *      env.update(...); backdrop.update(...); effects.update(...)
+ *  6.5 runStats.addSimTime(steps * FIXED_DT)    // internally frozen after MOON_CONTACT
+ *  7   updateAndFlushPools(); renderer.render()
+ * GameState: TITLE -> PLAYING -> FINALE (finale.inputLocked first true)
+ *            -> WIN (main emits GAME_WIN at finale.state === 'done' — main
+ *            is the SOLE game:win emitter in v2).
+ * BINDING ABSORB subscription order at boot: main attach-handler ->
+ * runStats -> sfx/effects/hud.
+ * MUTE ownership: main is the single owner — reads LS_MUTE_KEY BEFORE
+ * constructing Bgm/Sfx (initialMuted); input.takeMuteToggle() OR
+ * EVT.MUTE_REQUEST -> toggle, bgm.setMuted + sfx.setMuted, persist,
+ * emit EVT.MUTE_CHANGED.
+ * RESET ownership: finale.reset + runStats.reset via resetWorld() below;
+ * cameraRig/env/backdrop/ball/hud self-reset via bus (see DESIGN-V2.md).
+ * ================================================================
  *
  * Integration notes (Phase 2):
  *  - YAW BRIDGE: ballPhysics' yaw convention (yaw=0 looks along -Z, forward
@@ -29,9 +57,10 @@ import {
   MAX_FRAME_DT,
   SPEED_K,
   SIM_RADIUS_MIN,
-  WIN_RADIUS_M,
+  MOON_GOAL_RADIUS_M,
+  LS_MUTE_KEY,
 } from './config/tuning.js';
-import { bus, EVT } from './core/events.js';
+import { bus, EVT, PAYLOADS } from './core/events.js';
 import { resolveWorldSeed } from './core/rng.js';
 import { TIERS } from './config/tiers.js';
 import { CATALOG } from './config/catalog.js';
@@ -57,6 +86,13 @@ import { Sfx } from './audio/sfx.js';
 import { Hud } from './ui/hud.js';
 import { Screens } from './ui/screens.js';
 
+/* ---- v2 modules (all streams landed) -------------------------------- */
+import { Finale } from './game/finale.js'; // Stream A
+import { MoonView } from './render/moon.js'; // Stream A
+import { RunStats } from './game/runStats.js'; // Stream D
+import { Bgm } from './audio/bgm.js'; // Stream E
+import { Backdrop } from './render/backdrop.js'; // Stream B
+
 /* ------------------------------------------------------------------ */
 /* Game state machine                                                  */
 /* ------------------------------------------------------------------ */
@@ -65,6 +101,8 @@ import { Screens } from './ui/screens.js';
 const GameState = Object.freeze({
   TITLE: 'title',
   PLAYING: 'playing',
+  /** v2: post-contact cinematic — sim keeps stepping, input/absorb/spawner/rebase gated off. */
+  FINALE: 'finale',
   WIN: 'win',
 });
 
@@ -116,11 +154,11 @@ const poolList = [];
     poolList.push(pool);
   }
 }
-/** Pool lookup by archetype code (= flat index tier*8 + slotInTier). */
+/** Pool lookup by archetype code (= flat index tier*ARCH_PER_TIER + slotInTier). */
 const POOL_BY_CODE = poolList;
 
 const env = new Environment(renderer.scene, renderer.camera);
-const ballPhys = new BallPhysics();
+const ballPhys = new BallPhysics(bus); // v2: bus injected for dash/dashReady emits
 const scaleMgr = new ScaleManager(bus, worldSeed);
 const absorb = new Absorb(bus, scaleMgr, CATALOG);
 const spawner = new Spawner(worldSeed, store, hashes, instances, bus, CATALOG);
@@ -145,16 +183,12 @@ bus.on(EVT.KNOCK_OFF, (p) => {
 
 const input = new Input(window);
 const cameraRig = new CameraRig(renderer.camera, bus);
-const effects = new Effects(renderer.scene, bus);
-const sfx = new Sfx(bus);
-const hud = new Hud(bus);
-const screens = new Screens(bus, worldSeed);
-
-renderer.setAliveProvider(() => store.aliveCount);
-renderer.onForceRescale = () => scaleMgr.forceRescale();
 
 /* ------------------------------------------------------------------ */
-/* Cross-module event glue (synchronous, zero retention)               */
+/* BINDING ABSORB subscription order (v2 contract): main attach-handler */
+/* -> runStats -> sfx/effects/hud. The attach-handler is subscribed     */
+/* HERE, before any cosmetic consumer constructs (dispatch order =      */
+/* subscription order).                                                 */
 /* ------------------------------------------------------------------ */
 
 /** Module scratch for instanceColor -> hex readback (linear -> sRGB). */
@@ -181,6 +215,38 @@ bus.on(EVT.ABSORB, (p) => {
   ball.attachStuck(i, store, ballPhys.state, colorHex);
 });
 
+/* v2 mute ownership: read the persisted flag BEFORE constructing audio so
+ * Bgm/Sfx apply it inside their lazy context/master-gain creation path. */
+let initialMuted = false;
+try {
+  initialMuted = localStorage.getItem(LS_MUTE_KEY) === '1';
+} catch (_) {
+  /* private mode / blocked storage — default unmuted */
+}
+
+const runStats = new RunStats(bus, scaleMgr, worldSeed);
+const effects = new Effects(renderer.scene, bus);
+const sfx = new Sfx(bus, initialMuted);
+const bgm = new Bgm(bus, initialMuted);
+const hud = new Hud(bus);
+const screens = new Screens(bus, worldSeed);
+
+/* v2 finale chain + backdrop (Streams A/B/C wiring). */
+const moonView = new MoonView(renderer.scene, worldSeed);
+const finale = new Finale(bus, scaleMgr, moonView, env, cameraRig, ball, renderer.camera);
+finale.setEffects(effects);
+effects.setRareProvider(spawner.forEachAliveRare.bind(spawner));
+const backdrop = new Backdrop(renderer.scene, worldSeed);
+
+renderer.setAliveProvider(() => store.aliveCount);
+renderer.onForceRescale = () => scaleMgr.forceRescale();
+
+/* ------------------------------------------------------------------ */
+/* Cross-module event glue (synchronous, zero retention)               */
+/* (the ABSORB attach-handler lives above, before the cosmetic         */
+/*  consumers — binding v2 subscription order)                         */
+/* ------------------------------------------------------------------ */
+
 /**
  * 'rescale' (emitted synchronously inside ScaleManager._applyRescale, after
  * BallState/store/pools/camera/env were scaled): cover the two hooks
@@ -191,6 +257,32 @@ bus.on(EVT.RESCALE, (p) => {
   ballPhys.rescaleSpring(p.S); // hidden ground y-spring (BallState already scaled)
   ball.rescaleState(p.S); // ballGroup.scale *= S + stuck-record radii
 });
+
+/* v2 mute ownership — main is the SINGLE owner. */
+/** @type {boolean} Current mute state (persisted to LS_MUTE_KEY). */
+let muted = initialMuted;
+
+/**
+ * Apply a mute state everywhere: both audio modules, persistence, and the
+ * MUTE_CHANGED broadcast (hud icon).
+ * @param {boolean} m New mute state.
+ */
+function setMutedAll(m) {
+  muted = m;
+  bgm.setMuted(m);
+  sfx.setMuted(m);
+  try {
+    localStorage.setItem(LS_MUTE_KEY, m ? '1' : '0');
+  } catch (_) {
+    /* persistence is best-effort */
+  }
+  PAYLOADS.muteChanged.muted = m;
+  bus.emit(EVT.MUTE_CHANGED, PAYLOADS.muteChanged);
+}
+bus.on(EVT.MUTE_REQUEST, () => setMutedAll(!muted)); // hud button
+// Sync the HUD icon with the persisted state at boot (hud only updates the
+// icon on the MUTE_CHANGED event; no toggle happens here).
+setMutedAll(initialMuted);
 
 /* ------------------------------------------------------------------ */
 /* World reset / start-radius helpers                                  */
@@ -228,6 +320,10 @@ function resetWorld() {
   }
   ball.reset();
   ballPhys.reset(startRadiusSim());
+  // v2 (RESET OWNERSHIP, frozen): finale + runStats reset here; cameraRig /
+  // env / backdrop / hud self-reset via the GAME_RESET / GAME_START events.
+  finale.reset();
+  runStats.reset();
   spawner.preloadStartArea(ballPhys.state.pos, scaleMgr.tierIndex, ballPhys.state.radiusSim);
 }
 
@@ -254,7 +350,11 @@ function onGameReset() {
   resetWorld();
 }
 
-/** Playing -> Win (trueRadius >= WIN_RADIUS_M; emitted by ScaleManager). */
+/**
+ * Finale 'done' -> Win. v1: GAME_WIN comes from ScaleManager's WIN_RADIUS_M
+ * latch. v2 (after Stream A removes that latch): main.js is the SOLE emitter
+ * — see the V2-WIRE block at frame() step 4.5.
+ */
 function onGameWin() {
   state = GameState.WIN;
   sfx.setRollIntensity(0);
@@ -272,6 +372,7 @@ if (startRadiusM !== null) {
     devTier++;
   }
   env.setTierPaletteImmediate(devTier);
+  backdrop.setProfileImmediate(devTier); // skip the hills->skyline crossfade too
 }
 spawner.preloadStartArea(ballPhys.state.pos, scaleMgr.tierIndex, ballPhys.state.radiusSim);
 
@@ -285,8 +386,8 @@ let accumulator = 0;
 let lastTime = performance.now();
 
 /**
- * Per-frame driver. THE CALL ORDER BELOW IS THE BINDING CONTRACT
- * (DESIGN.md モジュール間インターフェース) — do not reorder.
+ * Per-frame driver. THE CALL ORDER BELOW IS THE BINDING v2 CONTRACT
+ * (docs/DESIGN-V2.md §インターフェース "BINDING frame order") — do not reorder.
  * @param {number} now RAF timestamp (ms).
  */
 function frame(now) {
@@ -296,10 +397,13 @@ function frame(now) {
   lastTime = now;
   if (frameDt > MAX_FRAME_DT) frameDt = MAX_FRAME_DT; // tab-switch guard
 
-  if (state !== GameState.PLAYING) {
+  // v2: FINALE keeps simulating (gated below) — only TITLE/WIN idle-render.
+  if (state !== GameState.PLAYING && state !== GameState.FINALE) {
     // Title/win: slow idle orbit over the preloaded world, render only.
+    if (input.takeMuteToggle()) setMutedAll(!muted); // 'M' works on title/result too
     cameraRig.updateIdle(frameDt);
     env.update(frameDt, ballPhys.state);
+    backdrop.update(frameDt, ballPhys.state, renderer.camera);
     ball.update(frameDt, ballPhys.state);
     effects.update(frameDt, ballPhys.state);
     updateAndFlushPools(poolList, frameDt);
@@ -307,17 +411,27 @@ function frame(now) {
     return;
   }
 
-  /* 1) Read input once per render frame. */
+  /* 1) Read input once per render frame. v2: from CONTACT the finale owns  */
+  /*    the run — zero the intent so physics coasts (nothing fights the     */
+  /*    MERGE ball.pos writes).                                             */
   const intent = input.read();
+  if (finale.inputLocked) {
+    intent.x = 0;
+    intent.y = 0;
+    intent.boost = false;
+    intent.dash = false;
+  }
+  if (input.takeMuteToggle()) setMutedAll(!muted); // 'M' keyup edge
 
   /* 2) Fixed-step physics: cap 3 substeps, drop excess debt (no tunneling, */
-  /*    no spiral of death).                                                */
+  /*    no spiral of death). v2: absorb gated off post-contact (growth      */
+  /*    frozen => no rescale can fire during the cinematic).                */
   accumulator += frameDt;
   let steps = 0;
   while (accumulator >= FIXED_DT && steps < MAX_SUBSTEPS) {
     // +PI bridges ballPhysics' yaw convention to cameraRig's (see header).
     ballPhys.step(FIXED_DT, intent, cameraRig.yaw + Math.PI);
-    absorb.resolve(ballPhys.state, hashes, store);
+    if (!finale.inputLocked) absorb.resolve(ballPhys.state, hashes, store);
     accumulator -= FIXED_DT;
     steps++;
   }
@@ -326,20 +440,47 @@ function frame(now) {
   }
 
   /* 3) Amortized world streaming: chunk diff + spawn/despawn queues        */
-  /*    (<=64 each) + sub-pixel sweep + knock-off flights.                  */
-  spawner.update(ballPhys.state.pos, scaleMgr.tierIndex, ballPhys.state.radiusSim, frameDt);
+  /*    (<=64 each) + sub-pixel sweep + knock-off flights. v2: frozen       */
+  /*    post-contact.                                                       */
+  if (!finale.inputLocked) {
+    spawner.update(ballPhys.state.pos, scaleMgr.tierIndex, ballPhys.state.radiusSim, frameDt);
+  }
 
   /* 4) BETWEEN update and render — pixel-identity transforms:              */
   /*    one-frame similarity rescale (tier-up) and floating-origin rebase.  */
+  /*    v2: maybeTierUp keeps running (harmless); maybeRebase is gated —    */
+  /*    a rebase mid-cinematic is pointless and positions stay well inside  */
+  /*    Float32 precision for the ~8.7s post-contact window.                */
   scaleMgr.maybeTierUp(ballPhys.state, store, hashes, instances, cameraRig, env);
-  scaleMgr.maybeRebase(ballPhys.state, store, hashes, instances, cameraRig, env, spawner);
+  if (!finale.inputLocked) {
+    scaleMgr.maybeRebase(ballPhys.state, store, hashes, instances, cameraRig, env, spawner);
+  }
+
+  /* 4.5) v2 FINALE (game/finale.js): moon descent/landing drive, render-   */
+  /*      frame contact test, MERGE ball.pos writes, cinematic camera via   */
+  /*      cameraRig.cinematicUpdate. Stub no-ops until Stream A lands.      */
+  finale.update(frameDt, ballPhys.state);
+  if (state === GameState.PLAYING && finale.inputLocked) {
+    state = GameState.FINALE; // PLAYING -> FINALE on first contact frame
+  }
+  /* main is the SOLE game:win emitter in v2 (ScaleManager's latch is gone). */
+  if (state === GameState.FINALE && finale.state === 'done') {
+    PAYLOADS.gameWin.trueRadius = ballPhys.state.radiusSim * scaleMgr.worldScale;
+    PAYLOADS.gameWin.seed = worldSeed;
+    bus.emit(EVT.GAME_WIN, PAYLOADS.gameWin); // -> onGameWin (state = WIN)
+  }
 
   /* 5) Ball visuals: attach animations, staggered burial cull.             */
   ball.update(frameDt, ballPhys.state);
 
   /* 6) Camera spring + environment + effects (all AFTER ScaleManager).     */
-  cameraRig.update(frameDt, ballPhys.state, input.takeYawDrag());
+  /*    v2: from CONTACT the finale owns the camera (cinematicUpdate is     */
+  /*    called inside finale.update at 4.5) — skip the gameplay spring.     */
+  if (!finale.cameraOwned) {
+    cameraRig.update(frameDt, ballPhys.state, input.takeYawDrag());
+  }
   env.update(frameDt, ballPhys.state);
+  backdrop.update(frameDt, ballPhys.state, renderer.camera);
   effects.update(frameDt, ballPhys.state);
 
   /* Roll-loop audio follows ball speed (silent until first user gesture). */
@@ -347,9 +488,13 @@ function frame(now) {
   const speed = Math.sqrt(vel.x * vel.x + vel.z * vel.z);
   sfx.setRollIntensity(speed / (SPEED_K * ballPhys.state.radiusSim));
 
+  /* 6.5) v2 sim clock (game/runStats.js): deterministic SIM time — the     */
+  /*      official rank clock. Internally frozen after MOON_CONTACT.        */
+  runStats.addSimTime(steps * FIXED_DT);
+
   /* 7) Flush instance buffers (one needsUpdate per mesh, updateRanges)     */
-  /*    then render. HUD is event-driven (10Hz 'grow'), not called here.    */
-  /*    Win check lives in ScaleManager.maybeTierUp (trueRadius latch).     */
+  /*    then render. HUD is event-driven, not called here. v2: the goal     */
+  /*    lives in finale.js (DESCENT trigger at MOON_GOAL_RADIUS_M).         */
   updateAndFlushPools(poolList, frameDt);
   renderer.render();
 }
@@ -358,7 +503,7 @@ requestAnimationFrame(frame);
 
 if (import.meta.env && import.meta.env.DEV) {
   console.log(
-    `[fable-katamari] booted — seed=${worldSeed} win@${WIN_RADIUS_M}m ` +
+    `[fable-katamari] booted — seed=${worldSeed} goal@${MOON_GOAL_RADIUS_M}m ` +
       `alive=${store.aliveCount} pools=${poolList.length} hud=${hud !== null} screens=${screens !== null}`
   );
 }

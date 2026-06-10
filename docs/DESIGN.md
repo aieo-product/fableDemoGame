@@ -117,3 +117,38 @@ alloc():slot|-1; free(slot) /*zero-scale*/; setTransform(slot,pos,quat,scale); s
 ## 実装順序（並列化計画）
 
 PHASE 0 (lead, ~half day, blocks everything): src/types.js, config/tiers.js + config/tuning.js (constants stubbed), core/events.js, core/rng.js, core/pool.js, core/mathUtils.js, main.js skeleton with the frame-order comments, index.html, vite.config.js. These freeze the contracts. PHASE 1 (5 parallel streams, no cross-dependencies beyond types.js): DEV A (sim data + physics): world/objects.js -> world/spatialHash.js -> physics/ballPhysics.js -> physics/absorb.js (testable headless against a fake store). DEV B (world): world/spawner.js -> world/scaleManager.js (spawner only needs ObjectStore/SpatialHash/InstancedPool SIGNATURES from types.js; scaleManager is last in the stream because it touches the most interfaces). DEV C (render core): render/renderer.js -> render/geometryFactory.js -> render/instances.js -> render/environment.js (testable with a standalone scene of hardcoded instances). DEV D (feel): input/input.js -> render/cameraRig.js -> render/ball.js -> render/effects.js -> audio/sfx.js (camera/ball testable against a scripted fake BallState driving a circle). DEV E (content + UI): config/catalog.js (48 archetypes — the largest single workpackage, pure and independent) -> ui/hud.js -> ui/screens.js (driven by synthetic bus events). PHASE 2 (integration, lead + Dev A): wire real modules through main.js in order physics -> instances -> spawner -> scaleManager (rescale is integrated LAST, behind the force-rescale debug key, verified by screenshot diff). PHASE 3 (all hands): tuning.js passes with the ?r= start-at-radius key per tier, stress scene profiling on an Intel iGPU, Cloudflare Pages deploy. Critical-path note: ObjectStore + InstancedPool interfaces are the two contracts most modules touch — any change to them must go through the lead and types.js first.
+## v2 — 月アップデート（moon update）差分章
+
+v2 の確定差分仕様は **`docs/DESIGN-V2.md`**（イベント契約・インターフェース・チューニング定数・作業分割すべてそこが BINDING）。本章は v1 本文に対する法改正・台帳更新だけを記す。v1 の不変条件（リスケールのピクセル同一性、シームレスネス法、ホットパスのゼロアロケーション、固定 60Hz、決定論スポーン）はすべて存続する。
+
+### アロケーション法 改正（BOUNDED WebAudio EXEMPTION）
+WebAudio ノード生成（sfx + 新規 bgm.js）は「ホットパスでのフレーム毎アロケーション禁止」に対する**明示的な有界例外**とする: 予算 <= 60 短命ノード/秒。高コストな確保は初期化時にホイスト（ハット/シェイカー/whoosh 用の共有ノイズ AudioBuffer は 1 個を永続共有、PeriodicWave は init 時生成）。Phase-3 プロファイルパスでデバッグオーバーレイの heap-delta 行により検証する。bgm.js 内では setTimeout 禁止 — すべてのゲイン操作は ctx 時間でスケジュールする。
+
+### ドローコール台帳 v2（DRAW_CALL_CAP 55 -> 60）
+4 バンド遷移ウィンドウの正直な最悪値: ワールド InstancedMesh 40（4 バンド x 10 アーキタイプ）+ スタック 8 ファミリー + 固定 6（スカイドーム/地面/ボールコア/エフェクト/月本体+グロー 2）+ バックドロップ 1 = **56**。キャップ 60。超過時の第一レバーは月グローシェル削除（-1）、次に N+2 プリウォームプールの非表示化。月メッシュ（icosphere detail 3, ~1280 tris）は ARCHETYPE_TRI_CAP 350 の文書化された唯一の例外（カタログ外・非プール・フィナーレ限定）。
+
+### イベント契約（v2）
+新イベント名と再利用 PAYLOADS は `src/core/events.js` の EVT/PAYLOADS と `docs/DESIGN-V2.md` §インターフェース が正。BINDING: (a) ABSORB 購読順 = main アタッチハンドラ -> runStats -> sfx/effects/hud。(b) `game:win` は v2 では **main.js が唯一の emitter**（finale.state === 'done' 時。ScaleManager の WIN_RADIUS_M ラッチは撤去）。(c) `goal` ペイロードも再利用 — 購読側はフィールドコピー必須。
+
+### シームレスネス法 例外（fog:false）
+render/moon.js の月マテリアル 2 種（Lambert 本体 + 加算グローシェル）は fog:false — 月はスカイドーム同様の「空の要素」であり地上シーンリーではない（environment.js のドーム群が既に fog:false であるのと同じ扱い）。文書化された例外であり、ワールドオブジェクトへの適用は引き続き禁止。
+
+### SIM-TIME がランクの公式時計
+runStats の elapsed は固定ステップの積算（main.js が毎フレーム `runStats.addSimTime(steps * FIXED_DT)`）。低速端末は壁時計上ゆっくり進むがシミュレート秒あたりの成果は決定論的・公平 — ランク（S<=300 / A<=400 / B<=540 / C<=720 / else D, sim 秒）は端末性能に依存しない。
+
+### シード互換性
+v1 のシード URL は v2 では**別の世界**を生む（アーキタイプストライド 8->10、ウェイトテーブル、SCENERY_OBJECTS_PER_CHUNK 8->10、レアロール追加によりドロー列が変わる）。同一 v2 ビルド内では従来どおり同シード=同世界（レア配置含む）。
+
+### リセット所有権テーブル（v2 凍結）
+| 所有者 | 経路 | 内容 |
+|---|---|---|
+| main.resetWorld | 直接呼び出し | finale.reset()（状態 idle / MoonView 非表示 / _simCache ゼロ）+ runStats.reset() |
+| cameraRig | GAME_RESET | reset() がシネマティックフラグも解除 |
+| env | GAME_RESET (setTierPaletteImmediate) | v2 ユニフォーム復帰（uMoonFade=1, パルス停止, 星強度）+ ナイトフェード構造的キャンセル |
+| backdrop | GAME_RESET（自己購読） | プロファイル/色スナップ |
+| ball | ball.reset() | group.visible = true 復元（MERGE で非表示化されるため） |
+| hud | GAME_START | 再表示（MOON_CONTACT で全非表示） |
+| bgm | GAME_RESET | 停止 + 巻き戻し |
+
+### フレーム順序 v2（BINDING — main.js ヘッダと同一）
+v1 の順序に対する追加: step 4.5 `finale.update(frameDt, ballPhys.state)`、step 6.5 `runStats.addSimTime(steps * FIXED_DT)`。ゲート: finale.inputLocked で intent ゼロ化 / absorb.resolve / spawner.update / scaleMgr.maybeRebase をスキップ（maybeTierUp は継続）。finale.cameraOwned で cameraRig.update をスキップ（finale が cinematicUpdate を駆動）。GameState は TITLE -> PLAYING -> FINALE -> WIN。

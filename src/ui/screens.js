@@ -1,5 +1,6 @@
 /**
- * @file screens.js — Title / win / restart overlays + seed display.
+ * @file screens.js — Title / win / restart overlays, v2 staged result reveal,
+ * X share intent, moon-contact flash, title 自己ベスト line.
  *
  * Owns the #title-overlay and #win-overlay DOM (frozen in index.html) and is
  * the ONLY emitter of 'game:start' and 'game:reset'. Overlay visibility is
@@ -7,10 +8,24 @@
  * programmatic resets keep the DOM consistent for free:
  *
  *   #start-button click   -> emit game:start
- *   #restart-button click -> emit game:reset
- *   on game:start -> hide title + win
- *   on game:reset -> hide win, show title
- *   on game:win   -> fill #win-size / #win-seed, show win overlay
+ *   #restart-button click -> emit game:reset (then game:start)
+ *   on game:start -> hide title + win, clear staged result state
+ *   on game:reset -> hide win, show title (refresh 自己ベスト line)
+ *   on goal       -> cache a field-by-field COPY of the payload (payloads are
+ *                    reused!) + prebuild the X intent URL immediately
+ *   on moonContact-> #flash-overlay white pop (.flash class)
+ *   on game:win   -> v2 staged reveal from the CACHED goal (0.0s time / 0.4s
+ *                    score count-up / 0.9s size+counts / 1.6s rank stamp /
+ *                    2.2s record badge + best + seed + buttons). If no goal
+ *                    was cached (legacy v1 win path), everything shows
+ *                    immediately without .staged.
+ *
+ * X POST: the intent URL is built ONCE when EVT.GOAL is cached (values from
+ * the payload, never the animating DOM). The click handler runs synchronously
+ * in the gesture: const w = window.open(url, '_blank'); if (w === null)
+ * location.href = url; — no 'noopener' in features (kills the null-ambiguity
+ * and gives in-app webviews a same-tab fallback; abandoning the result screen
+ * there is accepted — state is already persisted).
  *
  * NOTE for the integrator: main.js contains a TEMPORARY #start-button click
  * block ("TEMPORARY title wiring — REMOVE") — it must be deleted when this
@@ -19,9 +34,37 @@
 
 import { EVT, PAYLOADS } from '../core/events.js';
 import { formatLength } from '../core/mathUtils.js';
+import { RunStats } from '../game/runStats.js';
 
 /** @typedef {import('../core/events.js').EventBus} EventBus */
 /** @typedef {import('../types.js').GameWinEvent} GameWinEvent */
+/** @typedef {import('../types.js').GoalEvent} GoalEvent */
+
+/** Share target shown in the post + the intent text (live deployment). */
+const SHARE_URL = 'https://fable-katamari.pages.dev';
+/** X web intent endpoint (x.com post intent — twitter.com/intent/tweet is legacy). */
+const X_INTENT = 'https://x.com/intent/post?text=';
+/** Staged reveal cues (ms) — match the index.html comment + sfx rank thud (+1.6s). */
+const CUE_TIME_MS = 0;
+const CUE_SCORE_MS = 400;
+const CUE_SIZE_MS = 900;
+const CUE_RANK_MS = 1600;
+const CUE_RECORD_MS = 2200;
+/** Score count-up duration (ms, rAF-driven). */
+const COUNTUP_MS = 800;
+
+/**
+ * Format sim seconds as mm:ss.t (2-digit minutes — result screen / X post).
+ * @param {number} timeS
+ * @returns {string}
+ */
+function formatTime(timeS) {
+  const t10 = Math.round(timeS * 10);
+  const m = (t10 / 600) | 0;
+  const rem = t10 - m * 600;
+  const ss = (rem / 10) | 0;
+  return (m < 10 ? '0' : '') + m + ':' + (ss < 10 ? '0' : '') + ss + '.' + (rem % 10);
+}
 
 /**
  * Title/win overlay controller and game:start / game:reset emitter.
@@ -44,16 +87,57 @@ export class Screens {
     this._restartBtn = /** @type {HTMLButtonElement} */ (document.getElementById('restart-button'));
     this._winSizeEl = /** @type {HTMLElement} */ (document.getElementById('win-size'));
     this._winSeedEl = /** @type {HTMLElement} */ (document.getElementById('win-seed'));
+    // ---- v2 result ----
+    this._rowTimeEl = /** @type {HTMLElement} */ (document.getElementById('result-row-time'));
+    this._rowScoreEl = /** @type {HTMLElement} */ (document.getElementById('result-row-score'));
+    this._rowSizeEl = /** @type {HTMLElement} */ (document.getElementById('result-row-size'));
+    this._rowDetailEl = /** @type {HTMLElement} */ (document.getElementById('result-detail'));
+    this._timeEl = /** @type {HTMLElement} */ (document.getElementById('result-time'));
+    this._scoreEl = /** @type {HTMLElement} */ (document.getElementById('result-score'));
+    this._absorbedEl = /** @type {HTMLElement} */ (document.getElementById('result-absorbed'));
+    this._raresEl = /** @type {HTMLElement} */ (document.getElementById('result-rares'));
+    this._rankEl = /** @type {HTMLElement} */ (document.getElementById('result-rank'));
+    this._badgeEl = /** @type {HTMLElement} */ (document.getElementById('new-record-badge'));
+    this._bestEl = /** @type {HTMLElement} */ (document.getElementById('result-best'));
+    this._seedLineEl = /** @type {HTMLElement} */ (document.getElementById('result-seed'));
+    this._postXBtn = /** @type {HTMLButtonElement} */ (document.getElementById('post-x-button'));
+    this._buttonsEl = /** @type {HTMLElement} */ (
+      this._winEl.querySelector('.result-buttons')
+    );
+    this._flashEl = /** @type {HTMLElement} */ (document.getElementById('flash-overlay'));
+    this._titleBestLineEl = /** @type {HTMLElement} */ (document.getElementById('title-best-line'));
+    this._titleBestValueEl = /** @type {HTMLElement} */ (
+      document.getElementById('title-best-value')
+    );
+
+    /**
+     * Field-by-field COPY of the last EVT.GOAL payload (payloads are reused —
+     * never retain them). null until the first goal of a run.
+     * @type {GoalEvent|null}
+     */
+    this._goal = null;
+    /** Prebuilt X intent URL (built once per goal, never from the DOM). */
+    this._xUrl = '';
+
+    /* --- staged reveal timers / rAF --- */
+    /** @type {ReturnType<typeof setTimeout>[]} */
+    this._revealTimers = [];
+    /** @type {number} */
+    this._countupRaf = 0;
 
     /* --- prebound listeners --- */
     this._onStartClick = this._onStartClick.bind(this);
     this._onRestartClick = this._onRestartClick.bind(this);
+    this._onPostXClick = this._onPostXClick.bind(this);
     this._onGameStart = this._onGameStart.bind(this);
     this._onGameReset = this._onGameReset.bind(this);
     this._onGameWin = this._onGameWin.bind(this);
+    this._onGoal = this._onGoal.bind(this);
+    this._onMoonContact = this._onMoonContact.bind(this);
 
     this._startBtn.addEventListener('click', this._onStartClick);
     this._restartBtn.addEventListener('click', this._onRestartClick);
+    this._postXBtn.addEventListener('click', this._onPostXClick);
 
     /* Touch devices get touch controls guidance instead of the keyboard rows
        (the drag joystick is otherwise undiscoverable on phones). */
@@ -61,12 +145,17 @@ export class Screens {
     if (hints !== null && typeof window !== 'undefined' && 'ontouchstart' in window) {
       hints.innerHTML =
         '<span><kbd>ドラッグ / Drag</kbd>うごく / Move</span>' +
-        '<span><kbd>2本指 / 2nd finger</kbd>ブースト / Boost</span>';
+        '<span><kbd>2本指 / 2nd finger</kbd>ブースト / Boost</span>' +
+        '<span><kbd>DASH</kbd>ダッシュ / Dash</span>';
     }
 
     bus.on(EVT.GAME_START, this._onGameStart);
     bus.on(EVT.GAME_RESET, this._onGameReset);
     bus.on(EVT.GAME_WIN, this._onGameWin);
+    bus.on(EVT.GOAL, this._onGoal);
+    bus.on(EVT.MOON_CONTACT, this._onMoonContact);
+
+    this._refreshTitleBest();
   }
 
   /* ---------------------------------------------------------------- */
@@ -88,30 +177,240 @@ export class Screens {
     this._bus.emit(EVT.GAME_START, PAYLOADS.gameStart);
   }
 
+  /**
+   * Xでシェア — synchronous inside the click gesture. window.open WITHOUT
+   * 'noopener' so null reliably means "blocked / webview" -> same-tab
+   * fallback via location.href (accepted result-screen abandonment).
+   */
+  _onPostXClick() {
+    if (this._xUrl === '') return;
+    const w = window.open(this._xUrl, '_blank');
+    if (w === null) location.href = this._xUrl;
+  }
+
   /* ---------------------------------------------------------------- */
   /* Bus handlers (payloads are reused objects — read-only, no retain)  */
   /* ---------------------------------------------------------------- */
 
-  /** 'game:start' — both overlays out of the way. */
+  /** 'game:start' — both overlays out of the way; clear staged result state. */
   _onGameStart() {
+    this._clearReveal();
     this._titleEl.classList.add('hidden');
     this._winEl.classList.add('hidden');
+    this._goal = null;
+    this._xUrl = '';
   }
 
-  /** 'game:reset' — back to the title screen. */
+  /** 'game:reset' — back to the title screen (refresh 自己ベスト). */
   _onGameReset() {
+    this._clearReveal();
     this._winEl.classList.add('hidden');
     this._titleEl.classList.remove('hidden');
+    this._refreshTitleBest();
   }
 
   /**
-   * 'game:win' — fill the final size + shareable seed and show the overlay.
+   * 'goal' — copy every field (the payload object is reused!) and prebuild
+   * the X intent URL immediately, from these values, never the animated DOM.
+   * @param {GoalEvent} p
+   */
+  _onGoal(p) {
+    this._goal = {
+      timeS: p.timeS,
+      score: p.score,
+      rank: p.rank,
+      trueRadius: p.trueRadius,
+      absorbed: p.absorbed,
+      raresFound: p.raresFound,
+      seed: p.seed >>> 0,
+      newRecordTime: p.newRecordTime === true,
+      newRecordScore: p.newRecordScore === true,
+    };
+    this._xUrl = this._buildXUrl(this._goal);
+  }
+
+  /** 'moonContact' — white flash pop (0.12 s in / FLASH_S out via CSS). */
+  _onMoonContact() {
+    this._flashEl.classList.remove('flash');
+    void this._flashEl.offsetWidth; // reflow — restartable animation
+    this._flashEl.classList.add('flash');
+  }
+
+  /**
+   * 'game:win' — staged result reveal from the cached goal. Falls back to
+   * the immediate v1 layout (no .staged) if no goal was cached.
    * @param {GameWinEvent} p
    */
   _onGameWin(p) {
-    const seed = p !== undefined && p.seed ? p.seed >>> 0 : this._seed;
-    this._winSizeEl.textContent = formatLength(p !== undefined ? p.trueRadius : 0);
-    this._winSeedEl.textContent = String(seed);
+    const g = this._goal;
+    this._clearReveal();
+
+    if (g === null) {
+      // Legacy/v1 path: fill what the win payload carries, show instantly.
+      const seed = p !== undefined && p.seed ? p.seed >>> 0 : this._seed;
+      this._winSizeEl.textContent = formatLength(p !== undefined ? p.trueRadius : 0);
+      this._winSeedEl.textContent = String(seed);
+      this._winEl.classList.remove('hidden');
+      return;
+    }
+
+    /* ---- fill static values from the cached goal ---- */
+    this._timeEl.textContent = formatTime(g.timeS);
+    this._scoreEl.textContent = '0'; // counts up at its cue
+    this._winSizeEl.textContent = formatLength(g.trueRadius);
+    this._absorbedEl.textContent = String(g.absorbed);
+    this._raresEl.textContent = String(g.raresFound);
+    this._rankEl.textContent = g.rank;
+    this._winSeedEl.textContent = String(g.seed);
+    this._bestEl.textContent = this._buildBestLine();
+
+    /* ---- staged reveal ---- */
+    this._winEl.classList.add('staged');
     this._winEl.classList.remove('hidden');
+    this._schedule(CUE_TIME_MS, () => {
+      this._rowTimeEl.classList.add('result-reveal');
+    });
+    this._schedule(CUE_SCORE_MS, () => {
+      this._rowScoreEl.classList.add('result-reveal');
+      this._startCountup(g.score);
+    });
+    this._schedule(CUE_SIZE_MS, () => {
+      this._rowSizeEl.classList.add('result-reveal');
+      this._rowDetailEl.classList.add('result-reveal');
+    });
+    this._schedule(CUE_RANK_MS, () => {
+      this._rankEl.classList.add('stamp'); // sfx thud lands here (+1.6s ctx)
+    });
+    this._schedule(CUE_RECORD_MS, () => {
+      if (g.newRecordTime || g.newRecordScore) {
+        this._badgeEl.classList.remove('hidden');
+      }
+      this._bestEl.classList.add('result-reveal');
+      this._seedLineEl.classList.add('result-reveal');
+      this._buttonsEl.classList.add('result-reveal');
+    });
+  }
+
+  /* ---------------------------------------------------------------- */
+  /* Staged-reveal machinery                                            */
+  /* ---------------------------------------------------------------- */
+
+  /**
+   * @param {number} ms Delay.
+   * @param {() => void} fn Reveal step.
+   */
+  _schedule(ms, fn) {
+    this._revealTimers.push(setTimeout(fn, ms));
+  }
+
+  /** Cancel pending reveals + count-up and strip all staged classes. */
+  _clearReveal() {
+    for (let i = 0; i < this._revealTimers.length; i++) {
+      clearTimeout(this._revealTimers[i]);
+    }
+    this._revealTimers.length = 0;
+    if (this._countupRaf !== 0) {
+      cancelAnimationFrame(this._countupRaf);
+      this._countupRaf = 0;
+    }
+    this._winEl.classList.remove('staged');
+    this._rowTimeEl.classList.remove('result-reveal');
+    this._rowScoreEl.classList.remove('result-reveal');
+    this._rowSizeEl.classList.remove('result-reveal');
+    this._rowDetailEl.classList.remove('result-reveal');
+    this._bestEl.classList.remove('result-reveal');
+    this._seedLineEl.classList.remove('result-reveal');
+    this._buttonsEl.classList.remove('result-reveal');
+    this._rankEl.classList.remove('stamp');
+    this._badgeEl.classList.add('hidden');
+    this._flashEl.classList.remove('flash');
+  }
+
+  /**
+   * rAF count-up of #result-score, 0 -> finalScore over COUNTUP_MS, ease-out.
+   * @param {number} finalScore
+   */
+  _startCountup(finalScore) {
+    const startMs = performance.now();
+    const el = this._scoreEl;
+    const tick = () => {
+      const k = Math.min((performance.now() - startMs) / COUNTUP_MS, 1);
+      const eased = 1 - (1 - k) * (1 - k) * (1 - k); // easeOutCubic
+      el.textContent = Math.round(finalScore * eased).toLocaleString('ja-JP');
+      if (k < 1) {
+        this._countupRaf = requestAnimationFrame(tick);
+      } else {
+        this._countupRaf = 0;
+      }
+    };
+    this._countupRaf = requestAnimationFrame(tick);
+  }
+
+  /* ---------------------------------------------------------------- */
+  /* Best records / X intent                                            */
+  /* ---------------------------------------------------------------- */
+
+  /**
+   * Title 自己ベスト line via RunStats.loadBest() (static — never construct
+   * RunStats here). Hidden when no valid best exists (private mode etc.).
+   */
+  _refreshTitleBest() {
+    let best = null;
+    try {
+      best = RunStats.loadBest();
+    } catch (_) {
+      best = null;
+    }
+    const rec = best !== null ? (best.bestTime !== null ? best.bestTime : best.bestScore) : null;
+    if (rec === null) {
+      this._titleBestLineEl.classList.add('hidden');
+      return;
+    }
+    this._titleBestValueEl.textContent =
+      'RANK ' + rec.rank + ' ・ ' + formatTime(rec.timeS) + ' ・ ' +
+      rec.score.toLocaleString('ja-JP') + 'pt';
+    this._titleBestLineEl.classList.remove('hidden');
+  }
+
+  /**
+   * Result ベスト line — read AFTER runStats persisted this run (GOAL is
+   * emitted after the atomic best update, so loadBest reflects it).
+   * @returns {string}
+   */
+  _buildBestLine() {
+    let best = null;
+    try {
+      best = RunStats.loadBest();
+    } catch (_) {
+      best = null;
+    }
+    if (best === null) return '';
+    let line = '';
+    if (best.bestTime !== null) {
+      line += 'ベストタイム ' + formatTime(best.bestTime.timeS) + ' (RANK ' + best.bestTime.rank + ')';
+    }
+    if (best.bestScore !== null) {
+      if (line !== '') line += ' ／ ';
+      line += 'ベストスコア ' + best.bestScore.score.toLocaleString('ja-JP');
+    }
+    return line === '' ? '' : '自己ベスト: ' + line;
+  }
+
+  /**
+   * Build the X web-intent URL from a goal COPY (frozen text template,
+   * DESIGN-V2.md §Xポスト — ~170/280 weighted chars).
+   * @param {GoalEvent} g
+   * @returns {string}
+   */
+  _buildXUrl(g) {
+    const text =
+      '🌕FABLE KATAMARI 月まで転がした！\n' +
+      '⏱タイム ' + formatTime(g.timeS) + ' ／ RANK ' + g.rank + '\n' +
+      '⭐スコア ' + g.score.toLocaleString('ja-JP') + '\n' +
+      '📏さいごの大きさ ' + formatLength(g.trueRadius) +
+      '（まきこんだ ' + g.absorbed + 'こ・レア' + g.raresFound + 'コ）\n' +
+      '#FableKatamari\n' +
+      SHARE_URL;
+    return X_INTENT + encodeURIComponent(text);
   }
 }

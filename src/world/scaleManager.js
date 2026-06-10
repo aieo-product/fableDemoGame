@@ -1,7 +1,13 @@
 /**
  * @file scaleManager.js — worldScale double, tierIndex with hysteresis,
  * one-frame similarity rescale orchestration, floating-origin rebase,
- * trueRadius/formatSize, tierUp/rescale/grow/game:win emission (Dev B).
+ * trueRadius/formatSize, tierUp/rescale/grow emission (Dev B).
+ *
+ * v2 (moon update): the v1 'game:win' WIN_RADIUS_M latch is REMOVED — the
+ * goal now lives in game/finale.js (DESCENT triggers at MOON_GOAL_RADIUS_M)
+ * and main.js is the SOLE 'game:win' emitter (at finale.state === 'done').
+ * The throttled 'grow' payload additionally carries BallState.dashGauge01
+ * for the HUD dash gauge (smooth 10Hz fill).
  *
  * TWO NUMBER SYSTEMS (DESIGN.md スケールシステム): all sim/physics/render
  * math lives in SIM UNITS; REAL METERS exist only as
@@ -39,12 +45,12 @@ import { EVT, PAYLOADS } from '../core/events.js';
 import { formatLength } from '../core/mathUtils.js';
 import {
   HUD_THROTTLE_HZ,
+  MOON_GOAL_RADIUS_M,
   REBASE_DISTANCE_SIM,
   SIM_RADIUS_MAX,
   SIM_RADIUS_MIN,
   START_RADIUS_M,
   TIER_HYSTERESIS,
-  WIN_RADIUS_M,
 } from '../config/tuning.js';
 
 /** @typedef {import('../types.js').BallState} BallState */
@@ -54,14 +60,14 @@ const DEV = typeof import.meta !== 'undefined' && import.meta.env && import.meta
 /**
  * Owns the sim-units <-> real-meters bridge and the two pixel-identity
  * transforms (similarity rescale + floating-origin rebase). Also the game's
- * single source of trueRadius-derived events: 'tierUp', 'rescale', throttled
- * 'grow', and the 'game:win' latch.
+ * single source of trueRadius-derived events: 'tierUp', 'rescale' and the
+ * throttled 'grow' ('game:win' moved to main.js/finale in v2).
  */
 export class ScaleManager {
   /**
    * @param {import('../core/events.js').EventBus} bus Shared event bus.
-   * @param {number} [worldSeed] uint32 world seed — stamped onto the
-   *   'game:win' payload for shareable runs (main.js resolves it at boot).
+   * @param {number} [worldSeed] uint32 world seed (kept for dev tooling /
+   *   debug overlay; the 'game:win' payload is filled by main.js in v2).
    */
   constructor(bus, worldSeed = 0) {
     this._bus = bus;
@@ -74,7 +80,6 @@ export class ScaleManager {
     /** @type {number} How many similarity rescales have been applied. */
     this.rescaleCount = 0;
     this._lastSimRadius = SIM_RADIUS_MIN;
-    this._won = false;
     this._forceRescale = false;
     this._lastGrowMs = -Infinity; // first grow emits immediately
     this._growIntervalMs = 1000 / HUD_THROTTLE_HZ;
@@ -115,7 +120,6 @@ export class ScaleManager {
     this.tierIndex = 0;
     this.rescaleCount = 0;
     this._lastSimRadius = SIM_RADIUS_MIN;
-    this._won = false;
     this._forceRescale = false;
     this._lastGrowMs = -Infinity;
   }
@@ -128,7 +132,8 @@ export class ScaleManager {
    * Called once per render frame BETWEEN physics update and render. Applies
    * the one-frame similarity rescale when simRadius >= SIM_RADIUS_MAX,
    * advances tierIndex (hysteresis), rebuilds the per-band hashes when either
-   * happened, and emits rescale/tierUp/grow/game:win.
+   * happened, and emits rescale/tierUp/grow (v2: 'game:win' is main's — the
+   * finale owns the goal at MOON_GOAL_RADIUS_M).
    *
    * Steady-state cost: a handful of float compares — zero allocation. The
    * rescale path (once per ~60-90 s) may touch Map iterators.
@@ -170,30 +175,28 @@ export class ScaleManager {
 
     if (rescaled || tierChanged) this._rebuildHashes(store, hashes);
 
-    /* Throttled 'grow' for the HUD odometer. */
+    /* Throttled 'grow' for the HUD odometer + dash gauge. */
     const now = performance.now();
     if (now - this._lastGrowMs >= this._growIntervalMs) {
       this._lastGrowMs = now;
       const enter = TIERS[this.tierIndex].enterTrueRadius;
-      // Last tier's progress target is the WIN radius so the bar hits exactly
-      // 100% as 'game:win' fires.
+      // Last tier's progress target is the moon-goal radius so the bar hits
+      // exactly 100% as the finale's DESCENT triggers.
       const exit =
-        this.tierIndex < TIERS.length - 1 ? TIERS[this.tierIndex + 1].enterTrueRadius : WIN_RADIUS_M;
+        this.tierIndex < TIERS.length - 1
+          ? TIERS[this.tierIndex + 1].enterTrueRadius
+          : MOON_GOAL_RADIUS_M;
       let p = (tr - enter) / (exit - enter);
       if (p < 0) p = 0;
       else if (p > 1) p = 1;
       PAYLOADS.grow.trueRadius = tr;
       PAYLOADS.grow.simRadius = ball.radiusSim;
       PAYLOADS.grow.progress01ToNextTier = p;
+      // v2: copy BallState.dashGauge01 onto the 10Hz grow payload (HUD gauge
+      // fill). Tolerates a pre-Stream-D BallState without the field.
+      const dg = ball.dashGauge01;
+      PAYLOADS.grow.dashGauge01 = dg >= 0 ? dg : 1;
       this._bus.emit(EVT.GROW, PAYLOADS.grow);
-    }
-
-    /* Win latch. */
-    if (!this._won && tr >= WIN_RADIUS_M) {
-      this._won = true;
-      PAYLOADS.gameWin.trueRadius = tr;
-      PAYLOADS.gameWin.seed = this.worldSeed;
-      this._bus.emit(EVT.GAME_WIN, PAYLOADS.gameWin);
     }
 
     return rescaled || tierChanged;

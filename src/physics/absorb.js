@@ -23,6 +23,11 @@
  * <= RADIUS_SLEW_K * r per second) and the rapid-absorb combo counter
  * (COMBO_WINDOW_S). Zero allocation per call: preallocated candidate scratch,
  * reused event payloads.
+ *
+ * v2 (docs/DESIGN-V2.md): each absorb also (a) stamps AbsorbEvent.rare from
+ * (store.flags[i] & FLAG_RARE) BEFORE store.free, and (b) adds
+ * DASH_ABSORB_GAIN to ball.dashGauge01 (clamped to 1 — the 'dashReady' edge
+ * is emitted by ballPhysics on its next step; single-emitter rule).
  */
 
 import {
@@ -42,12 +47,14 @@ import {
   SLUGGISH_MIN,
   SIM_RADIUS_MIN,
   START_RADIUS_M,
+  DASH_ABSORB_GAIN,
 } from '../config/tuning.js';
 import { EVT, PAYLOADS } from '../core/events.js';
 import { mulberry32 } from '../core/rng.js';
 import {
   FLAG_ALIVE,
   FLAG_TOMB,
+  FLAG_RARE,
   ARCHETYPE_ID_BY_CODE,
   ARCHETYPE_CODE_BY_ID,
 } from '../world/objects.js';
@@ -90,7 +97,7 @@ export class Absorb {
     /** @type {{ worldScale: number } | null} */
     this._scale = scaleProvider || null;
 
-    /** @type {Float32Array} collisionScale per archetype code (0..47). */
+    /** @type {Float32Array} collisionScale per archetype code (sized from ARCHETYPE_ID_BY_CODE). */
     this._collisionScale = new Float32Array(ARCHETYPE_ID_BY_CODE.length).fill(1);
     if (catalog) {
       for (let code = 0; code < ARCHETYPE_ID_BY_CODE.length; code++) {
@@ -210,6 +217,11 @@ export class Absorb {
     ball.sluggish *= SLUGGISH_FACTOR;
     if (ball.sluggish < SLUGGISH_MIN) ball.sluggish = SLUGGISH_MIN;
 
+    // v2: dash gauge gain per absorb (clamped; 'dashReady' edge fires in
+    // ballPhysics' next step — ballPhysics is the single emitter).
+    ball.dashGauge01 += DASH_ABSORB_GAIN;
+    if (ball.dashGauge01 > 1) ball.dashGauge01 = 1;
+
     this._combo = this._comboTimer > 0 ? this._combo + 1 : 1;
     this._comboTimer = COMBO_WINDOW_S;
     this._count++;
@@ -224,6 +236,8 @@ export class Absorb {
     p.combo = this._combo;
     p.trueRadius = ball.radiusSim * ws;
     p.count = this._count;
+    // v2: rare stamped from the flags byte BEFORE store.free clears it.
+    p.rare = (store.flags[i] & FLAG_RARE) !== 0;
     // Emit BEFORE freeing: render/ball reads px/py/pz/radius/instanceSlot
     // synchronously to start the attach animation. Handlers must not retain.
     this._bus.emit(EVT.ABSORB, p);

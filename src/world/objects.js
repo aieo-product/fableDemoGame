@@ -9,16 +9,20 @@
  *   FLAG_ALIVE  (1) — slot is allocated and the object exists in the world.
  *   FLAG_FADING (2) — despawn/sub-pixel scale-fade in progress (still alive).
  *   FLAG_TOMB   (4) — pending reclaim; ignored by collision/queries.
+ *   FLAG_RARE   (8) — v2: deterministic rare promotion (golden tint, score
+ *                 bonus). Set ONLY by the spawner at placement time; absorb.js
+ *                 stamps AbsorbEvent.rare from it BEFORE store.free.
  *
  * Archetype encoding: store.archetype holds a uint16 CODE
- *   code = tierIndex * 8 + indexWithinTier   (0..47)
- * derived from the FROZEN Tier.archetypeIds lists in config/tiers.js.
+ *   code = tierIndex * ARCH_PER_TIER + indexWithinTier   (0..59, v2 stride 10)
+ * derived from the FROZEN Tier.archetypeIds lists in config/tiers.js
+ * (slots [8]/[9] of every tier are landmarks).
  * Use archetypeCode() / ARCHETYPE_ID_BY_CODE / ARCHETYPE_CODE_BY_ID below —
  * spawner (Dev B) writes codes, absorb/hud read ids back.
  */
 
 import { STORE_CAPACITY } from '../config/tuning.js';
-import { TIERS } from '../config/tiers.js';
+import { TIERS, ARCH_PER_TIER } from '../config/tiers.js';
 import { FreeList } from '../core/pool.js';
 
 /* ================================================================== */
@@ -31,14 +35,21 @@ export const FLAG_ALIVE = 1;
 export const FLAG_FADING = 2;
 /** Pending reclaim — collision/queries must skip it. */
 export const FLAG_TOMB = 4;
+/**
+ * v2: rare promotion (golden tint, RARE_SCORE_BONUS). VALUE FROZEN at 8 by
+ * DESIGN-V2.md Phase 0 — set only by spawner._spawnPlacement (never by
+ * reinject), read by absorb.js (AbsorbEvent.rare) and the sub-pixel sweep.
+ */
+export const FLAG_RARE = 8;
 
 /* ================================================================== */
 /* Archetype code <-> id mapping (derived from the frozen tier table)  */
 /* ================================================================== */
 
 /**
- * Flat archetype id table: ARCHETYPE_ID_BY_CODE[tier*8 + i] === TIERS[tier].archetypeIds[i].
- * Built once at module load from the frozen tier table (48 entries).
+ * Flat archetype id table:
+ * ARCHETYPE_ID_BY_CODE[tier*ARCH_PER_TIER + i] === TIERS[tier].archetypeIds[i].
+ * Built once at module load from the frozen tier table (60 entries, v2).
  * @type {string[]}
  */
 export const ARCHETYPE_ID_BY_CODE = [];
@@ -52,7 +63,7 @@ export const ARCHETYPE_CODE_BY_ID = {};
 for (let t = 0; t < TIERS.length; t++) {
   const ids = TIERS[t].archetypeIds;
   for (let i = 0; i < ids.length; i++) {
-    const code = t * 8 + i;
+    const code = t * ARCH_PER_TIER + i;
     ARCHETYPE_ID_BY_CODE[code] = ids[i];
     ARCHETYPE_CODE_BY_ID[ids[i]] = code;
   }
@@ -60,22 +71,38 @@ for (let t = 0; t < TIERS.length; t++) {
 
 /**
  * Compose a uint16 archetype code from tier index + index within the tier's
- * frozen 8-id list.
+ * frozen ARCH_PER_TIER-id list.
  * @param {number} tierIndex   Home tier 0..5.
- * @param {number} indexInTier Index 0..7 within TIERS[tierIndex].archetypeIds.
- * @returns {number} Code 0..47 for ObjectStore.archetype.
+ * @param {number} indexInTier Index 0..ARCH_PER_TIER-1 within TIERS[tierIndex].archetypeIds.
+ * @returns {number} Code 0..59 for ObjectStore.archetype.
  */
 export function archetypeCode(tierIndex, indexInTier) {
-  return tierIndex * 8 + indexInTier;
+  return tierIndex * ARCH_PER_TIER + indexInTier;
 }
 
 /**
  * Home tier of an archetype code.
- * @param {number} code Archetype code 0..47.
+ * @param {number} code Archetype code 0..59.
  * @returns {number} Tier index 0..5.
  */
 export function archetypeTierOfCode(code) {
-  return (code / 8) | 0;
+  return (code / ARCH_PER_TIER) | 0;
+}
+
+/* Boot DEV-assert: the v2 stride migration (8 -> 10) must produce exactly 60
+   codes — cross-checked again from ball.js against this very table. */
+if (import.meta.env && import.meta.env.DEV) {
+  if (ARCHETYPE_ID_BY_CODE.length !== 60) {
+    throw new Error(
+      `[objects.js invariant] ARCHETYPE_ID_BY_CODE must have exactly 60 entries ` +
+        `(6 tiers x ARCH_PER_TIER ${ARCH_PER_TIER}), found ${ARCHETYPE_ID_BY_CODE.length}`
+    );
+  }
+  for (let c = 0; c < 60; c++) {
+    if (typeof ARCHETYPE_ID_BY_CODE[c] !== 'string' || ARCHETYPE_ID_BY_CODE[c].length === 0) {
+      throw new Error(`[objects.js invariant] hole in ARCHETYPE_ID_BY_CODE at code ${c}`);
+    }
+  }
 }
 
 /* ================================================================== */
@@ -105,11 +132,11 @@ export class ObjectStore {
     this.pz = new Float32Array(capacity);
     /** @type {Float32Array} Bounding-sphere radius, sim units (jitter applied). */
     this.radius = new Float32Array(capacity);
-    /** @type {Uint16Array} Archetype code (tier*8 + indexInTier, see archetypeCode()). */
+    /** @type {Uint16Array} Archetype code (tier*ARCH_PER_TIER + indexInTier, see archetypeCode()). */
     this.archetype = new Uint16Array(capacity);
     /** @type {Uint8Array} Home tier band 0..5 (which spatial hash owns it). */
     this.tierOf = new Uint8Array(capacity);
-    /** @type {Uint8Array} FLAG_ALIVE | FLAG_FADING | FLAG_TOMB bits. */
+    /** @type {Uint8Array} FLAG_ALIVE | FLAG_FADING | FLAG_TOMB | FLAG_RARE bits. */
     this.flags = new Uint8Array(capacity);
     /** @type {Int32Array} InstancedPool slot, or -1 when not instanced. */
     this.instanceSlot = new Int32Array(capacity).fill(-1);

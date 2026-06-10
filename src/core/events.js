@@ -8,14 +8,34 @@
  *
  * Contract (exhaustive — see src/types.js for payload typedefs):
  *   'game:start' {}   'game:reset' {}   'game:win' {trueRadius, seed}
- *   'absorb'   {objIndex, archetypeId, sizeReal, combo, trueRadius, count}
- *   'grow'     {trueRadius, simRadius, progress01ToNextTier}    (throttled 10Hz)
+ *   'absorb'   {objIndex, archetypeId, sizeReal, combo, trueRadius, count, rare}
+ *   'grow'     {trueRadius, simRadius, progress01ToNextTier, dashGauge01} (throttled 10Hz)
  *   'bounce'   {impactSpeed01}
  *   'knockOff' {count}
  *   'tierUp'   {tierIndex, name, trueRadius}                    (COSMETIC ONLY)
  *   'rescale'  {S}
  *   'rebase'   {sx, sz}   (floating-origin shift subtracted from the world)
  *   'frameStats' {ms, drawCalls, tris, alive}                   (dev builds)
+ *   ---- v2 (moon update — docs/DESIGN-V2.md §インターフェース) ----
+ *   'dash'        {gauge01}                       (ballPhysics -> cameraRig kick, effects burst, sfx whoosh, hud zero)
+ *   'dashReady'   {}                              (ballPhysics, once per refill -> hud flash, sfx chime)
+ *   'score'       {score, delta, combo, rare}     (runStats -> hud, sfx when rare)
+ *   'time'        {timeS}                         (runStats, on 0.1s SIM-boundary -> hud)
+ *   'moonCall'    {trueRadius}                    (finale once -> hud toast, env pulse, bgm swell, sfx pad)
+ *   'moonGuide'   {x01, y01, onScreen, active}    (finale 10Hz during DESCENT/LANDED, +one active:false on CONTACT -> hud arrow)
+ *   'moonContact' {}                              (finale once = run end -> runStats freeze+GOAL, bgm duck, sfx fanfare, hud hide, screens flash)
+ *   'goal'        {timeS, score, rank, trueRadius, absorbed, raresFound, seed, newRecordTime, newRecordScore} (runStats once -> screens cache + X URL build)
+ *   'ui:muteRequest' {}                           (hud -> main, the single mute owner)
+ *   'muteChanged' {muted}                         (main -> hud icon)
+ *
+ * v2 CONTRACT NOTES (binding):
+ *  - ABSORB subscription order at boot: main attach-handler -> runStats ->
+ *    sfx/effects/hud (handlers run in subscription order; runStats must see
+ *    the payload after main but before the cosmetic consumers).
+ *  - 'game:win' is now emitted by MAIN.JS when finale.state === 'done'
+ *    (was ScaleManager's WIN_RADIUS_M latch in v1; payload unchanged).
+ *  - 'goal' fields must be COPIED by subscribers (payload is reused like all
+ *    others; screens.js caches a field-by-field copy).
  */
 
 /** Frozen event-name constants — always use these, never string literals. */
@@ -31,6 +51,17 @@ export const EVT = Object.freeze({
   RESCALE: 'rescale',
   REBASE: 'rebase',
   FRAME_STATS: 'frameStats',
+  // ---- v2 (moon update) ----
+  DASH: 'dash',
+  DASH_READY: 'dashReady',
+  SCORE: 'score',
+  TIME: 'time',
+  MOON_CALL: 'moonCall',
+  MOON_GUIDE: 'moonGuide',
+  MOON_CONTACT: 'moonContact',
+  GOAL: 'goal',
+  MUTE_REQUEST: 'ui:muteRequest',
+  MUTE_CHANGED: 'muteChanged',
 });
 
 /**
@@ -46,9 +77,9 @@ export const PAYLOADS = {
   /** @type {import('../types.js').GameWinEvent} */
   gameWin: { trueRadius: 0, seed: 0 },
   /** @type {import('../types.js').AbsorbEvent} */
-  absorb: { objIndex: 0, archetypeId: '', sizeReal: 0, combo: 0, trueRadius: 0, count: 0 },
+  absorb: { objIndex: 0, archetypeId: '', sizeReal: 0, combo: 0, trueRadius: 0, count: 0, rare: false },
   /** @type {import('../types.js').GrowEvent} */
-  grow: { trueRadius: 0, simRadius: 0, progress01ToNextTier: 0 },
+  grow: { trueRadius: 0, simRadius: 0, progress01ToNextTier: 0, dashGauge01: 1 },
   /** @type {import('../types.js').BounceEvent} */
   bounce: { impactSpeed01: 0 },
   /** @type {import('../types.js').KnockOffEvent} */
@@ -61,6 +92,37 @@ export const PAYLOADS = {
   rebase: { sx: 0, sz: 0 },
   /** @type {import('../types.js').FrameStatsEvent} */
   frameStats: { ms: 0, drawCalls: 0, tris: 0, alive: 0 },
+  // ---- v2 (moon update) ----
+  /** @type {import('../types.js').DashEvent} */
+  dash: { gauge01: 0 },
+  /** @type {import('../types.js').DashReadyEvent} */
+  dashReady: {},
+  /** @type {import('../types.js').ScoreEvent} */
+  score: { score: 0, delta: 0, combo: 0, rare: false },
+  /** @type {import('../types.js').TimeEvent} */
+  time: { timeS: 0 },
+  /** @type {import('../types.js').MoonCallEvent} */
+  moonCall: { trueRadius: 0 },
+  /** @type {import('../types.js').MoonGuideEvent} */
+  moonGuide: { x01: 0, y01: 0, onScreen: false, active: false },
+  /** @type {import('../types.js').MoonContactEvent} */
+  moonContact: {},
+  /** @type {import('../types.js').GoalEvent} */
+  goal: {
+    timeS: 0,
+    score: 0,
+    rank: '',
+    trueRadius: 0,
+    absorbed: 0,
+    raresFound: 0,
+    seed: 0,
+    newRecordTime: false,
+    newRecordScore: false,
+  },
+  /** @type {import('../types.js').MuteRequestEvent} */
+  muteRequest: {},
+  /** @type {import('../types.js').MuteChangedEvent} */
+  muteChanged: { muted: false },
 };
 
 /**

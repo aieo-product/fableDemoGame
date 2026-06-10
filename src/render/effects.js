@@ -13,12 +13,24 @@
  * multiplies live particle state by S (world sim positions); REBASE shifts
  * live particle positions by (sx, sz); GAME_RESET kills everything.
  *
+ * v2 (moon update) — still exactly 3 draw calls (everything reuses the same
+ * three pools):
+ *  - EVT.DASH -> 10-speed-line burst along the dash direction (lines pool).
+ *  - setRareProvider(fn): fn is spawner.forEachAliveRare (wired by main at
+ *    integration); polled each update to spawn ~3 golden twinkles/s per
+ *    alive rare within fog range (ring pool).
+ *  - moonBurst(): finale ASCENSION golden sparkle fountain rising from the
+ *    ball position (the finale parks ball.pos on the moon center, so the
+ *    fountain tracks the rising moon) (pops pool).
+ *  - dustRing(cx, cy, cz, radiusSim): finale LANDED one-shot dust ring at the
+ *    moon's footprint (ring pool).
+ *
  * NOTE for integration: update needs the ball — call
  * effects.update(frameDt, ballPhys.state) in frame-order step 6.
  */
 
 import * as THREE from 'three';
-import { SPEED_K, FOV_SPEED_FRAC, KNOCKOFF_MAX } from '../config/tuning.js';
+import { SPEED_K, FOV_SPEED_FRAC, FOG_FAR_K, KNOCKOFF_MAX } from '../config/tuning.js';
 import { bus, EVT } from '../core/events.js';
 import { clamp01 } from '../core/mathUtils.js';
 import { mulberry32 } from '../core/rng.js';
@@ -51,6 +63,20 @@ const DRAG_PER_S = 0.88;
 const POP_COLORS = [0xfff3b0, 0xffd166, 0xffffff, 0xffa8e2, 0xa8e6ff];
 const RING_COLORS = [0xffe9a0, 0xfff7d6, 0xffc46b, 0xffffff];
 const LINE_COLOR = 0xcfe8ff;
+
+/* ---- v2 (moon update) cosmetic-local tunables ---------------------- */
+/** Speed lines spawned per EVT.DASH. */
+const DASH_LINE_BURST = 10;
+/** Golden twinkle spawn rate per alive rare (per second). */
+const TWINKLE_RATE_PER_S = 3;
+/** Golden tints shared by rare twinkles and the moon fountain. */
+const GOLD_COLORS = [0xffd84a, 0xfff3b0, 0xffe9a0, 0xffffff];
+/** moonBurst(): fountain duration (s) and emission rate (sparkles/s). */
+const MOON_BURST_S = 4.5;
+const MOON_BURST_RATE = 26;
+/** dustRing(): quads in the landing dust ring + dusty tints. */
+const DUST_RING_COUNT = 28;
+const DUST_COLORS = [0xd8cfc0, 0xcabfa8, 0xe8e0d0];
 
 const UP = new THREE.Vector3(0, 1, 0);
 
@@ -258,6 +284,29 @@ export class Effects {
     /** @type {number} Speed-line emission accumulator. */
     this._lineAcc = 0;
 
+    /* ---- v2 state ---------------------------------------------------- */
+    /** @type {number} Speed lines pending from EVT.DASH. */
+    this._dashPending = 0;
+    /** @type {?(cb: (idx:number,x:number,y:number,z:number,r:number)=>void)=>void}
+     *  spawner.forEachAliveRare, injected via setRareProvider at integration. */
+    this._rareProvider = null;
+    /** @type {(idx:number,x:number,y:number,z:number,r:number)=>void}
+     *  Pre-bound twinkle callback (allocated ONCE — zero per-frame alloc). */
+    this._twinkleCb = this._spawnTwinkle.bind(this);
+    // Per-update twinkle context (set before calling the provider).
+    this._twDt = 0;
+    this._twBX = 0;
+    this._twBY = 0;
+    this._twBZ = 0;
+    this._twRange2 = 0;
+    /** @type {number} moonBurst fountain time remaining (s). */
+    this._fountainT = 0;
+    /** @type {number} Fountain emission accumulator. */
+    this._fountainAcc = 0;
+
+    eventBus.on(EVT.DASH, () => {
+      this._dashPending = DASH_LINE_BURST;
+    });
     eventBus.on(EVT.ABSORB, () => {
       this._popQueue += POP_PER_ABSORB;
       if (this._popQueue > POP_QUEUE_MAX) this._popQueue = POP_QUEUE_MAX;
@@ -366,12 +415,157 @@ export class Effects {
       } else {
         this._lineAcc = 0;
       }
+
+      // ---- v2: dash speed-line burst (EVT.DASH fired inside the physics ----
+      // step; vel already carries the impulse, so the burst aligns with it).
+      if (this._dashPending > 0) {
+        if (speed > 1e-6) {
+          const fx = vx / speed;
+          const fz = vz / speed;
+          let n = this._dashPending;
+          while (n > 0) {
+            n--;
+            const side = this._rng() < 0.5 ? -1 : 1;
+            const off = r * (0.9 + 1.4 * this._rng());
+            this._lines.spawn(
+              ball.pos.x + fx * r * (1.5 + 1.5 * this._rng()) - fz * side * off,
+              ball.pos.y + r * (0.2 + 1.2 * this._rng()),
+              ball.pos.z + fz * r * (1.5 + 1.5 * this._rng()) + fx * side * off,
+              -vx * 0.35, 0, -vz * 0.35,
+              0.25 + 0.12 * this._rng(),
+              r * (1.6 + 1.2 * this._rng()),
+              LINE_COLOR,
+              0, 0, 1, 0
+            );
+          }
+        }
+        this._dashPending = 0; // burst (or drop if somehow stationary)
+      }
+
+      // ---- v2: golden twinkles on alive rares (provider = spawner's --------
+      // forEachAliveRare; context fields set first so the pre-bound callback
+      // stays allocation-free).
+      if (this._rareProvider !== null) {
+        this._twDt = dt;
+        this._twBX = ball.pos.x;
+        this._twBY = ball.pos.y;
+        this._twBZ = ball.pos.z;
+        const range = FOG_FAR_K * r;
+        this._twRange2 = range * range;
+        this._rareProvider(this._twinkleCb);
+      }
+
+      // ---- v2: moonBurst golden fountain (finale ASCENSION; the finale -----
+      // parks ball.pos on the moon center so the fountain rides the ascent).
+      if (this._fountainT > 0) {
+        this._fountainT -= dt;
+        this._fountainAcc += MOON_BURST_RATE * dt;
+        while (this._fountainAcc >= 1) {
+          this._fountainAcc -= 1;
+          const a = this._rng() * Math.PI * 2;
+          const y = 0.55 + 0.45 * this._rng();
+          const h = Math.sqrt(1 - y * y);
+          const dx = Math.cos(a) * h;
+          const dz = Math.sin(a) * h;
+          const speedF = r * (2.2 + 2.6 * this._rng());
+          this._pops.spawn(
+            ball.pos.x + dx * r * 2.4, ball.pos.y + y * r * 2.4, ball.pos.z + dz * r * 2.4,
+            dx * speedF, y * speedF + r * 2.0, dz * speedF,
+            0.8 + 0.5 * this._rng(),
+            r * (0.14 + 0.2 * this._rng()),
+            GOLD_COLORS[(this._rng() * GOLD_COLORS.length) | 0],
+            (this._rng() - 0.5) * 12,
+            Math.sin(a), 0.5, Math.cos(a)
+          );
+        }
+      }
     }
 
     const g = GRAVITY_K * r;
     this._pops.update(dt, g);
     this._ring.update(dt, g * 0.6);
     this._lines.update(dt, 0);
+  }
+
+  /* ---------------------------------------------------------------- */
+  /* v2 public API (moon update)                                       */
+  /* ---------------------------------------------------------------- */
+
+  /**
+   * Inject the alive-rare iterator (main wires
+   * effects.setRareProvider(spawner.forEachAliveRare.bind(spawner)) at
+   * integration). Polled once per update for golden twinkles.
+   * @param {(cb: (idx:number, x:number, y:number, z:number, r:number) => void) => void} fn
+   */
+  setRareProvider(fn) {
+    this._rareProvider = fn;
+  }
+
+  /**
+   * Start the finale ASCENSION golden sparkle fountain (called once by
+   * game/finale.js when ascension begins). Emits from ball.pos — the finale
+   * keeps ball.pos on the moon center during ascension/afterglow.
+   */
+  moonBurst() {
+    this._fountainT = MOON_BURST_S;
+    this._fountainAcc = 0;
+  }
+
+  /**
+   * One-shot dust ring at the moon's landing footprint (called once by
+   * game/finale.js on entering LANDED). Spawns immediately — no ball needed.
+   * Particles live in world sim space and ride the existing RESCALE/REBASE
+   * hooks like every other quad.
+   * @param {number} cx Moon center X (sim units).
+   * @param {number} cy Ground height of the ring (sim units; pass 0).
+   * @param {number} cz Moon center Z (sim units).
+   * @param {number} radiusSim Moon radius (sim units) — ring radius / scale source.
+   */
+  dustRing(cx, cy, cz, radiusSim) {
+    const R = radiusSim;
+    for (let i = 0; i < DUST_RING_COUNT; i++) {
+      const a = (i / DUST_RING_COUNT) * Math.PI * 2;
+      const dx = Math.sin(a);
+      const dz = Math.cos(a);
+      this._ring.spawn(
+        cx + dx * R * (0.9 + 0.15 * this._rng()),
+        cy + R * 0.06,
+        cz + dz * R * (0.9 + 0.15 * this._rng()),
+        dx * R * (0.9 + 0.7 * this._rng()), R * (0.25 + 0.3 * this._rng()), dz * R * (0.9 + 0.7 * this._rng()),
+        0.6 + 0.4 * this._rng(),
+        R * (0.1 + 0.12 * this._rng()),
+        DUST_COLORS[(this._rng() * DUST_COLORS.length) | 0],
+        (this._rng() - 0.5) * 6,
+        dz, 0.3, -dx
+      );
+    }
+  }
+
+  /**
+   * Pre-bound per-rare callback handed to the provider. Spawns a golden
+   * twinkle at ~TWINKLE_RATE_PER_S per rare, only within fog range of the
+   * ball. Context (_tw*) is set by update() right before the provider call.
+   * @param {number} _idx Store index (unused — identity comes from position).
+   * @param {number} x @param {number} y @param {number} z Rare position (sim).
+   * @param {number} r Rare bounding radius (sim units).
+   */
+  _spawnTwinkle(_idx, x, y, z, r) {
+    const dx = x - this._twBX;
+    const dz = z - this._twBZ;
+    if (dx * dx + dz * dz > this._twRange2) return;
+    if (this._rng() >= TWINKLE_RATE_PER_S * this._twDt) return;
+    const a = this._rng() * Math.PI * 2;
+    this._ring.spawn(
+      x + (this._rng() - 0.5) * r * 1.4,
+      y + r * (0.4 + 0.9 * this._rng()),
+      z + (this._rng() - 0.5) * r * 1.4,
+      0, r * (0.5 + 0.5 * this._rng()), 0,
+      0.4 + 0.3 * this._rng(),
+      r * (0.25 + 0.25 * this._rng()),
+      GOLD_COLORS[(this._rng() * GOLD_COLORS.length) | 0],
+      (this._rng() - 0.5) * 10,
+      Math.sin(a), 0.5, Math.cos(a)
+    );
   }
 
   /**
@@ -387,7 +581,8 @@ export class Effects {
     this._lines.rebase(sx, sz);
   }
 
-  /** Kill all live particles and pending bursts (game reset). */
+  /** Kill all live particles and pending bursts (game reset). The rare
+   *  provider is wiring-level and survives reset. */
   reset() {
     this._pops.killAll();
     this._ring.killAll();
@@ -395,5 +590,8 @@ export class Effects {
     this._popQueue = 0;
     this._ringPending = false;
     this._lineAcc = 0;
+    this._dashPending = 0;
+    this._fountainT = 0;
+    this._fountainAcc = 0;
   }
 }

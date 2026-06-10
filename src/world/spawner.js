@@ -20,6 +20,17 @@
  *    rescale exponent so global<->current conversions stay exact.
  *  - Knock-off re-injection: ball.knockOff() WorldReentry records re-enter as
  *    ballistic world instances (small fixed flight pool, then static).
+ *  - v2 LANDMARKS: archetype slots [8]/[9] of every tier are archRoll-eligible
+ *    ONLY for placement j === 0 of a chunk (dual cumulative weight tables
+ *    _cumW8 / _cumW10, ONE archRoll draw either way at the same draw position
+ *    — eligibility depends only on j, so a scenery chunk later upgraded to
+ *    target role regenerates identically).
+ *  - v2 RARES: rareRoll is drawn LAST, UNCONDITIONALLY, for every placement;
+ *    rareRoll < RARE_CHANCE on a non-landmark slot promotes the placement
+ *    (FLAG_RARE, RARE_TINT instanceColor, scale * RARE_SCALE_MUL). Alive rares
+ *    are tracked in a bounded (storeIdx, slotGen) Int32Array list exposed via
+ *    forEachAliveRare() (effects golden twinkles); reinjected knock-offs are
+ *    NEVER rare (score credit was granted at absorb — no double count).
  *
  * SCALE MODEL: band b's chunk grid lives in b's NATIVE sim units (the sim
  * scale when b is the current tier, worldScale_b = 0.1 * 5^b). Conversion
@@ -34,10 +45,11 @@
  */
 
 import * as THREE from 'three';
-import { TIERS } from '../config/tiers.js';
+import { TIERS, ARCH_PER_TIER } from '../config/tiers.js';
 import { hash } from '../core/rng.js';
 import { FreeList, IntRing } from '../core/pool.js';
 import { EVT } from '../core/events.js';
+import { FLAG_RARE } from './objects.js';
 import {
   ALIVE_TOTAL_BUDGET,
   DESPAWN_BUDGET_PER_FRAME,
@@ -45,6 +57,10 @@ import {
   FIXED_DT,
   FOG_FAR_K,
   PREWARM_FRACTION,
+  RARE_CHANCE,
+  RARE_LIST_CAP,
+  RARE_SCALE_MUL,
+  RARE_TINT,
   SCENERY_LOAD_RADIUS_SIM,
   SCENERY_OBJECTS_PER_CHUNK,
   SIM_RADIUS_MAX,
@@ -99,8 +115,8 @@ const TWO_PI = Math.PI * 2;
 
 /**
  * Global numeric archetype index convention (shared with ObjectStore.archetype
- * U16 and absorb.js): index = tier * 8 + positionInTier (0..47), derived from
- * the FROZEN TIERS[t].archetypeIds order.
+ * U16 and absorb.js): index = tier * ARCH_PER_TIER + positionInTier (0..59),
+ * derived from the FROZEN TIERS[t].archetypeIds order (slots 8/9 = landmarks).
  * @type {string[]}
  */
 export const ARCHETYPE_IDS = [];
@@ -115,9 +131,10 @@ for (let t = 0; t < TIERS.length; t++) {
 }
 
 /**
- * Resolve a catalog id to its global numeric archetype index (tier*8 + pos).
+ * Resolve a catalog id to its global numeric archetype index
+ * (tier*ARCH_PER_TIER + pos).
  * @param {string} id Catalog id.
- * @returns {number} Index 0..47, or -1 if unknown.
+ * @returns {number} Index 0..59, or -1 if unknown.
  */
 export function archetypeIndexFor(id) {
   const i = ARCH_INDEX.get(id);
@@ -126,7 +143,7 @@ export function archetypeIndexFor(id) {
 
 /**
  * Resolve a global numeric archetype index back to its catalog id.
- * @param {number} index Index 0..47.
+ * @param {number} index Index 0..59.
  * @returns {string} Catalog id, or '' if out of range.
  */
 export function archetypeIdFor(index) {
@@ -204,7 +221,7 @@ export class Spawner {
     this._instances = instances;
     this._bus = bus;
 
-    /* ---- resolved per-archetype stats (48 entries, fallback defaults) ---- */
+    /* ---- resolved per-archetype stats (60 entries, fallback defaults) ---- */
     const n = ARCHETYPE_IDS.length;
     this._radNom = new Float64Array(n);
     this._jit = new Float64Array(n);
@@ -215,10 +232,25 @@ export class Spawner {
     this._palettes = new Array(n);
     /** @type {Array<object|null>} Lazily resolved InstancedPool per archetype. */
     this._poolOf = new Array(n);
-    /** Per-tier cumulative spawn weights (8 per tier, row-major). */
-    this._cumW = new Float64Array(n);
-    this._wTot = new Float64Array(TIERS.length);
+    /**
+     * Dual cumulative spawn-weight tables (v2 landmark eligibility rule):
+     * _cumW8 spans slots 0-7 only (used for placements j > 0); _cumW10 spans
+     * all ARCH_PER_TIER slots incl. landmarks 8/9 (used ONLY for j === 0).
+     * Both row-major per tier; matching totals in _wTot8/_wTot10.
+     */
+    this._cumW8 = new Float64Array(TIERS.length * 8);
+    this._cumW10 = new Float64Array(TIERS.length * ARCH_PER_TIER);
+    this._wTot8 = new Float64Array(TIERS.length);
+    this._wTot10 = new Float64Array(TIERS.length);
     this._resolveCatalog(catalog);
+
+    /* ---- alive-rare list: (storeIdx, slotGen) pairs, bounded (v2) ---- */
+    /** @type {Int32Array} Pairs [idx0, gen0, idx1, gen1, ...]. */
+    this._rareList = new Int32Array(2 * RARE_LIST_CAP);
+    /** @type {number} Live pair count (<= RARE_LIST_CAP). */
+    this._rareCount = 0;
+    /** @type {boolean} DEV: 0.9 * ALIVE_TOTAL_BUDGET warning latch. */
+    this._aliveWarned = false;
 
     /* ---- chunk records ---- */
     /** @type {Array<{active:boolean,key:number,band:number,cx:number,cz:number,seed:number,sub:number,gen:number,stamp:number,wantK:number,enqueuedThrough:number,count:number,entries:Int32Array}>} */
@@ -388,6 +420,23 @@ export class Spawner {
     this._drainSpawn(SPAWN_BUDGET_PER_FRAME);
     this._subPixelSweep();
     this._updateFlights(dt);
+
+    /* v2 DEV: surface spawn-queue stall risk early (population peak ~4050 of
+       4096 is tight — see DESIGN-V2.md density arithmetic). Latched warn,
+       re-arms after the population falls back below 85%. */
+    if (DEV) {
+      if (this._aliveCount > 0.9 * ALIVE_TOTAL_BUDGET) {
+        if (!this._aliveWarned) {
+          this._aliveWarned = true;
+          console.warn(
+            `[spawner] aliveCount ${this._aliveCount} > 90% of ALIVE_TOTAL_BUDGET ` +
+              `(${ALIVE_TOTAL_BUDGET}) — spawn queue may stall (consider SCENERY_OBJECTS_PER_CHUNK 10 -> 8)`
+          );
+        }
+      } else if (this._aliveWarned && this._aliveCount < 0.85 * ALIVE_TOTAL_BUDGET) {
+        this._aliveWarned = false;
+      }
+    }
   }
 
   /**
@@ -418,7 +467,7 @@ export class Spawner {
     store.radius[idx] = r;
     store.archetype[idx] = archIdx;
     store.tierOf[idx] = this._tierOfArch[archIdx];
-    store.flags[idx] = 1; // ALIVE
+    store.flags[idx] = 1; // ALIVE — reinject NEVER sets FLAG_RARE (v2: score credit was granted at absorb)
     store.instanceSlot[idx] = slot;
     this._chunkKeyOf[idx] = -1; // not chunk-tied: never touches consumed bitmasks
     this._placementOf[idx] = -1;
@@ -493,6 +542,25 @@ export class Spawner {
   }
 
   /**
+   * v2: invoke cb(storeIdx, x, y, z, radiusSim) for every alive rare.
+   * Bounded by RARE_LIST_CAP; stale (recycled/absorbed) entries self-skip via
+   * the slotGen compare. effects.js polls this via setRareProvider for the
+   * golden twinkles — zero allocation, do not allocate inside cb.
+   * @param {(idx: number, x: number, y: number, z: number, r: number) => void} cb
+   */
+  forEachAliveRare(cb) {
+    const store = this._store;
+    const list = this._rareList;
+    const n = this._rareCount;
+    for (let i = 0; i < n; i++) {
+      const idx = list[2 * i];
+      if ((this._slotGen[idx] & 0xff) !== list[2 * i + 1]) continue; // stale
+      if ((store.flags[idx] & 1) === 0) continue;
+      cb(idx, store.px[idx], store.py[idx], store.pz[idx], store.radius[idx]);
+    }
+  }
+
+  /**
    * Full reset (game restart). Assumes the integrator ALSO resets the
    * ObjectStore, the spatial hashes and the InstancedPools — this clears only
    * spawner-owned state (records, queues, bitmasks, origin, scale exponent).
@@ -524,6 +592,8 @@ export class Spawner {
     this._cleanupCursor = 0;
     this._aliveCount = 0;
     this._droppedSpawns = 0;
+    this._rareCount = 0; // rare-list compaction hook 3 of 3 (with _onAbsorb/_despawnIndex)
+    this._aliveWarned = false;
     for (let i = 0; i < REENTRY_CAP; i++) this._flights[i].active = false;
   }
 
@@ -546,6 +616,7 @@ export class Spawner {
     this._placementOf[idx] = -1;
     this._slotGen[idx] = (this._slotGen[idx] + 1) & 0xff;
     if (this._aliveCount > 0) this._aliveCount--;
+    this._compactRares(); // rare-list compaction hook 1 of 3
   }
 
   /**
@@ -849,7 +920,10 @@ export class Spawner {
    * sub-seed hash(chunkSeed, j, ...) avoids replaying the chunk rng stream,
    * and a strided sub-grid cell gives Poisson-quality spacing with zero
    * overlap tests. Draw order is FIXED (jx, jz, archRoll, sizeRoll, yawRoll,
-   * paletteRoll[, tumble x3]) — never reorder, it is the determinism contract.
+   * paletteRoll[, tumble x3], rareRoll) — never reorder, it is the
+   * determinism contract. rareRoll is drawn LAST, UNCONDITIONALLY, for every
+   * placement (even ones that promote to landmarks or get fog-skipped), so
+   * the sequence consumed per placement is invariant under role changes.
    * @param {object} rec Chunk record.
    * @param {number} j Placement index 0..wantK-1.
    * @returns {boolean} False only when the ObjectStore is exhausted (retry).
@@ -869,14 +943,28 @@ export class Spawner {
     const gxN = rec.cx * cell + (sgx + 0.5 + jx) * sub;
     const gzN = rec.cz * cell + (sgz + 0.5 + jz) * sub;
 
-    /* Weighted archetype pick within the band's 8 ids. */
-    const archRoll = this._srand() * this._wTot[band];
-    const base = band * 8;
-    let ai = 7;
-    for (let i = 0; i < 8; i++) {
-      if (archRoll < this._cumW[base + i]) { ai = i; break; }
+    /* Weighted archetype pick. ONE raw archRoll draw at a fixed position;
+       landmark slots [8]/[9] are eligible ONLY for placement j === 0
+       (_cumW10), every other placement picks within slots 0-7 (_cumW8).
+       Eligibility depends only on j => deterministic across role upgrades. */
+    const archRoll = this._srand();
+    let ai;
+    if (j === 0) {
+      const r = archRoll * this._wTot10[band];
+      const base10 = band * ARCH_PER_TIER;
+      ai = ARCH_PER_TIER - 1;
+      for (let i = 0; i < ARCH_PER_TIER; i++) {
+        if (r < this._cumW10[base10 + i]) { ai = i; break; }
+      }
+    } else {
+      const r = archRoll * this._wTot8[band];
+      const base8 = band * 8;
+      ai = 7;
+      for (let i = 0; i < 8; i++) {
+        if (r < this._cumW8[base8 + i]) { ai = i; break; }
+      }
     }
-    const archIdx = base + ai;
+    const archIdx = band * ARCH_PER_TIER + ai;
 
     const sizeRoll = this._srand();
     const yawRoll = this._srand();
@@ -888,13 +976,18 @@ export class Spawner {
       tq1 = this._srand();
       tq2 = this._srand();
     }
+    /* rareRoll: ALWAYS the final draw (see draw-order contract above).
+       Landmarks (ai >= 8) consume the roll but are never promoted. */
+    const rareRoll = this._srand();
+    const isRare = rareRoll < RARE_CHANCE && ai < 8;
     /* === all deterministic draws complete — runtime-dependent checks below === */
 
     const toCur = pow5(band - this._scaleExp);
     const x = gxN * toCur - this._originX;
     const z = gzN * toCur - this._originZ;
     const radiusReal = this._radNom[archIdx] * (1 + (sizeRoll * 2 - 1) * this._jit[archIdx]);
-    const simR = radiusReal * this._invWorldScale;
+    let simR = radiusReal * this._invWorldScale;
+    if (isRare) simR *= RARE_SCALE_MUL;
     const y = simR * (1 + this._yOff[archIdx]);
 
     const dx = x - this._ballX;
@@ -926,11 +1019,14 @@ export class Spawner {
     store.radius[idx] = simR;
     store.archetype[idx] = archIdx;
     store.tierOf[idx] = band;
-    store.flags[idx] = 1; // ALIVE
+    store.flags[idx] = isRare ? 1 | FLAG_RARE : 1; // ALIVE (| RARE)
     store.instanceSlot[idx] = slot;
     this._chunkKeyOf[idx] = rec.key;
     this._placementOf[idx] = j;
     this._aliveCount++;
+    /* Rare list push happens here — AFTER both store.alloc and pool.alloc
+       succeeded (the pool-full drop path above never reaches this point). */
+    if (isRare) this._pushRare(idx);
 
     if (upright) {
       _QUAT.setFromAxisAngle(_AXIS, yawRoll * TWO_PI);
@@ -944,8 +1040,12 @@ export class Spawner {
     }
     _POS.set(x, y, z);
     pool.setTransform(slot, _POS, _QUAT, simR);
-    const pal = this._palettes[archIdx];
-    pool.setColor(slot, pal[(paletteRoll * pal.length) | 0]);
+    if (isRare) {
+      pool.setColor(slot, RARE_TINT); // golden override (paletteRoll still consumed)
+    } else {
+      const pal = this._palettes[archIdx];
+      pool.setColor(slot, pal[(paletteRoll * pal.length) | 0]);
+    }
 
     /* Belt-and-suspenders: anything landing inside fog range scale-fades in. */
     const fogFar = FOG_FAR_K * this._ballR;
@@ -995,6 +1095,55 @@ export class Spawner {
     this._placementOf[idx] = -1;
     this._slotGen[idx] = (this._slotGen[idx] + 1) & 0xff;
     if (this._aliveCount > 0) this._aliveCount--;
+    this._compactRares(); // rare-list compaction hook 2 of 3
+  }
+
+  /* ---------------------------------------------------------------- */
+  /* Alive-rare list (v2)                                              */
+  /* ---------------------------------------------------------------- */
+
+  /**
+   * Append a freshly spawned rare to the (storeIdx, slotGen) list. Called
+   * ONLY from _spawnPlacement after both store.alloc and pool.alloc
+   * succeeded. Overflow policy (documented, cosmetic-only): the OLDEST entry
+   * stops sparkling — the object stays absorbable and scorable, only the
+   * twinkle provider misses it.
+   * @param {number} idx Store slot index.
+   */
+  _pushRare(idx) {
+    if (this._rareCount >= RARE_LIST_CAP) {
+      this._rareList.copyWithin(0, 2, 2 * this._rareCount);
+      this._rareCount--;
+    }
+    const o = 2 * this._rareCount;
+    this._rareList[o] = idx;
+    this._rareList[o + 1] = this._slotGen[idx] & 0xff;
+    this._rareCount++;
+  }
+
+  /**
+   * Drop stale rare entries in place (slotGen mismatch / slot no longer an
+   * alive rare). Called from exactly three hooks: _onAbsorb, _despawnIndex,
+   * reset() (reset just zeroes the count). <= RARE_LIST_CAP iterations.
+   */
+  _compactRares() {
+    const store = this._store;
+    const list = this._rareList;
+    let w = 0;
+    const n = this._rareCount;
+    for (let i = 0; i < n; i++) {
+      const idx = list[2 * i];
+      const gen = list[2 * i + 1];
+      if ((this._slotGen[idx] & 0xff) !== gen) continue;
+      const f = store.flags[idx];
+      if ((f & 1) === 0 || (f & FLAG_RARE) === 0) continue;
+      if (w !== i) {
+        list[2 * w] = idx;
+        list[2 * w + 1] = gen;
+      }
+      w++;
+    }
+    this._rareCount = w;
   }
 
   /* ---------------------------------------------------------------- */
@@ -1005,18 +1154,24 @@ export class Spawner {
    * Continuous leftover drain: round-robin scan of SUBPIXEL_SWEEP_BUDGET store
    * slots per frame; any alive object with diameter < SUBPIXEL_RATIO * ballR
    * scale-fades out permanently (marked consumed). Size-based only — NEVER
-   * tier-gated (seamlessness law).
+   * tier-gated (seamlessness law). v2 EXCEPTION (cosmetic-only): FLAG_RARE
+   * objects are skipped ONLY while their home band is still live
+   * (tierOf >= tier-1) so a sparkling rare never vanishes mid-hunt; older
+   * rares despawn normally — no immortal invisible sparklers.
    */
   _subPixelSweep() {
     const store = this._store;
     const flags = store.flags;
     const radius = store.radius;
+    const tierOf = store.tierOf;
+    const rareKeepBand = this._tier - 1;
     const threshR = 0.5 * SUBPIXEL_RATIO * this._ballR; // radius form of the diameter rule
     let kills = 0;
     for (let n = 0; n < SUBPIXEL_SWEEP_BUDGET; n++) {
       const i = this._sweepCursor;
       this._sweepCursor = (this._sweepCursor + 1) & STORE_MASK;
       if ((flags[i] & 1) !== 0 && radius[i] < threshR) {
+        if ((flags[i] & FLAG_RARE) !== 0 && tierOf[i] >= rareKeepBand) continue;
         this._despawnIndex(i, SUBPIXEL_FADE_S, true);
         if (++kills >= SUBPIXEL_KILL_CAP) return;
       }
@@ -1136,13 +1291,16 @@ export class Spawner {
   /**
    * Snapshot catalog stats into flat arrays (boot-time only). Missing entries
    * get neutral placeholders scaled to their tier so partial integration runs.
+   * Builds BOTH cumulative weight tables: _cumW8 over slots 0-7 (j > 0) and
+   * _cumW10 over all ARCH_PER_TIER slots incl. landmarks (j === 0 only).
    * @param {Object<string, Archetype>|null} catalog
    */
   _resolveCatalog(catalog) {
     for (let t = 0; t < TIERS.length; t++) {
-      let acc = 0;
-      for (let i = 0; i < 8; i++) {
-        const archIdx = t * 8 + i;
+      let acc8 = 0;
+      let acc10 = 0;
+      for (let i = 0; i < ARCH_PER_TIER; i++) {
+        const archIdx = t * ARCH_PER_TIER + i;
         const id = ARCHETYPE_IDS[archIdx];
         const a = catalog ? catalog[id] : undefined;
         this._radNom[archIdx] = a && a.radiusNominal > 0 ? a.radiusNominal : TIERS[t].enterTrueRadius * 0.4;
@@ -1153,10 +1311,18 @@ export class Spawner {
         this._palettes[archIdx] =
           a && a.palette && a.palette.length > 0 ? a.palette : [0x9aa3ad, 0xb5bdc6, 0x7d8790, 0xcfd6dd];
         this._poolOf[archIdx] = null;
-        acc += a && a.spawnWeight > 0 ? a.spawnWeight : 1;
-        this._cumW[archIdx] = acc;
+        // Landmark fallback weight is 0.3 (design band 0.25-0.35), absorbable
+        // slots fall back to 1 — keeps partial-catalog boots representative.
+        const w = a && a.spawnWeight > 0 ? a.spawnWeight : i >= 8 ? 0.3 : 1;
+        acc10 += w;
+        this._cumW10[archIdx] = acc10;
+        if (i < 8) {
+          acc8 += w;
+          this._cumW8[t * 8 + i] = acc8;
+        }
       }
-      this._wTot[t] = acc;
+      this._wTot8[t] = acc8;
+      this._wTot10[t] = acc10;
     }
   }
 }

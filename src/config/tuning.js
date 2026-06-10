@@ -19,12 +19,118 @@ export const SIM_RADIUS_MIN = 0.5;
 export const SIM_RADIUS_MAX = 2.5;
 /** Starting ball radius in real meters (5 cm — Desk tier). */
 export const START_RADIUS_M = 0.05;
-/** Win condition: true ball radius in real meters. */
-export const WIN_RADIUS_M = 500;
+/* v2: WIN_RADIUS_M deleted — replaced by MOON_GOAL_RADIUS_M (finale owns the goal). */
 /** Tier-index hysteresis (+-10% of enterTrueRadius) — guards float edge cases. */
 export const TIER_HYSTERESIS = 0.10;
 /** Floating-origin rebase when |ball.pos| exceeds this many sim units (integer-snapped shift). */
 export const REBASE_DISTANCE_SIM = 1500;
+
+/* ================================================================== */
+/* v2 Moon goal / finale (game/finale.js, render/moon.js)              */
+/* ================================================================== */
+
+/** Finale CALLED state: emit 'moonCall' (toast + sky-moon pulse) at this true radius (m). */
+export const MOON_CALL_RADIUS_M = 420;
+/** Goal: finale DESCENT triggers at this true radius (m). Replaces WIN_RADIUS_M. */
+export const MOON_GOAL_RADIUS_M = 500;
+/** Real-moon radius = MOON_RADIUS_K * ball.radiusSim, FROZEN at descent start. */
+export const MOON_RADIUS_K = 2.6;
+/** Descent duration (s): MoonView lerps start pose -> landing, easeInOutCubic + 0.4s settle. */
+export const MOON_DESCENT_S = 6.0;
+/** Landing point = ballPos + dir * MOON_LAND_DIST_K * radiusSim. */
+export const MOON_LAND_DIST_K = 45;
+/** Landing dir = horizontal vel dir if |vel| >= frac * speedCap, else camera forward. */
+export const MOON_LAND_VEL_FRAC = 0.5;
+/** Min POST-normalization elevation (rad) of every tiers.js moonDir (asserted there). */
+export const MOON_DIR_MIN_ELEV = 0.15;
+/** Contact when dist(ball, moonCenter) <= ballR + moonR * MOON_CONTACT_PAD. */
+export const MOON_CONTACT_PAD = 0.85;
+/** LANDED soft magnet: vel += dirToMoon * frac * ACCEL_K * r * dt (bias only, never overrides input). */
+export const MOON_MAGNET_ACCEL_FRAC = 0.15;
+/** Magnet engages within MOON_MAGNET_RANGE_K * radiusSim of the moon center. */
+export const MOON_MAGNET_RANGE_K = 20;
+/** Contact white flash: 0.12s in, FLASH_S out (#flash-overlay). */
+export const FLASH_S = 0.45;
+/** MERGE: ball.pos lerps into the moon center over this (s); ball hidden at t >= 0.6s. */
+export const MOON_MERGE_S = 1.2;
+/** ASCENSION duration (s): moon rises ease-in while env.beginNightFade runs. */
+export const MOON_ASCEND_S = 5.0;
+/** Ascension target height = ascendBaseY + MOON_ASCEND_HEIGHT_K * radiusSim. */
+export const MOON_ASCEND_HEIGHT_K = 40;
+/** AFTERGLOW hang time (s) before finale.state === 'done' (main emits game:win). */
+export const AFTERGLOW_S = 2.5;
+
+/* ================================================================== */
+/* v2 Dash (physics/ballPhysics.js, input/input.js)                    */
+/* ================================================================== */
+
+/** Gauge recharge: dashGauge01 += dt / DASH_RECHARGE_S (clamped 1; 'dashReady' on crossing). */
+export const DASH_RECHARGE_S = 4.0;
+/** Gauge gain per absorb (absorb.js, clamped 1; 'dashReady' edge stays in ballPhysics). */
+export const DASH_ABSORB_GAIN = 0.03;
+/** Dash burst duration (s) — cap/accel multipliers apply while dashTimer > 0. */
+export const DASH_DURATION_S = 0.8;
+/** Speed-cap multiplier while dashing. */
+export const DASH_CAP_MUL = 2.2;
+/** Acceleration multiplier while dashing. */
+export const DASH_ACCEL_MUL = 1.8;
+/** Dash impulse: vel += dir * DASH_IMPULSE_K * radiusSim. */
+export const DASH_IMPULSE_K = 7.0;
+/** Impulse dir = horizontal vel dir if |vel| >= frac * speedCap, else camera forward. */
+export const DASH_DIR_SPEED_K = 0.3;
+/** cameraRig additive FOV kick on 'dash' (deg, decays over DASH_DURATION_S). */
+export const DASH_FOV_BONUS = 8;
+
+/* ================================================================== */
+/* v2 Score / rank (game/runStats.js)                                  */
+/* ================================================================== */
+
+/** Per-object score = max(1, round(SCORE_SIZE_BASE * sizeReal^SCORE_SIZE_POW)). */
+export const SCORE_SIZE_BASE = 100;
+export const SCORE_SIZE_POW = 1.4;
+/** Combo multiplier = min(1 + COMBO_SCORE_K * (combo - 1), COMBO_SCORE_MAX_MUL). */
+export const COMBO_SCORE_K = 0.10;
+export const COMBO_SCORE_MAX_MUL = 3.0;
+/** Flat bonus added when AbsorbEvent.rare (after combo multiplication). */
+export const RARE_SCORE_BONUS = 5000;
+/** Flat bonus on 'moonContact'. */
+export const MOON_SCORE_BONUS = 20000;
+/** Time bonus = round(lerp(TIME_BONUS_MAX, 0, clamp01((timeS - FULL) / (ZERO - FULL)))). */
+export const TIME_BONUS_MAX = 30000;
+export const TIME_BONUS_FULL_S = 300;
+export const TIME_BONUS_ZERO_S = 720;
+/** Rank thresholds (sim seconds): S <= 300, A <= 400, B <= 540, C <= 720, else D.
+ *  Estimates off v1 pacing + dash — re-tune from >= 3 real playthroughs in Phase 3. */
+export const RANK_S_S = 300;
+export const RANK_A_S = 400;
+export const RANK_B_S = 540;
+export const RANK_C_S = 720;
+
+/* ================================================================== */
+/* v2 Rares (world/spawner.js)                                         */
+/* ================================================================== */
+
+/** Rare promotion chance per placement. rareRoll is drawn LAST in the
+ *  per-placement draw order '(jx, jz, archRoll, sizeRoll, yawRoll,
+ *  paletteRoll[, tumble x3], rareRoll)', UNCONDITIONALLY for every placement
+ *  (determinism survives role changes). Landmark slots [8]/[9] are excluded. */
+export const RARE_CHANCE = 0.002;
+/** Rare instances are scaled up by this. */
+export const RARE_SCALE_MUL = 1.15;
+/** Rare instanceColor override (golden). */
+export const RARE_TINT = 0xffd84a;
+/** Alive-rare list capacity (entries; backing Int32Array(2 * CAP) of (storeIdx, slotGen)).
+ *  Overflow policy: oldest entry stops sparkling — cosmetic-only degradation. */
+export const RARE_LIST_CAP = 32;
+
+/* ================================================================== */
+/* v2 Persistence (localStorage)                                       */
+/* ================================================================== */
+
+/** Best records, schema {v:1, bestTime:BestRecord|null, bestScore:BestRecord|null}. */
+export const LS_BEST_KEY = 'fableKatamari.v2.best';
+/** Mute flag ('1'/'0') — read by main.js BEFORE constructing Bgm/Sfx. */
+export const LS_MUTE_KEY = 'fableKatamari.v2.muted';
 
 /* ================================================================== */
 /* Timestep                                                            */
@@ -160,12 +266,16 @@ export const SUBPIXEL_RATIO = 0.04;
 export const SUBPIXEL_SWEEP_BUDGET = 200;
 /** Pre-warm N+2 chunks beyond the fog wall at this fraction of the tier threshold. */
 export const PREWARM_FRACTION = 0.70;
-/** N+1 scenery band: load radius (sim units) and per-chunk density. */
+/** N+1 scenery band: load radius (sim units) and per-chunk density.
+ *  v2: 8 -> 10 (peak population arithmetic: 2000 target + ~600 scenery +
+ *  ~250 capped pre-warm + <=1200 leftovers ≈ 4050 < ALIVE_TOTAL_BUDGET 4096).
+ *  One-line revert to 8 if the 0.9-budget DEV warn fires in Phase 3. */
 export const SCENERY_LOAD_RADIUS_SIM = 140;
-export const SCENERY_OBJECTS_PER_CHUNK = 8;
-/** Alive-population budgets (soft, monitored in dev overlay). */
+export const SCENERY_OBJECTS_PER_CHUNK = 10;
+/** Alive-population budgets (soft, monitored in dev overlay).
+ *  v2: ALIVE_SCENERY_BUDGET deleted (dead constant — never imported).
+ *  Spawner DEV-warns when aliveCount > 0.9 * ALIVE_TOTAL_BUDGET. */
 export const ALIVE_TARGET_BUDGET = 2000;   // tier N targets
-export const ALIVE_SCENERY_BUDGET = 600;   // tier N+1 scenery
 export const ALIVE_LEFTOVER_BUDGET = 1200; // tier N-1 leftovers, falling
 export const ALIVE_TOTAL_BUDGET = 4096;    // hard total
 /** ObjectStore SoA capacity. */
@@ -225,8 +335,16 @@ export const PIXEL_RATIO_MAX = 1.5;
 export const FRAME_BUDGET_MS = 17;
 /** Rolling window for the governor (s). */
 export const GOVERNOR_WINDOW_S = 3;
-/** Budget ceilings (dev-overlay warnings, not runtime behavior). */
-export const DRAW_CALL_CAP = 55;
+/** Budget ceilings (dev-overlay warnings, not runtime behavior).
+ *  v2 ledger (4-band tier-transition worst case, the honest peak):
+ *    40 world InstancedMesh (4 live bands x 10 archetypes)
+ *  +  8 stuck-on-ball families
+ *  +  6 fixed (sky dome, ground, ball core, effects quads, 2x moon mesh+glow
+ *      — moon is finale-only but budgeted)
+ *  +  1 backdrop silhouette ring
+ *  = 56 worst case -> cap 60. If measurement exceeds 56, first lever is
+ *  dropping the moon glow shell (-1), then hiding N+2 pre-warm pools. */
+export const DRAW_CALL_CAP = 60;
 export const TRI_BUDGET = 600000;
 /** Per-archetype merged-geometry triangle cap (asserted at boot in dev). */
 export const ARCHETYPE_TRI_CAP = 350;

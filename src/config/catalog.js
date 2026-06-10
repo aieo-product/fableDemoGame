@@ -1,5 +1,10 @@
 /**
- * @file catalog.js — All 48 spawnable archetypes (8 per tier x 6 tiers).
+ * @file catalog.js — All 60 spawnable archetypes (ARCH_PER_TIER 10 per tier
+ * x 6 tiers). v2: slots [8]/[9] of every tier are LANDMARKS — radiusNominal
+ * ~2.5-4x the tier's largest absorbable, spawnWeight 0.25-0.35, upright,
+ * archRoll-eligible only at chunk placement j === 0 (spawner's landmark
+ * eligibility rule). They use the same build/physics path as everything else
+ * and are absorbed normally once outgrown late in the NEXT tier.
  *
  * Each archetype's buildGeometry(rng) returns ONE merged, vertex-colored
  * BufferGeometry composed of a handful of low-segment primitives
@@ -383,6 +388,49 @@ add({
   },
 });
 
+/* ---- T0 landmarks (slots 8/9) ------------------------------------ */
+
+add({
+  id: 'soda_bottle',
+  tier: 0,
+  radiusNominal: 0.12,
+  radiusJitter: 0.12,
+  spawnWeight: 0.3,
+  palette: [0x49c45f, 0xff8a3d, 0x8a5cc4, 0xffd84d, 0x5ea0ff],
+  yOffset: -0.07,
+  upright: true,
+  collisionScale: 0.7,
+  buildGeometry(rng) {
+    return finish([
+      cyl(0.34, 0.36, 1.15, 10, 0xffffff, { y: 0.58, hex2: 0xddf2ea }), // body (tinted)
+      cyl(0.16, 0.33, 0.38, 10, 0xffffff, { y: 1.34 }), // shoulder taper
+      cyl(0.15, 0.15, 0.22, 8, 0xeaf4f0, { y: 1.63 }), // neck
+      cyl(0.17, 0.17, 0.1, 8, 0xf2f2f6, { y: 1.79 }), // cap
+      cyl(0.37, 0.37, 0.42, 10, 0xf6f6f0, { y: 0.62 }), // label band
+    ]);
+  },
+});
+
+add({
+  id: 'desk_globe',
+  tier: 0,
+  radiusNominal: 0.15,
+  radiusJitter: 0.12,
+  spawnWeight: 0.3,
+  palette: [0x4a8ac4, 0x5ea0ff, 0x49a0a8, 0x6ab0e8],
+  yOffset: -0.13,
+  upright: true,
+  collisionScale: 0.9,
+  buildGeometry(rng) {
+    return finish([
+      cyl(0.42, 0.5, 0.14, 10, 0x6a5a48, { y: 0.07 }), // wooden base
+      cyl(0.06, 0.08, 0.32, 6, 0x8a8f9a, { y: 0.3 }), // stem
+      sph(0.6, 0xffffff, { ws: 10, hs: 7, rz: 0.41, y: 1.05 }), // globe (tinted ocean)
+      torus(0.66, 0.045, 4, 12, 0xd8c9a8, { rz: 0.41, y: 1.05 }), // meridian arc ring
+    ]);
+  },
+});
+
 /* ------------------------------------------------------------------ */
 /* T1 — Room (objects ~8-50 cm radius)                                  */
 /* ------------------------------------------------------------------ */
@@ -544,6 +592,70 @@ add({
       cyl(0.5, 0.42, 1.1, 10, 0xffffff, { hex2: 0xd8dce2, y: 0.55 }), // bin (tinted)
       cyl(0.56, 0.56, 0.12, 10, 0xe2e6ea, { y: 1.16 }), // lid
       box(0.3, 0.07, 0.1, 0x7a8088, { y: 1.26 }), // lid handle
+    ]);
+  },
+});
+
+/* ---- T1 landmarks (slots 8/9) ------------------------------------ */
+
+add({
+  id: 'bookshelf',
+  tier: 1,
+  radiusNominal: 0.9,
+  radiusJitter: 0.12,
+  spawnWeight: 0.3,
+  palette: [0xb07a3f, 0x8a6a4a, 0xc89a6a, 0x6a4a32],
+  yOffset: -0.24,
+  upright: true,
+  collisionScale: 0.85,
+  buildGeometry(rng) {
+    const parts = [
+      box(0.12, 2.0, 0.62, 0xffffff, { x: -0.74, y: 1.0 }), // side (tinted wood)
+      box(0.12, 2.0, 0.62, 0xffffff, { x: 0.74, y: 1.0 }), // side
+      box(1.6, 0.12, 0.62, 0xffffff, { y: 1.94 }), // top
+      box(1.6, 0.12, 0.62, 0xffffff, { y: 0.06 }), // bottom
+      box(1.6, 2.0, 0.08, 0xe8dcc8, { y: 1.0, z: -0.27 }), // back panel
+      box(1.36, 0.08, 0.56, 0xffffff, { y: 0.72 }), // shelf
+      box(1.36, 0.08, 0.56, 0xffffff, { y: 1.36 }), // shelf
+    ];
+    // 12 colored books, 3 rows x 4 (deterministic per-boot rng heights/colors)
+    const bookHex = [0xc94f46, 0x3f6cc4, 0x3f9a5f, 0xe0a050, 0x8a5cc4, 0x4aa0a8];
+    const rowY = [0.12, 0.76, 1.4];
+    for (let row = 0; row < 3; row++) {
+      for (let b = 0; b < 4; b++) {
+        const h = 0.4 + rng() * 0.14;
+        parts.push(
+          box(0.24, h, 0.46, bookHex[(rng() * bookHex.length) | 0], {
+            x: -0.45 + b * 0.3,
+            y: rowY[row] + h / 2,
+          })
+        );
+      }
+    }
+    return finish(parts);
+  },
+});
+
+add({
+  id: 'grandfather_clock',
+  tier: 1,
+  radiusNominal: 1.0,
+  radiusJitter: 0.12,
+  spawnWeight: 0.3,
+  palette: [0x8a5a36, 0x6a4a32, 0xa07848, 0x5a3a28],
+  yOffset: -0.09,
+  upright: true,
+  collisionScale: 0.8,
+  buildGeometry(rng) {
+    return finish([
+      box(0.74, 0.28, 0.5, 0xffffff, { y: 0.14 }), // base (tinted wood)
+      box(0.62, 1.3, 0.42, 0xffffff, { y: 0.85 }), // case body
+      box(0.4, 0.95, 0.06, 0x2e2620, { y: 0.78, z: 0.2 }), // glass door
+      cyl(0.025, 0.025, 0.65, 4, 0xd8c060, { y: 0.95, z: 0.21 }), // pendulum rod
+      cyl(0.09, 0.09, 0.04, 8, 0xe8c878, { rx: HALF_PI, y: 0.6, z: 0.22 }), // pendulum bob
+      box(0.78, 0.55, 0.52, 0xffffff, { y: 1.78 }), // hood
+      cyl(0.24, 0.24, 0.06, 10, 0xf6f2e4, { rx: HALF_PI, y: 1.78, z: 0.25 }), // clock face
+      box(0.82, 0.1, 0.56, 0xffffff, { y: 2.1 }), // crown
     ]);
   },
 });
@@ -718,6 +830,56 @@ add({
   },
 });
 
+/* ---- T2 landmarks (slots 8/9) ------------------------------------ */
+
+add({
+  id: 'utility_pole',
+  tier: 2,
+  radiusNominal: 4.5,
+  radiusJitter: 0.12,
+  spawnWeight: 0.35,
+  palette: [0x9a8a78, 0x8a8f9a, 0xa89888, 0x7a7068],
+  yOffset: 0,
+  upright: true,
+  collisionScale: 0.45,
+  buildGeometry(rng) {
+    return finish([
+      cyl(0.05, 0.08, 2.9, 7, 0xffffff, { y: 1.45, hex2: 0xd8d0c4 }), // pole (tinted)
+      box(1.1, 0.07, 0.07, 0x4a4540, { y: 2.62 }), // upper crossarm
+      box(0.9, 0.07, 0.07, 0x4a4540, { y: 2.34 }), // lower crossarm
+      cyl(0.035, 0.045, 0.1, 5, 0xe8e8e2, { x: -0.48, y: 2.7 }), // insulator
+      cyl(0.035, 0.045, 0.1, 5, 0xe8e8e2, { x: 0.48, y: 2.7 }), // insulator
+      cyl(0.035, 0.045, 0.1, 5, 0xe8e8e2, { x: -0.38, y: 2.42 }), // insulator
+      cyl(0.035, 0.045, 0.1, 5, 0xe8e8e2, { x: 0.38, y: 2.42 }), // insulator
+      cyl(0.13, 0.13, 0.34, 7, 0x6a7078, { x: 0.18, y: 2.05 }), // transformer can
+    ]);
+  },
+});
+
+add({
+  id: 'torii',
+  tier: 2,
+  radiusNominal: 3.5,
+  radiusJitter: 0.12,
+  spawnWeight: 0.25,
+  palette: [0xd2402a, 0xc23a26, 0xe04f3a, 0xb83422],
+  yOffset: -0.39,
+  upright: true,
+  collisionScale: 0.8,
+  buildGeometry(rng) {
+    return finish([
+      cyl(0.1, 0.12, 1.7, 8, 0xffffff, { x: -0.85, y: 0.85 }), // pillar L (tinted vermilion)
+      cyl(0.1, 0.12, 1.7, 8, 0xffffff, { x: 0.85, y: 0.85 }), // pillar R
+      cyl(0.16, 0.18, 0.12, 6, 0x8a8580, { x: -0.85, y: 0.06 }), // base stone L
+      cyl(0.16, 0.18, 0.12, 6, 0x8a8580, { x: 0.85, y: 0.06 }), // base stone R
+      box(1.96, 0.12, 0.16, 0xffffff, { y: 1.32 }), // nuki (tie beam)
+      box(0.12, 0.26, 0.14, 0xffffff, { y: 1.51 }), // gakuzuka (center strut)
+      box(2.3, 0.14, 0.26, 0xffffff, { y: 1.7 }), // shimaki lintel
+      box(2.4, 0.09, 0.3, 0x2e2a28, { y: 1.81 }), // kasagi top cap (dark)
+    ]);
+  },
+});
+
 /* ------------------------------------------------------------------ */
 /* T3 — Town (objects ~2-7 m radius)                                    */
 /* ------------------------------------------------------------------ */
@@ -884,6 +1046,64 @@ add({
       box(1.35, 0.95, 1.15, 0xffffff, { y: 0.48, hex2: 0xe8e0d0 }), // walls (tinted)
       box(1.55, 0.1, 1.35, 0x6a7078, { rx: 0.14, y: 1.02 }), // slanted roof
       box(0.4, 0.6, 0.06, 0x5a4a3a, { y: 0.3, z: 0.59 }), // door
+    ]);
+  },
+});
+
+/* ---- T3 landmarks (slots 8/9) ------------------------------------ */
+
+add({
+  id: 'pylon',
+  tier: 3,
+  radiusNominal: 18,
+  radiusJitter: 0.12,
+  spawnWeight: 0.3,
+  palette: [0xb0b8c4, 0x9aa4b0, 0xc0c8d0, 0x8a94a0],
+  yOffset: -0.07,
+  upright: true,
+  collisionScale: 0.5,
+  buildGeometry(rng) {
+    return finish([
+      // 4 tapered lattice legs (thin slanted boxes)
+      box(0.08, 2.5, 0.08, 0xffffff, { rz: 0.15, rx: -0.15, x: -0.38, z: 0.38, y: 1.2 }),
+      box(0.08, 2.5, 0.08, 0xffffff, { rz: -0.15, rx: -0.15, x: 0.38, z: 0.38, y: 1.2 }),
+      box(0.08, 2.5, 0.08, 0xffffff, { rz: 0.15, rx: 0.15, x: -0.38, z: -0.38, y: 1.2 }),
+      box(0.08, 2.5, 0.08, 0xffffff, { rz: -0.15, rx: 0.15, x: 0.38, z: -0.38, y: 1.2 }),
+      // horizontal brace rings (two levels)
+      box(0.95, 0.06, 0.06, 0xffffff, { y: 0.8, z: 0.42 }),
+      box(0.95, 0.06, 0.06, 0xffffff, { y: 0.8, z: -0.42 }),
+      box(0.06, 0.06, 0.95, 0xffffff, { y: 0.8, x: 0.42 }),
+      box(0.06, 0.06, 0.95, 0xffffff, { y: 0.8, x: -0.42 }),
+      box(0.62, 0.06, 0.06, 0xffffff, { y: 1.7, z: 0.26 }),
+      box(0.62, 0.06, 0.06, 0xffffff, { y: 1.7, z: -0.26 }),
+      box(0.06, 0.06, 0.62, 0xffffff, { y: 1.7, x: 0.26 }),
+      box(0.06, 0.06, 0.62, 0xffffff, { y: 1.7, x: -0.26 }),
+      // conductor cross arms + apex spike
+      box(1.5, 0.08, 0.08, 0xffffff, { y: 2.2 }),
+      box(1.1, 0.08, 0.08, 0xffffff, { y: 2.5 }),
+      cone(0.09, 0.36, 4, 0xffffff, { y: 2.85 }),
+    ]);
+  },
+});
+
+add({
+  id: 'giant_tree',
+  tier: 3,
+  radiusNominal: 14,
+  radiusJitter: 0.18,
+  spawnWeight: 0.3,
+  palette: [0x5f9a58, 0x6fb068, 0x4f8a50, 0x7ec070],
+  yOffset: -0.07,
+  upright: true,
+  collisionScale: 0.8,
+  buildGeometry(rng) {
+    const lean = (rng() - 0.5) * 0.1;
+    return finish([
+      cyl(0.36, 0.52, 0.28, 7, 0x5a4030, { y: 0.14 }), // root flare
+      cyl(0.2, 0.38, 1.7, 7, 0x6a4a32, { rz: lean, y: 0.95, hex2: 0x7a583c }), // thick trunk
+      ico(0.85, 1, 0xffffff, { y: 2.2, hex2: 0xe2f0cc }), // main canopy (tinted)
+      ico(0.6, 1, 0xffffff, { x: 0.55 + lean, y: 1.8, hex2: 0xe2f0cc }), // canopy lobe
+      ico(0.55, 1, 0xffffff, { x: -0.5, y: 1.95, z: 0.25, hex2: 0xe2f0cc }), // canopy lobe
     ]);
   },
 });
@@ -1055,6 +1275,60 @@ add({
       cyl(0.72, 0.82, 0.5, 10, 0x9aa0aa, { y: 0.25 }), // skirt base
       cyl(0.05, 0.05, 1.1, 6, 0x8a8f9a, { x: 1.05, y: 0.6 }), // ladder pipe
     ]);
+  },
+});
+
+/* ---- T4 landmarks (slots 8/9) ------------------------------------ */
+
+add({
+  id: 'castle',
+  tier: 4,
+  radiusNominal: 55,
+  radiusJitter: 0.12,
+  spawnWeight: 0.3,
+  palette: [0xf2f2ea, 0xe8e8e0, 0xf6f0e0, 0xeae6da],
+  yOffset: -0.32,
+  upright: true,
+  collisionScale: 0.9,
+  buildGeometry(rng) {
+    return finish([
+      cyl(1.1, 1.5, 0.7, 4, 0x9a958c, { ry: PI / 4, y: 0.35 }), // flared stone base
+      box(1.5, 0.52, 1.3, 0xffffff, { y: 0.95 }), // keep tier 1 (tinted plaster)
+      cyl(0.92, 1.32, 0.22, 4, 0x3a4450, { ry: PI / 4, y: 1.3 }), // roof skirt 1
+      box(1.15, 0.46, 1.0, 0xffffff, { y: 1.55 }), // keep tier 2
+      cyl(0.68, 1.02, 0.2, 4, 0x3a4450, { ry: PI / 4, y: 1.86 }), // roof skirt 2
+      box(0.85, 0.42, 0.74, 0xffffff, { y: 2.12 }), // keep tier 3
+      cyl(0.1, 0.78, 0.4, 4, 0x3a4450, { ry: PI / 4, y: 2.5 }), // top hip roof
+      ico(0.07, 0, 0xf0c860, { x: -0.22, y: 2.72 }), // gold shachihoko L
+      ico(0.07, 0, 0xf0c860, { x: 0.22, y: 2.72 }), // gold shachihoko R
+    ]);
+  },
+});
+
+add({
+  id: 'pagoda',
+  tier: 4,
+  radiusNominal: 45,
+  radiusJitter: 0.12,
+  spawnWeight: 0.3,
+  palette: [0xf2e8d8, 0xe8dcc8, 0xf6eee0, 0xe0d4c0],
+  yOffset: -0.08,
+  upright: true,
+  collisionScale: 0.7,
+  buildGeometry(rng) {
+    const parts = [];
+    // 5 stacked body+flared-roof tiers, shrinking upward
+    for (let i = 0; i < 5; i++) {
+      const w = 1.3 - i * 0.18;
+      const y = 0.2 + i * 0.56;
+      parts.push(box(w * 0.78, 0.34, w * 0.78, 0xffffff, { y: y + 0.17 })); // body (tinted)
+      parts.push(cyl(0.16, w * 0.62, 0.2, 4, 0x7a3a30, { ry: PI / 4, y: y + 0.46 })); // flared roof
+    }
+    parts.push(cyl(0.035, 0.035, 0.7, 5, 0xe8c878, { y: 3.3 })); // sorin spire
+    parts.push(cyl(0.1, 0.1, 0.03, 6, 0xe8c878, { y: 3.18 })); // spire ring
+    parts.push(cyl(0.08, 0.08, 0.03, 6, 0xe8c878, { y: 3.34 })); // spire ring
+    parts.push(cyl(0.06, 0.06, 0.03, 6, 0xe8c878, { y: 3.5 })); // spire ring
+    return finish(parts);
   },
 });
 
@@ -1238,6 +1512,49 @@ add({
   },
 });
 
+/* ---- T5 landmarks (slots 8/9) ------------------------------------ */
+
+add({
+  id: 'mountain',
+  tier: 5,
+  radiusNominal: 600,
+  radiusJitter: 0.25,
+  spawnWeight: 0.35,
+  palette: [0xf0f0e8, 0xe6efe2, 0xefe6e0, 0xe2e8f0],
+  yOffset: -0.55,
+  upright: true,
+  collisionScale: 0.85,
+  buildGeometry(rng) {
+    return finish([
+      cone(1.45, 1.7, 9, 0x5a7a52, { y: 0.85, hex2: 0xf4f7f8 }), // main peak, snow-cap gradient
+      cone(0.95, 1.15, 8, 0x567550, { x: 0.85, y: 0.57, hex2: 0xeef2f4 }), // shoulder peak
+      cone(0.8, 1.0, 7, 0x5e7e56, { x: -0.75, y: 0.5, z: 0.35, hex2: 0xeef2f4 }), // foothill peak
+    ]);
+  },
+});
+
+add({
+  id: 'skytree',
+  tier: 5,
+  radiusNominal: 500,
+  radiusJitter: 0.1,
+  spawnWeight: 0.25,
+  palette: [0xe8ecf0, 0xd8e0e8, 0xf0f0f4, 0xc8d4dc],
+  yOffset: -0.02,
+  upright: true,
+  collisionScale: 0.4,
+  buildGeometry(rng) {
+    return finish([
+      cyl(0.26, 0.46, 1.5, 6, 0xffffff, { y: 0.75 }), // tapered lattice base (tinted)
+      cyl(0.16, 0.26, 1.3, 6, 0xf6f6f8, { y: 2.15 }), // mid section
+      cyl(0.34, 0.34, 0.16, 10, 0x44505e, { y: 2.88 }), // observation deck 1
+      cyl(0.09, 0.15, 0.9, 6, 0xffffff, { y: 3.45 }), // upper section
+      cyl(0.2, 0.2, 0.12, 10, 0x44505e, { y: 3.96 }), // observation deck 2
+      cyl(0.03, 0.05, 0.95, 5, 0xc8ccd4, { y: 4.5 }), // antenna mast
+    ]);
+  },
+});
+
 /* ================================================================== */
 /* Dev-mode invariant asserts (stripped from prod by the DEV guard)    */
 /* ================================================================== */
@@ -1266,6 +1583,6 @@ if (import.meta.env && import.meta.env.DEV) {
       total++;
     }
   }
-  assert(total === 48, `exactly 48 archetypes required, found ${total}`);
-  assert(Object.keys(CATALOG).length === 48, 'CATALOG must contain exactly the 48 frozen ids');
+  assert(total === 60, `exactly 60 archetypes required (10 x 6, v2 stride), found ${total}`);
+  assert(Object.keys(CATALOG).length === 60, 'CATALOG must contain exactly the 60 frozen ids');
 }

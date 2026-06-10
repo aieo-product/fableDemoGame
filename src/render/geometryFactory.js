@@ -1,5 +1,5 @@
 /**
- * @file geometryFactory.js — Builds all 48 merged vertex-colored composite
+ * @file geometryFactory.js — Builds all 60 merged vertex-colored composite
  * archetype geometries from catalog recipes ONCE at boot (~80ms during the
  * title screen).
  *
@@ -127,7 +127,7 @@ export function normalizeToUnitRadius(geometry) {
  * -> ensure 'color' attribute (white fallback + dev warn) -> normalize to
  * unit bounding sphere (see header contract) -> dev tri-cap assert.
  *
- * @param {Record<string, Archetype>} catalog The 48-entry CATALOG.
+ * @param {Record<string, Archetype>} catalog The 60-entry CATALOG.
  * @returns {Record<string, THREE.BufferGeometry>} id -> unit-radius geometry.
  */
 export function buildAllGeometries(catalog) {
