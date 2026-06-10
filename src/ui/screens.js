@@ -42,8 +42,13 @@ import { RunStats } from '../game/runStats.js';
 
 /** Share target shown in the post + the intent text (live deployment). */
 const SHARE_URL = 'https://fable-katamari.pages.dev';
-/** X web intent endpoint (x.com post intent — twitter.com/intent/tweet is legacy). */
-const X_INTENT = 'https://x.com/intent/post?text=';
+/**
+ * X web intent endpoint. twitter.com/intent/tweet is the most battle-tested
+ * variant: it works logged-out, survives the x.com redirect, and is the URL
+ * scheme mobile X apps register deep-link handlers for (x.com/intent/post
+ * was observed erroring in production on some sessions/devices).
+ */
+const X_INTENT = 'https://twitter.com/intent/tweet';
 /** Staged reveal cues (ms) — match the index.html comment + sfx rank thud (+1.6s). */
 const CUE_TIME_MS = 0;
 const CUE_SCORE_MS = 400;
@@ -442,14 +447,17 @@ export class Screens {
    * @returns {string}
    */
   _buildXUrl(g) {
+    // Keep it minimal & robust: rank / score / rare count in `text`,
+    // hashtag via `hashtags=`, link via `url=` (separate params avoid
+    // encoding pitfalls and let X count the URL at its fixed weight).
     const text =
-      '🌕FABLE KATAMARI 月まで転がした！\n' +
-      '⏱タイム ' + formatTime(g.timeS) + ' ／ RANK ' + g.rank + '\n' +
-      '⭐スコア ' + g.score.toLocaleString('ja-JP') + '\n' +
-      '📏さいごの大きさ ' + formatLength(g.trueRadius) +
-      '（まきこんだ ' + g.absorbed + 'こ・レア' + g.raresFound + 'コ）\n' +
-      '#FableKatamari\n' +
-      SHARE_URL;
-    return X_INTENT + encodeURIComponent(text);
+      'FABLE KATAMARI RANK ' + g.rank + '！' +
+      'スコア ' + g.score.toLocaleString('ja-JP') +
+      '・レア' + g.raresFound + 'コ ' +
+      '⏱' + formatTime(g.timeS);
+    return X_INTENT +
+      '?text=' + encodeURIComponent(text) +
+      '&url=' + encodeURIComponent(SHARE_URL) +
+      '&hashtags=' + encodeURIComponent('FableKatamari');
   }
 }
