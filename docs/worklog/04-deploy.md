@@ -18,3 +18,23 @@
 
 - **公開URL**: https://fable-katamari.pages.dev （パブリック、認証なし）
 - 静的サイトのみ（サーバーレス）。今後の更新は `npm run build && npx wrangler pages deploy dist --project-name fable-katamari --branch main` で再デプロイ可能。
+
+---
+
+# Phase 8: v2デプロイ（月アップデート公開）
+
+- レビュー修正込みの最終ビルド: 648.77 kB（gzip 173.07 kB）
+- `npx wrangler pages deploy dist --project-name fable-katamari --branch main`（認証は前回同様Keychainからその場取得）
+- 本番URL https://fable-katamari.pages.dev が新バンドル（index-B2j8m2P_.js）で200を確認
+- 検証エージェントが本番URLでタイトル→プレイ→ダッシュ→月フィナーレ→リザルト→XシェアURLまで実機確認
+
+## v2 累計実行統計（ultracode）
+
+| フェーズ | エージェント数 | サブエージェントトークン | 所要時間 |
+|---|---|---|---|
+| 5. v2設計（旧スコープ+月スコープの2回） | 6 | 約86.4万 | 約61分 |
+| 6. v2実装（契約+5並列+統合） | 7 | 約119.6万 | 約52分 |
+| 7. v2レビュー（3次元→敵対的検証→修正→実測調整） | 24 | 約175.8万 | 約62分 |
+| 8. v2デプロイ+本番検証 | 1 | - | 約5分 |
+| **v2合計** | **38** | **約382万** | 約3時間 |
+| **v1+v2総計** | **86** | **約759万** | 約5.5時間 |
