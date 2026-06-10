@@ -113,6 +113,22 @@ export class Hud {
     this._lastCountWriteMs = 0;
     /** Latest absorb count seen (flushed on the next gate). */
     this._pendingCount = 0;
+    /* --- v2 score throttle: EVT.SCORE fires once PER ABSORB inside the
+       fixed-step loop; the float-span path forces a synchronous reflow, so
+       it is gated like _onAbsorb. Deltas accumulate between gates and one
+       span carries the sum (burst absorbs read as one bigger '+N'). --- */
+    this._lastScoreWriteMs = 0;
+    /** Accumulated un-flushed score delta. */
+    this._pendingDelta = 0;
+    /** Latest total score seen (flushed with the delta). */
+    this._pendingScore = -1;
+    /** A rare absorb is in the pending window (gold span styling). */
+    this._pendingRare = false;
+    /** Cached formatter — toLocaleString re-resolves the locale every call. */
+    this._numFmt =
+      typeof Intl !== 'undefined' && typeof Intl.NumberFormat === 'function'
+        ? new Intl.NumberFormat('ja-JP')
+        : null;
 
     /* --- timers --- */
     /** @type {ReturnType<typeof setTimeout> | 0} */
@@ -179,6 +195,10 @@ export class Hud {
     this._lastProgressPct = -1;
     this._lastGrowWriteMs = 0;
     this._lastCountWriteMs = 0;
+    this._lastScoreWriteMs = 0;
+    this._pendingDelta = 0;
+    this._pendingScore = -1;
+    this._pendingRare = false;
     this._lastTimerText = '';
     this._lastScoreShown = -1;
     this._lastGaugePct = -1;
@@ -225,6 +245,10 @@ export class Hud {
     this._writeGauge(p.dashGauge01);
     // Piggyback the absorbed counter so a burst's final value always lands.
     this._writeCount(this._pendingCount);
+    // Piggyback any un-flushed score delta (trailing flush after a burst).
+    if (this._pendingDelta > 0 && now - this._lastScoreWriteMs >= this._minIntervalMs) {
+      this._flushScore(now);
+    }
   }
 
   /**
@@ -278,21 +302,42 @@ export class Hud {
   }
 
   /**
-   * 'score' — score panel + one pooled floating '+N' span (+rare toast).
+   * 'score' — fires once PER ABSORB (inside the fixed-step loop), so the DOM
+   * work is throttled: deltas accumulate and at most one float span +
+   * score-panel write happens per gate window (the span's `void offsetWidth`
+   * is a forced synchronous reflow — never per-absorb). The rare toast stays
+   * immediate (rares are rare; it is a cheap class toggle path).
    * @param {ScoreEvent} p
    */
   _onScore(p) {
-    this._writeScore(p.score);
+    this._pendingDelta += p.delta;
+    this._pendingScore = p.score;
+    if (p.rare) {
+      this._pendingRare = true;
+      this._showToast('レアはっけん！+5000');
+    }
+    const now = performance.now();
+    if (now - this._lastScoreWriteMs < this._minIntervalMs) return; // _onGrow flushes trailing
+    this._flushScore(now);
+  }
+
+  /** Write the score panel + one pooled float span from the pending state. */
+  _flushScore(now) {
+    this._lastScoreWriteMs = now;
+    if (this._pendingScore >= 0) this._writeScore(this._pendingScore);
+    const delta = this._pendingDelta;
+    this._pendingDelta = 0;
+    if (delta <= 0) return;
     // Floating '+N': recycle the next pooled span and restart its animation.
     const span = this._floatPool[this._floatNext];
     this._floatNext = (this._floatNext + 1) % FLOAT_POOL_SIZE;
-    span.textContent = '+' + p.delta;
-    if (p.rare) span.classList.add('rare');
+    span.textContent = '+' + (this._numFmt !== null ? this._numFmt.format(delta) : String(delta));
+    if (this._pendingRare) span.classList.add('rare');
     else span.classList.remove('rare');
+    this._pendingRare = false;
     span.classList.remove('fly');
     void span.offsetWidth; // reflow — restarts the score-fly animation
     span.classList.add('fly');
-    if (p.rare) this._showToast('レアはっけん！+5000');
   }
 
   /**
@@ -339,8 +384,15 @@ export class Hud {
    * @param {MoonGuideEvent} p
    */
   _onMoonGuide(p) {
-    if (!p.active) {
+    if (!p.active || p.onScreen) {
+      // Inactive OR the moon itself is visible on screen — an edge arrow
+      // sitting on top of the moon is noise; it returns when the moon
+      // leaves the frustum (payload keeps arriving at 10 Hz).
       this._arrowEl.classList.add('hidden');
+      if (p.active && !this._guideToastShown) {
+        this._guideToastShown = true;
+        this._showToast('月へ向かえ！');
+      }
       return;
     }
     this._arrowEl.classList.remove('hidden');
@@ -435,7 +487,8 @@ export class Hud {
   _writeScore(score) {
     if (score === this._lastScoreShown) return;
     this._lastScoreShown = score;
-    this._scoreValueEl.textContent = score.toLocaleString('ja-JP');
+    this._scoreValueEl.textContent =
+      this._numFmt !== null ? this._numFmt.format(score) : String(score);
   }
 
   /**

@@ -29,8 +29,11 @@
  *   'muteChanged' {muted}                         (main -> hud icon)
  *
  * v2 CONTRACT NOTES (binding):
- *  - ABSORB subscription order at boot: main attach-handler -> runStats ->
- *    sfx/effects/hud (handlers run in subscription order; runStats must see
+ *  - ABSORB subscription order at boot: spawner -> main attach-handler ->
+ *    runStats -> sfx/effects/hud (handlers run in subscription order; the
+ *    Spawner constructor subscribes first — its handler is internal
+ *    bookkeeping ONLY and must never mutate instanceSlot/archetype/position
+ *    fields, which main's attach-handler reads intact; runStats must see
  *    the payload after main but before the cosmetic consumers).
  *  - 'game:win' is now emitted by MAIN.JS when finale.state === 'done'
  *    (was ScaleManager's WIN_RADIUS_M latch in v1; payload unchanged).

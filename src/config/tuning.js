@@ -80,13 +80,23 @@ export const DASH_IMPULSE_K = 7.0;
 export const DASH_DIR_SPEED_K = 0.3;
 /** cameraRig additive FOV kick on 'dash' (deg, decays over DASH_DURATION_S). */
 export const DASH_FOV_BONUS = 8;
+/** Over-cap speed bleed: when |vel| > speedCap the EXCESS is retained by this
+ *  factor per 60Hz frame instead of being clamped away in one substep —
+ *  a dash tail glides out over ~0.25s (7r excess -> <0.5r in ~16 frames)
+ *  instead of snapping -45% the instant dashTimer expires. Steady-state
+ *  cruise sits ~0.5% above the cap (negligible; still radius-proportional). */
+export const OVERCAP_BLEED_PER_FRAME = 0.85;
 
 /* ================================================================== */
 /* v2 Score / rank (game/runStats.js)                                  */
 /* ================================================================== */
 
-/** Per-object score = max(1, round(SCORE_SIZE_BASE * sizeReal^SCORE_SIZE_POW)). */
-export const SCORE_SIZE_BASE = 100;
+/** Per-object score = max(1, round(SCORE_SIZE_BASE * rel^SCORE_SIZE_POW))
+ *  where rel = sizeReal / ballTrueRadius (scale-FREE — v2 retune: absolute
+ *  meters made T5 worth >99% of the total and floored T0 at '+1'; relative
+ *  size scores every band comparably: rel in (0, 1.3], typical absorb
+ *  ~90-700pt, run totals ~200-600k so the flat bonuses below stay visible). */
+export const SCORE_SIZE_BASE = 500;
 export const SCORE_SIZE_POW = 1.4;
 /** Combo multiplier = min(1 + COMBO_SCORE_K * (combo - 1), COMBO_SCORE_MAX_MUL). */
 export const COMBO_SCORE_K = 0.10;
@@ -97,14 +107,20 @@ export const RARE_SCORE_BONUS = 5000;
 export const MOON_SCORE_BONUS = 20000;
 /** Time bonus = round(lerp(TIME_BONUS_MAX, 0, clamp01((timeS - FULL) / (ZERO - FULL)))). */
 export const TIME_BONUS_MAX = 30000;
-export const TIME_BONUS_FULL_S = 300;
-export const TIME_BONUS_ZERO_S = 720;
-/** Rank thresholds (sim seconds): S <= 300, A <= 400, B <= 540, C <= 720, else D.
- *  Estimates off v1 pacing + dash — re-tune from >= 3 real playthroughs in Phase 3. */
-export const RANK_S_S = 300;
-export const RANK_A_S = 400;
-export const RANK_B_S = 540;
-export const RANK_C_S = 720;
+export const TIME_BONUS_FULL_S = 120;
+export const TIME_BONUS_ZERO_S = 420;
+/** Rank thresholds (sim seconds): S <= 120, A <= 180, B <= 280, C <= 420, else D.
+ *  EMPIRICAL (2026-06 in-browser pacing runs, seed 777, optimal driver bot
+ *  rolling continuously with dash): 5cm start -> 0.25m @ ~36s -> 1.25m @ ~47s
+ *  -> 6m @ ~57s -> 30m @ ~69s -> 150m @ ~86s -> 300m+ @ ~90s; full
+ *  5cm->moon-call optimal ~= 95-105 sim-s. Model: S = ~1.2x optimal
+ *  (optimized human), A = ~1.8x (very good), B = ~2.8x (decent first run
+ *  incl. wandering), C = ~4x (slow exploration), else D. TIME_BONUS spans
+ *  the S edge (full at 120s) to the C edge (zero at 420s). */
+export const RANK_S_S = 120;
+export const RANK_A_S = 180;
+export const RANK_B_S = 280;
+export const RANK_C_S = 420;
 
 /* ================================================================== */
 /* v2 Rares (world/spawner.js)                                         */

@@ -1243,7 +1243,7 @@ add({
   radiusNominal: 22,
   radiusJitter: 0.12,
   spawnWeight: 0.7,
-  palette: [0xc8c4bc, 0xd0ccc4, 0xbcc4c8],
+  palette: [0xc8c4bc, 0xd0ccc4, 0xbcc4c8, 0xd8d4cc], // 4 tints (DEV assert: 4-6; was 3)
   yOffset: -0.62,
   upright: true,
   collisionScale: 0.55,
@@ -1362,7 +1362,7 @@ add({
   radiusNominal: 90,
   radiusJitter: 0.12,
   spawnWeight: 0.7,
-  palette: [0xd8d4cc, 0xd4ccd8, 0xccd8d0],
+  palette: [0xd8d4cc, 0xd4ccd8, 0xccd8d0, 0xe0dcd4], // 4 tints (DEV assert: 4-6; was 3)
   yOffset: -0.73,
   upright: true,
   collisionScale: 0.9,

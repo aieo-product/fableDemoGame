@@ -96,6 +96,10 @@ const SPIN_SLOW = 0.12;
 const SPIN_ASCEND = 0.28;
 /** Afterglow glow breathing frequency (Hz). */
 const GLOW_BREATH_HZ = 0.5;
+/** skipCinematic() time multiplier — MERGE+ASCENSION+AFTERGLOW (8.7 s)
+ *  compress to ~1.7 s. A fast-forward, not a hard cut: every phase still
+ *  runs (night fade, ball hide, GAME_WIN emission order all preserved). */
+const SKIP_TIME_SCALE = 5;
 
 const TWO_PI = Math.PI * 2;
 
@@ -167,6 +171,13 @@ export class Finale {
     this._ballHidden = false;
     /** @type {boolean} DEV: missing-env-API warning emitted once. */
     this._warnedEnv = false;
+    /** @type {boolean} A rescale/rebase fired this frame — the camera's
+     * matrixWorldInverse is still pre-transform (render is step 7), so one
+     * 10Hz guide projection is skipped instead of flashing a wrong arrow. */
+    this._skipGuideOnce = false;
+    /** @type {number} Post-contact cinematic time multiplier (1 = normal;
+     * skipCinematic() sets SKIP_TIME_SCALE — replayers fast-forward). */
+    this._timeScale = 1;
 
     // Current moon center — DERIVED, rewritten by _setMoonPose every active
     // frame BEFORE any consumer (guide projection / cinematic targets) reads
@@ -183,12 +194,14 @@ export class Finale {
       c.moonR *= S;
       c.mergeFromX *= S; c.mergeFromY *= S; c.mergeFromZ *= S;
       c.ascendBaseY *= S;
+      this._skipGuideOnce = true; // camera matrix is stale this frame
     });
     bus.on(EVT.REBASE, (p) => {
       const c = this._simCache;
       c.startX -= p.sx; c.startZ -= p.sz;
       c.landX -= p.sx; c.landZ -= p.sz;
       c.mergeFromX -= p.sx; c.mergeFromZ -= p.sz;
+      this._skipGuideOnce = true; // camera matrix is stale this frame
     });
   }
 
@@ -222,6 +235,17 @@ export class Finale {
   }
 
   /**
+   * v2 replay-friction fix: fast-forward the post-contact cinematic
+   * (MERGE/ASCENSION/AFTERGLOW run at SKIP_TIME_SCALE). main.js calls this on
+   * any pointerdown/keydown while in the FINALE state. A no-op pre-contact —
+   * descent/landing are live gameplay and must never accelerate. Idempotent.
+   */
+  skipCinematic() {
+    if (!this._inputLocked || this._state === 'done') return;
+    this._timeScale = SKIP_TIME_SCALE;
+  }
+
+  /**
    * Per-frame finale drive (main.js frame-order step 4.5, AFTER
    * scaleMgr.maybeTierUp/maybeRebase so _simCache and BallState agree).
    * @param {number} frameDt Render-frame delta (s).
@@ -230,6 +254,9 @@ export class Finale {
    */
   update(frameDt, ball) {
     const tr = ball.radiusSim * this._scaleMgr.worldScale;
+    // Post-contact fast-forward (skipCinematic). Pre-contact phases always
+    // run at 1x — _timeScale only ever rises after inputLocked latches.
+    const cineDt = frameDt * this._timeScale;
 
     // ---- threshold ladder (both may fire in one frame, e.g. ?r=740) -------
     if (this._state === 'idle' && tr >= MOON_CALL_RADIUS_M) this._enterCalled(tr);
@@ -258,16 +285,16 @@ export class Finale {
       case 'contact': // one observable frame, then the merge begins
         this._state = 'merge';
         this._phaseT = 0;
-        this._updateMerge(frameDt, ball);
+        this._updateMerge(cineDt, ball);
         break;
       case 'merge':
-        this._updateMerge(frameDt, ball);
+        this._updateMerge(cineDt, ball);
         break;
       case 'ascension':
-        this._updateAscension(frameDt, ball);
+        this._updateAscension(cineDt, ball);
         break;
       case 'afterglow':
-        this._updateAfterglow(frameDt, ball);
+        this._updateAfterglow(cineDt, ball);
         break;
       default:
         break; // idle / called / done
@@ -294,6 +321,8 @@ export class Finale {
     this._guideAcc = 0;
     this._fadeDone = false;
     this._ballHidden = false;
+    this._skipGuideOnce = false;
+    this._timeScale = 1;
     const c = this._simCache;
     c.startX = 0; c.startY = 0; c.startZ = 0;
     c.landX = 0; c.landY = 0; c.landZ = 0;
@@ -338,6 +367,7 @@ export class Finale {
     this._spin = 0;
     this._guideAcc = GUIDE_INTERVAL_S; // first guide emits immediately
     this._fadeDone = false;
+    this._skipGuideOnce = false; // any pre-descent staleness flag is moot
 
     c.moonR = MOON_RADIUS_K * r;
 
@@ -600,6 +630,14 @@ export class Finale {
     if (this._guideAcc < GUIDE_INTERVAL_S) return;
     this._guideAcc -= GUIDE_INTERVAL_S;
     if (this._guideAcc > GUIDE_INTERVAL_S) this._guideAcc = 0; // no catch-up burst after hitches
+    if (this._skipGuideOnce) {
+      // A rescale/rebase rewrote _simCache this frame but the camera's
+      // matrixWorldInverse is still last frame's (pre-transform) — projecting
+      // NEW-space coords through the OLD-space matrix would snap the arrow
+      // wildly for 100 ms. Skip this tick; the next one is consistent.
+      this._skipGuideOnce = false;
+      return;
+    }
     this._projectAndEmitGuide(true);
   }
 

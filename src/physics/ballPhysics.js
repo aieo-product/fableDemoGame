@@ -50,6 +50,7 @@ import {
   DASH_ACCEL_MUL,
   DASH_IMPULSE_K,
   DASH_DIR_SPEED_K,
+  OVERCAP_BLEED_PER_FRAME,
 } from '../config/tuning.js';
 import { EVT, PAYLOADS } from '../core/events.js';
 import { springDamped } from '../core/mathUtils.js';
@@ -186,10 +187,16 @@ export class BallPhysics {
       SPEED_K * s.radiusSim * (boost ? BOOST_CAP_MUL : 1) * (dashing ? DASH_CAP_MUL : 1);
     let speed2 = vel.x * vel.x + vel.z * vel.z;
     if (speed2 > cap * cap) {
-      const k = cap / Math.sqrt(speed2);
+      // Soft cap: bleed the over-cap EXCESS by OVERCAP_BLEED_PER_FRAME per
+      // 60Hz frame instead of snapping to the cap in one substep — the dash
+      // tail (cap drops 18.7r -> 8.5r when dashTimer expires) glides out
+      // over ~0.25s instead of a visible -45% hitch.
+      const sp = Math.sqrt(speed2);
+      const target = cap + (sp - cap) * Math.pow(OVERCAP_BLEED_PER_FRAME, dt * 60);
+      const k = target / sp;
       vel.x *= k;
       vel.z *= k;
-      speed2 = cap * cap;
+      speed2 = target * target;
     }
 
     /* --- Dash burst timer -------------------------------------------- */

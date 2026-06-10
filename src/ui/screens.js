@@ -52,6 +52,9 @@ const CUE_RANK_MS = 1600;
 const CUE_RECORD_MS = 2200;
 /** Score count-up duration (ms, rAF-driven). */
 const COUNTUP_MS = 800;
+/** Reveal-skip: delay before the buttons become live so the skipping tap's
+ *  own click can never hit a button that appeared under the pointer. */
+const SKIP_BUTTONS_DELAY_MS = 250;
 
 /**
  * Format sim seconds as mm:ss.t (2-digit minutes — result screen / X post).
@@ -134,10 +137,14 @@ export class Screens {
     this._onGameWin = this._onGameWin.bind(this);
     this._onGoal = this._onGoal.bind(this);
     this._onMoonContact = this._onMoonContact.bind(this);
+    this._onWinPointerDown = this._onWinPointerDown.bind(this);
 
     this._startBtn.addEventListener('click', this._onStartClick);
     this._restartBtn.addEventListener('click', this._onRestartClick);
     this._postXBtn.addEventListener('click', this._onPostXClick);
+    // Replay-friction fix: a tap anywhere on the result overlay flushes the
+    // 2.2s staged reveal (no-op once all cues have fired).
+    this._winEl.addEventListener('pointerdown', this._onWinPointerDown);
 
     /* Touch devices get touch controls guidance instead of the keyboard rows
        (the drag joystick is otherwise undiscoverable on phones). */
@@ -227,6 +234,38 @@ export class Screens {
       newRecordScore: p.newRecordScore === true,
     };
     this._xUrl = this._buildXUrl(this._goal);
+  }
+
+  /**
+   * Pointerdown on #win-overlay during the staged reveal — skip straight to
+   * the fully-revealed result. The buttons get their .result-reveal slightly
+   * LATE (SKIP_BUTTONS_DELAY_MS) so the skipping tap's own click can never
+   * land on a button that became clickable mid-gesture.
+   */
+  _onWinPointerDown() {
+    if (this._revealTimers.length === 0) return; // reveal already complete
+    const g = this._goal;
+    if (g === null) return;
+    for (let i = 0; i < this._revealTimers.length; i++) {
+      clearTimeout(this._revealTimers[i]);
+    }
+    this._revealTimers.length = 0;
+    if (this._countupRaf !== 0) {
+      cancelAnimationFrame(this._countupRaf);
+      this._countupRaf = 0;
+    }
+    this._scoreEl.textContent = g.score.toLocaleString('ja-JP');
+    this._rowTimeEl.classList.add('result-reveal');
+    this._rowScoreEl.classList.add('result-reveal');
+    this._rowSizeEl.classList.add('result-reveal');
+    this._rowDetailEl.classList.add('result-reveal');
+    this._rankEl.classList.add('stamp');
+    if (g.newRecordTime || g.newRecordScore) this._badgeEl.classList.remove('hidden');
+    this._bestEl.classList.add('result-reveal');
+    this._seedLineEl.classList.add('result-reveal');
+    this._schedule(SKIP_BUTTONS_DELAY_MS, () => {
+      this._buttonsEl.classList.add('result-reveal');
+    });
   }
 
   /** 'moonContact' — white flash pop (0.12 s in / FLASH_S out via CSS). */

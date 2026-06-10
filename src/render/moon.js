@@ -4,7 +4,8 @@
  *
  * Icosphere detail 3 (~1280 tris) — the documented ONE exception to the
  * 350-tri ARCHETYPE cap: it is NOT a catalog archetype, never pooled,
- * finale-only, exactly 2 draw calls (Lambert body + additive glow shell).
+ * finale-only, exactly 2 draw calls (self-lit Basic body + additive glow
+ * shell — v2 fix: Lambert read as a dark crescent during ascension).
  *
  * Crater vertex colors are baked ONCE at boot from
  * mulberry32(worldSeed ^ 0x4d4f4f4e) — deterministic per seed, zero runtime
@@ -26,8 +27,9 @@ import { clamp01 } from '../core/mathUtils.js';
 const MOON_SEED_SALT = 0x4d4f4f4e;
 /** Glow shell scale relative to the moon body. */
 const GLOW_SCALE = 1.18;
-/** Glow shell opacity at setGlow01(1). */
-const GLOW_OPACITY_MAX = 0.4;
+/** Glow shell opacity at setGlow01(1). v2 fix: 0.4 -> 0.6 — the ascended
+ *  moon must read as a GLOWING full moon against the night palette. */
+const GLOW_OPACITY_MAX = 0.6;
 /** Warm halo tint. */
 const GLOW_COLOR = 0xfff0c2;
 /** Number of baked craters. */
@@ -68,8 +70,11 @@ export class MoonView {
     this._geo = new THREE.IcosahedronGeometry(1, 7);
     this._bakeCraterColors(this._geo, rng);
 
-    /** @type {THREE.MeshLambertMaterial} */
-    this._mat = new THREE.MeshLambertMaterial({ vertexColors: true, fog: false });
+    /** @type {THREE.MeshBasicMaterial} Self-lit (unlit) body — the moon must
+     *  read as a glowing FULL moon during ascension/afterglow, not a
+     *  scene-lit crescent. Crater shading is fully baked into the vertex
+     *  colors, so Basic renders the bake verbatim at full brightness. */
+    this._mat = new THREE.MeshBasicMaterial({ vertexColors: true, fog: false });
     /** @type {THREE.Mesh} */
     this._mesh = new THREE.Mesh(this._geo, this._mat);
     this._mesh.frustumCulled = false; // finale-only, huge, always meant to be seen

@@ -5,9 +5,13 @@
  * ALLOCATION-LAW BOUNDED EXEMPTION (binding, see DESIGN.md v2 chapter):
  * WebAudio node creation in sfx.js + bgm.js is an explicit, BOUNDED exemption
  * to the zero-per-frame-allocation law. Budget: <= NODE_BUDGET_PER_S (60)
- * short-lived nodes per second (worst case here, all layers unlocked, is
- * ~51/s: bass 8 + kick 4 + rim 4 + hats 16 + stabs 14 + lead 10 + shaker 32
- * + arp 8 per 1.875s bar). Expensive allocations are HOISTED: ONE persistent
+ * short-lived nodes per second for BGM ALONE (worst case here, all layers
+ * unlocked, is ~52.3/s: bass 8 + kick 4 + rim 4 + hats 16 + stabs 14 +
+ * lead 12 (densest MELODY bar has 6 notes x osc+gain) + shaker 32 + arp 8
+ * = 98 per 1.875 s bar; the one-shot MOON_CALL shimmer adds 6 in one
+ * second). sfx.js has its own allowance and rate-caps its absorb blips
+ * (BLIP_MIN_INTERVAL_S) so combined creation stays bounded even during
+ * dense-cluster dashes. Expensive allocations are HOISTED: ONE persistent
  * shared noise AudioBuffer (hats/rim/shaker) and the lead PeriodicWave are
  * created once at context init; per-layer filters are persistent nodes.
  * Verified via the debug-overlay heap-delta line in the Phase-3 profile pass.
@@ -45,7 +49,8 @@ const TICK_MS = 25;
 const LAYER_FADE_S = 1.5;
 const DUCK_GAIN = 0.12;
 const BGM_GAIN = 0.32;
-/** Documented short-lived node budget (sfx + bgm combined target). */
+/** Documented short-lived node budget — BGM-ONLY scope (worst case ~52.3/s,
+ *  see header). sfx.js is budgeted separately and rate-caps its absorb blips. */
 export const NODE_BUDGET_PER_S = 60;
 
 /* ---- musical grid ---- */
@@ -134,6 +139,8 @@ export class Bgm {
     this._lastLeadFreq = 0;
     /** @type {ReturnType<typeof setInterval>|0} */
     this._tickId = 0;
+    /** @type {boolean} dispose() called — _ensureCtx must never resurrect. */
+    this._disposed = false;
 
     /* --- prebound handlers --- */
     this._onTick = this._onTick.bind(this);
@@ -188,12 +195,20 @@ export class Bgm {
     }
   }
 
-  /** Tear down listeners, scheduler and the context (tests / teardown). */
+  /** Tear down listeners, bus subscriptions, scheduler and the context
+   *  (tests / teardown). A disposed Bgm can never resurrect a context:
+   *  the bus handlers are unsubscribed AND _ensureCtx checks _disposed. */
   dispose() {
+    this._disposed = true;
     window.removeEventListener('pointerdown', this._onGesture);
     window.removeEventListener('keydown', this._onGesture);
     window.removeEventListener('touchstart', this._onGesture);
     document.removeEventListener('visibilitychange', this._onVisibility);
+    this._bus.off(EVT.GAME_START, this._onGameStart);
+    this._bus.off(EVT.GAME_RESET, this._onGameReset);
+    this._bus.off(EVT.TIER_UP, this._onTierUp);
+    this._bus.off(EVT.MOON_CALL, this._onMoonCall);
+    this._bus.off(EVT.MOON_CONTACT, this._onMoonContact);
     this._stopTick();
     this._playing = false;
     if (this._ctx !== null) {
@@ -333,7 +348,7 @@ export class Bgm {
 
   /** Create the AudioContext + persistent graph (idempotent). */
   _ensureCtx() {
-    if (this._ctx !== null) return;
+    if (this._ctx !== null || this._disposed) return;
     const AC = window.AudioContext || /** @type {any} */ (window).webkitAudioContext;
     if (AC === undefined) return; // no WebAudio — stay silent forever
     const ctx = new AC();

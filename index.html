@@ -458,6 +458,10 @@
     #win-overlay.staged #result-best,
     #win-overlay.staged #result-seed,
     #win-overlay.staged .result-buttons { opacity: 0; }
+    /* invisible buttons must not be clickable during the staged reveal —
+       .btn sets pointer-events:auto, so the override targets the buttons
+       themselves until .result-buttons gets its .result-reveal cue. */
+    #win-overlay.staged .result-buttons:not(.result-reveal) .btn { pointer-events: none; }
     .result-reveal { animation: result-reveal 0.45s ease-out both; }
     @keyframes result-reveal {
       0%   { opacity: 0; transform: translateY(16px); }

@@ -24,8 +24,9 @@
  * GameState: TITLE -> PLAYING -> FINALE (finale.inputLocked first true)
  *            -> WIN (main emits GAME_WIN at finale.state === 'done' — main
  *            is the SOLE game:win emitter in v2).
- * BINDING ABSORB subscription order at boot: main attach-handler ->
- * runStats -> sfx/effects/hud.
+ * BINDING ABSORB subscription order at boot: spawner (bookkeeping only —
+ * constructed first; MUST NOT touch instanceSlot/archetype/position fields)
+ * -> main attach-handler -> runStats -> sfx/effects/hud.
  * MUTE ownership: main is the single owner — reads LS_MUTE_KEY BEFORE
  * constructing Bgm/Sfx (initialMuted); input.takeMuteToggle() OR
  * EVT.MUTE_REQUEST -> toggle, bgm.setMuted + sfx.setMuted, persist,
@@ -185,10 +186,14 @@ const input = new Input(window);
 const cameraRig = new CameraRig(renderer.camera, bus);
 
 /* ------------------------------------------------------------------ */
-/* BINDING ABSORB subscription order (v2 contract): main attach-handler */
-/* -> runStats -> sfx/effects/hud. The attach-handler is subscribed     */
-/* HERE, before any cosmetic consumer constructs (dispatch order =      */
-/* subscription order).                                                 */
+/* BINDING ABSORB subscription order (v2 contract): spawner ->          */
+/* main attach-handler -> runStats -> sfx/effects/hud. The Spawner      */
+/* constructor (above) subscribes FIRST — its handler is bookkeeping    */
+/* only (consumed bitmask / slotGen / rare-list) and MUST NOT mutate    */
+/* instanceSlot/archetype/position fields, which the attach-handler     */
+/* below reads intact. The attach-handler is subscribed HERE, before    */
+/* any cosmetic consumer constructs (dispatch order = subscription      */
+/* order).                                                              */
 /* ------------------------------------------------------------------ */
 
 /** Module scratch for instanceColor -> hex readback (linear -> sRGB). */
@@ -334,6 +339,15 @@ function resetWorld() {
 bus.on(EVT.GAME_START, onGameStart);
 bus.on(EVT.GAME_RESET, onGameReset);
 bus.on(EVT.GAME_WIN, onGameWin);
+
+/* v2 cinematic skip: any pointer/key input during the FINALE fast-forwards
+   the post-contact cinematic (finale.skipCinematic is a pre-contact no-op).
+   Listeners are passive observers — input.js still owns gameplay input. */
+function onFinaleSkipInput() {
+  if (state === GameState.FINALE) finale.skipCinematic();
+}
+window.addEventListener('pointerdown', onFinaleSkipInput);
+window.addEventListener('keydown', onFinaleSkipInput);
 
 /** Title -> Playing. */
 function onGameStart() {

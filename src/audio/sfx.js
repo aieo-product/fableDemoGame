@@ -7,11 +7,14 @@
  * chime, rare sparkle gliss, moon-call pad, MOON_CONTACT 8-note grand fanfare
  * + AM9 pad (replaces the v1 GAME_WIN fanfare — the fanfare already happened
  * at contact), and the rank-stamp thud scheduled +1.6 s in CTX TIME on
- * EVT.GOAL to land exactly on the CSS rank-stamp reveal.
+ * EVT.GAME_WIN — GAME_WIN fires when the finale cinematic completes, and
+ * screens.js reveals the rank stamp at CUE_RANK_MS = 1600 ms after the same
+ * event, so the thud lands exactly on the CSS rank-stamp reveal. (EVT.GOAL
+ * fires ~8.7 s earlier, at the contact instant — wrong cue for the stamp.)
  *
  * Bus-driven: subscribes to ABSORB / BOUNCE / KNOCK_OFF / TIER_UP / DASH /
- * DASH_READY / SCORE(rare) / MOON_CALL / MOON_CONTACT / GOAL / GAME_START /
- * GAME_RESET. The AudioContext is created and resumed on the FIRST user input
+ * DASH_READY / SCORE(rare) / MOON_CALL / MOON_CONTACT / GAME_WIN /
+ * GAME_START / GAME_RESET. The AudioContext is created and resumed on the FIRST user input
  * (pointerdown / keydown / touchstart on window) — browser autoplay policy.
  * Until then every trigger is a silent no-op.
  *
@@ -54,6 +57,11 @@ const MOON_PAD_NOTES = [220.0, 277.18, 329.63, 440.0];
 const ROLL_GAIN_MAX = 0.14;
 const ROLL_FREQ_MIN = 180;
 const ROLL_FREQ_MAX = 1100;
+/** Min interval between absorb blips (s) — rate cap so dense-cluster dashes
+ *  (3-5 absorbs/s x 4 nodes each) cannot push sfx+bgm past the bounded
+ *  WebAudio node budget. Stacked same-frame blips are inaudible anyway;
+ *  the latest (highest) combo pitch wins. */
+const BLIP_MIN_INTERVAL_S = 0.08;
 
 /**
  * Synthesized sound effects. Construct once at boot (subscribes to the bus
@@ -80,6 +88,17 @@ export class Sfx {
     this._rollLevel = -1;
     /** @type {boolean} */
     this._muted = initialMuted === true;
+    /** @type {boolean} Run-over latch (MOON_CONTACT..GAME_START) — gameplay
+     *  chimes (dash-ready) must not play over the finale cinematic. */
+    this._runOver = false;
+    /** @type {number} Ctx time of the last absorb blip (rate cap). */
+    this._lastBlipAt = -1;
+    /** @type {import('../core/events.js').EventBus} */
+    this._bus = eventBus;
+    /** @type {Array<[string, (p?: object) => void]>} Bus subscriptions (for dispose). */
+    this._subs = [];
+    /** @type {boolean} dispose() called — _ensureCtx must never resurrect. */
+    this._disposed = false;
 
     // --- first-gesture AudioContext bootstrap ---------------------------
     this._onGesture = () => {
@@ -93,46 +112,59 @@ export class Sfx {
     window.addEventListener('touchstart', this._onGesture);
 
     // --- bus subscriptions (payloads reused — read fields only) -----------
-    eventBus.on(EVT.ABSORB, (p) => {
+    // Recorded in _subs so dispose() can unsubscribe (mirrors Backdrop/Env).
+    /** @type {(name: string, h: (p?: object) => void) => void} */
+    const sub = (name, h) => {
+      eventBus.on(name, h);
+      this._subs.push([name, h]);
+    };
+    sub(EVT.ABSORB, (p) => {
       this._blip(p.combo);
     });
-    eventBus.on(EVT.BOUNCE, (p) => {
+    sub(EVT.BOUNCE, (p) => {
       this._clonk(p.impactSpeed01);
     });
-    eventBus.on(EVT.KNOCK_OFF, (p) => {
+    sub(EVT.KNOCK_OFF, (p) => {
       this._knock(p.count);
     });
-    eventBus.on(EVT.TIER_UP, () => {
+    sub(EVT.TIER_UP, () => {
       this._arpeggio(ARP_NOTES, ARP_SPACING_S, 0.22, 0.4);
     });
     // ---- v2 ----
-    eventBus.on(EVT.DASH, () => {
+    sub(EVT.DASH, () => {
       this._whoosh();
     });
-    eventBus.on(EVT.DASH_READY, () => {
-      this._readyChime();
+    sub(EVT.DASH_READY, () => {
+      // The gauge keeps recharging during the finale cinematic (main keeps
+      // stepping physics) — suppress the chime once the run is over.
+      if (!this._runOver) this._readyChime();
     });
-    eventBus.on(EVT.SCORE, (p) => {
+    sub(EVT.SCORE, (p) => {
       if (p.rare) this._rareGliss();
     });
-    eventBus.on(EVT.MOON_CALL, () => {
+    sub(EVT.MOON_CALL, () => {
       this._moonPad();
     });
     // The grand fanfare fires at MOON_CONTACT (= clear instant). The v1
     // GAME_WIN fanfare handler is REMOVED — the fanfare already happened.
-    eventBus.on(EVT.MOON_CONTACT, () => {
+    sub(EVT.MOON_CONTACT, () => {
+      this._runOver = true; // gameplay chimes off until the next run
       this._grandFanfare();
       this.setRollIntensity(0);
     });
-    eventBus.on(EVT.GOAL, () => {
-      this._rankThud(); // scheduled +1.6 s ctx time (rank-stamp reveal cue)
+    // Rank-stamp thud: GAME_WIN (finale 'done'), NOT GOAL (contact instant) —
+    // screens.js reveals the stamp at CUE_RANK_MS = 1600 ms after GAME_WIN,
+    // matching the +1.6 s ctx-time offset inside _rankThud exactly.
+    sub(EVT.GAME_WIN, () => {
+      this._rankThud();
     });
-    eventBus.on(EVT.GAME_START, () => {
+    sub(EVT.GAME_START, () => {
+      this._runOver = false;
       // The start click is itself a user gesture — safe to (re)create here.
       this._onGesture();
       this._pluck();
     });
-    eventBus.on(EVT.GAME_RESET, () => {
+    sub(EVT.GAME_RESET, () => {
       this.setRollIntensity(0);
     });
   }
@@ -171,15 +203,23 @@ export class Sfx {
     }
   }
 
-  /** Tear down listeners and close the context (tests / teardown). */
+  /** Tear down listeners, bus subscriptions and the context (tests / teardown). */
   dispose() {
+    this._disposed = true;
     window.removeEventListener('pointerdown', this._onGesture);
     window.removeEventListener('keydown', this._onGesture);
     window.removeEventListener('touchstart', this._onGesture);
+    for (let i = 0; i < this._subs.length; i++) {
+      this._bus.off(this._subs[i][0], this._subs[i][1]);
+    }
+    this._subs.length = 0;
     if (this._ctx !== null) {
       this._ctx.close();
       this._ctx = null;
       this._noiseBuf = null;
+      this._master = null;
+      this._rollGain = null;
+      this._rollFilter = null;
     }
   }
 
@@ -189,7 +229,7 @@ export class Sfx {
 
   /** Create the AudioContext + master chain + roll loop (idempotent). */
   _ensureCtx() {
-    if (this._ctx !== null) return;
+    if (this._ctx !== null || this._disposed) return;
     const AC = window.AudioContext || /** @type {any} */ (window).webkitAudioContext;
     if (AC === undefined) return; // no WebAudio — stay silent forever
     const ctx = new AC();
@@ -302,9 +342,14 @@ export class Sfx {
    */
   _blip(combo) {
     if (this._silent()) return;
+    const t = /** @type {AudioContext} */ (this._ctx).currentTime;
+    // Rate cap (node budget): coalesce burst absorbs — skip if a blip played
+    // within BLIP_MIN_INTERVAL_S; the next allowed blip carries the (higher)
+    // current combo pitch, so the rising-pitch feel is preserved.
+    if (this._lastBlipAt >= 0 && t - this._lastBlipAt < BLIP_MIN_INTERVAL_S) return;
+    this._lastBlipAt = t;
     const semis = combo < BLIP_SEMITONE_CAP ? combo : BLIP_SEMITONE_CAP;
     const f = BLIP_BASE_HZ * Math.pow(2, semis / 12);
-    const t = /** @type {AudioContext} */ (this._ctx).currentTime;
     this._note(f, f * 1.35, 'triangle', t, 0.12, 0.22);
     this._note(f * 2, f * 2.4, 'sine', t, 0.08, 0.07); // sparkle overtone
   }
@@ -453,8 +498,9 @@ export class Sfx {
   }
 
   /**
-   * Rank-stamp thud ('goal'): 70 Hz sine thump + noise tick scheduled
-   * +1.6 s in ctx time to land on the CSS rank-stamp reveal.
+   * Rank-stamp thud ('game:win'): 70 Hz sine thump + noise tick scheduled
+   * +1.6 s in ctx time to land on the CSS rank-stamp reveal (screens.js
+   * CUE_RANK_MS = 1600 ms after the same GAME_WIN event).
    */
   _rankThud() {
     if (this._silent()) return;

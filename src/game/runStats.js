@@ -10,12 +10,15 @@
  * simulated second. 'time' {timeS} is emitted whenever timeS crosses the next
  * 0.1 s SIM boundary (never performance.now) -> HUD mm:ss.t.
  *
- * SCORE (on 'absorb' — BINDING subscription order at boot: main
- * attach-handler -> THIS -> sfx/effects/hud):
- *   objScore = max(1, round(SCORE_SIZE_BASE * sizeReal^SCORE_SIZE_POW))
+ * SCORE (on 'absorb' — BINDING subscription order at boot: spawner
+ * (bookkeeping only) -> main attach-handler -> THIS -> sfx/effects/hud):
+ *   objScore = max(1, round(SCORE_SIZE_BASE * (sizeReal/trueRadius)^SCORE_SIZE_POW))
  *   comboMul = min(1 + COMBO_SCORE_K * (combo - 1), COMBO_SCORE_MAX_MUL)
  *   delta    = round(objScore * comboMul) + (rare ? RARE_SCORE_BONUS : 0)
  * then 'score' {score, delta, combo, rare} is emitted (reused payload).
+ * v2 RETUNE: objScore is RELATIVE (object size / ball radius), not absolute
+ * meters — every tier band contributes comparably, totals land in 6 digits,
+ * and the flat RARE/MOON/TIME bonuses stay meaningful at goal.
  *
  * GOAL FLOW (on 'moonContact', once): freeze the clock, add MOON_SCORE_BONUS
  * + timeBonus = round(lerp(TIME_BONUS_MAX, 0, clamp01((timeS - FULL) /
@@ -174,7 +177,12 @@ export class RunStats {
    */
   _onAbsorb(p) {
     if (this._frozen) return; // post-contact absorbs are impossible by gating, belt-and-suspenders
-    const objScore = Math.max(1, Math.round(SCORE_SIZE_BASE * Math.pow(p.sizeReal, SCORE_SIZE_POW)));
+    // RELATIVE size: sizeReal is the object DIAMETER (m), trueRadius the ball
+    // radius (m) — ratio range (0, ~1.3] (ABSORB_RATIO 0.65 on radii). The
+    // ratio is scale-free, so a T0 eraser and a T5 stadium that look the same
+    // on screen score the same — every band contributes comparably.
+    const rel = p.trueRadius > 0 ? p.sizeReal / p.trueRadius : 0;
+    const objScore = Math.max(1, Math.round(SCORE_SIZE_BASE * Math.pow(rel, SCORE_SIZE_POW)));
     let comboMul = 1 + COMBO_SCORE_K * (p.combo - 1);
     if (comboMul > COMBO_SCORE_MAX_MUL) comboMul = COMBO_SCORE_MAX_MUL;
     const rare = p.rare === true;

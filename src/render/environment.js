@@ -65,6 +65,8 @@ const SHADOW_SCALE_K = 1.15;
 const SHADOW_Y_K = 0.02;
 /** Directional light direction (normalized at module load — boot-time alloc). */
 const LIGHT_DIR = new THREE.Vector3(0.45, 1.0, 0.3).normalize();
+/** World up (moon tangent-frame derivation — boot-time alloc). */
+const UP_VEC = new THREE.Vector3(0, 1, 0);
 /** Directional light distance from ball = LIGHT_DIST_K * radiusVisualSim. */
 const LIGHT_DIST_K = 40;
 
@@ -160,6 +162,8 @@ uniform vec3 uFogColor;
 uniform vec3 uSunDir;
 uniform float uSunIntensity;
 uniform vec3 uMoonDir;
+uniform vec3 uMoonTan;  // CPU-hoisted moon tangent frame (was per-fragment
+uniform vec3 uMoonBit;  // normalize+2x cross of uniform-constant exprs)
 uniform float uMoonAngSize;
 uniform float uMoonGlow;
 uniform float uMoonFade;
@@ -235,9 +239,7 @@ void main() {
   // (finale handoff crossfade). Disc is an opaque mix => occludes stars.
   float md = dot(dir, uMoonDir);
   float disc = smoothstep(cos(uMoonAngSize), cos(uMoonAngSize * 0.82), md) * uMoonFade;
-  vec3 mTan = normalize(cross(uMoonDir, vec3(0.0, 1.0, 0.0)));
-  vec3 mBit = cross(uMoonDir, mTan);
-  vec2 lc = vec2(dot(dir, mTan), dot(dir, mBit)) / uMoonAngSize;
+  vec2 lc = vec2(dot(dir, uMoonTan), dot(dir, uMoonBit)) / uMoonAngSize;
   float cr = (1.0 - smoothstep(0.16, 0.30, length(lc - vec2(0.33, 0.18))))
            + (1.0 - smoothstep(0.10, 0.22, length(lc - vec2(-0.28, -0.30))))
            + (1.0 - smoothstep(0.07, 0.17, length(lc - vec2(-0.02, 0.42))));
@@ -300,6 +302,10 @@ export class Environment {
     /** @type {THREE.Color} */ this._cCloud = new THREE.Color();
     /** @type {THREE.Vector3} */ this._vSunDir = new THREE.Vector3(0, 1, 0);
     /** @type {THREE.Vector3} */ this._vMoonDir = new THREE.Vector3(0, 1, 0);
+    /* CPU-hoisted moon tangent frame (shader uniforms uMoonTan/uMoonBit) —
+       recomputed in _updateMoonFrame whenever moonDir can have changed. */
+    /** @type {THREE.Vector3} */ this._vMoonTan = new THREE.Vector3(1, 0, 0);
+    /** @type {THREE.Vector3} */ this._vMoonBit = new THREE.Vector3(0, 0, 1);
     /** @type {number} */ this._sunIntensity = 0;
     /** @type {number} */ this._moonAngSize = 0.02;
     /** @type {number} */ this._starIntensity = 0;
@@ -387,6 +393,8 @@ export class Environment {
       uSunDir: { value: this._vSunDir },
       uSunIntensity: { value: 0 },
       uMoonDir: { value: this._vMoonDir },
+      uMoonTan: { value: this._vMoonTan },
+      uMoonBit: { value: this._vMoonBit },
       uMoonAngSize: { value: 0.02 },
       uMoonGlow: { value: 1 },
       uMoonFade: { value: 1 },
@@ -502,6 +510,7 @@ export class Environment {
       // sky quadrant (tiers.js assert), so the blend can never degenerate.
       this._vSunDir.lerpVectors(this._fSunDir, p.sunDir, k).normalize();
       this._vMoonDir.lerpVectors(this._fMoonDir, p.moonDir, k).normalize();
+      this._updateMoonFrame(); // keep the hoisted tangent frame in sync
       this._sunIntensity = lerp(this._fSunIntensity, p.sunIntensity, k);
       this._moonAngSize = lerp(this._fMoonAngSize, p.moonAngSize, k);
       this._starIntensity = lerp(this._fStarIntensity, p.starIntensity, k);
@@ -665,6 +674,7 @@ export class Environment {
     this._cCloud.copy(p.cloudColor);
     this._vSunDir.copy(p.sunDir);
     this._vMoonDir.copy(p.moonDir);
+    this._updateMoonFrame();
     this._sunIntensity = p.sunIntensity;
     this._moonAngSize = p.moonAngSize;
     this._starIntensity = p.starIntensity;
@@ -702,6 +712,18 @@ export class Environment {
   /* ------------------------------------------------------------------ */
   /* Internals                                                            */
   /* ------------------------------------------------------------------ */
+
+  /**
+   * Recompute the CPU-hoisted moon tangent frame (shader: mTan =
+   * normalize(cross(moonDir, up)), mBit = cross(moonDir, mTan)) — formerly
+   * rebuilt per FRAGMENT from uniform-constant expressions. moonDir elevation
+   * is asserted >= MOON_DIR_MIN_ELEV, so the cross with +Y never degenerates.
+   * Zero allocation.
+   */
+  _updateMoonFrame() {
+    this._vMoonTan.crossVectors(this._vMoonDir, UP_VEC).normalize();
+    this._vMoonBit.crossVectors(this._vMoonDir, this._vMoonTan);
+  }
 
   /**
    * Derive one palette entry (boot only — allocates). `src` is a tiers.js
