@@ -5,6 +5,13 @@
 
 **Play**: https://fable-katamari.pages.dev
 
+| 📖 ドキュメント | |
+|---|---|
+| **[制作の物語](https://fable-katamari-docs.pages.dev/)** | どういう経緯・思考でこのゲームが生まれたか。非エンジニア向けに図解付きで、v1→v2→v3の指示と変更を時系列で（エンジニア向け詳細はアコーディオン内） |
+| **[設計書](https://fable-katamari-docs.pages.dev/design)** | 統合アーキテクチャ仕様: スケールシステム/物理/レンダリング/ワールド生成/フィナーレ/モバイルUI/ドナック 全12章 |
+| **[制作記録issue一覧](https://github.com/aieo-product/fableDemoGame/issues/14)** | 各フェーズの作業内容・意思決定・レビュー結果（issue #1〜#13） |
+| [docs/worklog/](docs/worklog/) | 全作業の生ログ |
+
 ## 操作
 
 - **WASD / 矢印キー**: 転がす
