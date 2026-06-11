@@ -1,74 +1,70 @@
 /**
- * @file finale.js — The v2 moon-ending state machine (Stream A; owns the goal
- * — ScaleManager's v1 WIN_RADIUS_M latch is removed).
+ * @file finale.js — The v3 東京スカイツリー finale state machine (Stream A
+ * re-theme of the v2 production; the goal monument is FIXED in the world, so
+ * the v2 descent/landing math is DELETED).
  *
- * States: idle -> called -> descent -> landed -> contact -> merge ->
- *         ascension -> afterglow -> done
+ * States: idle -> called -> approach -> contact -> merge -> ascension ->
+ *         afterglow -> done
  *
- *  - IDLE/CALLED: threshold watches on trueRadius (MOON_CALL_RADIUS_M /
- *    MOON_GOAL_RADIUS_M). CALLED is pure cosmetics (EVT.MOON_CALL toast,
- *    sky-moon pulse, bgm swell).
- *  - DESCENT: the REAL moon (render/moon.js) materializes at an
- *    ANGULAR-MATCHED start pose — cameraPos + env.getMoonDirWorld() *
- *    (moonR / tan(moonAngSize[tier])) — so its screen direction and angular
- *    size EXACTLY match the sky-dome shader disc while env.setSkyMoonFade
- *    crossfades 1 -> 0 over 2s (the handoff cannot pop). It then lerps
- *    (easeInOutCubic + settle bounce) to a landing point ahead of the ball
- *    over MOON_DESCENT_S. Gameplay stays FULLY live; EVT.MOON_GUIDE at 10Hz
- *    drives the HUD edge arrow.
- *  - LANDED: moon rests on y = moonR (pushback-free, soft magnet bias);
- *    render-frame contact test => CONTACT.
- *  - CONTACT (clear-time instant, once): EVT.MOON_GUIDE {active:false} +
- *    EVT.MOON_CONTACT; inputLocked/cameraOwned latch true (main gates
- *    intent/absorb/spawner/maybeRebase and skips cameraRig.update);
+ *  - IDLE/CALLED: threshold watches on trueRadius (GOAL_CALL_RADIUS_M 380 /
+ *    GOAL_RADIUS_M 420). CALLED is pure cosmetics (EVT.GOAL_CALL toast
+ *    「スカイツリーが呼んでいる…！」, skytree beam pulse, bgm swell, sfx pad).
+ *  - APPROACH (trueRadius >= GOAL_RADIUS_M): contact is ARMED. Gameplay stays
+ *    FULLY live (steer/absorb/bounce — the tower's permanent base collider in
+ *    world/terrain.js keeps the ball honest at SKYTREE_COLLIDER_K 0.6 < the
+ *    0.85 contact pad, so rolling in always reaches contact first).
+ *    EVT.GOAL_GUIDE at 10 Hz drives the HUD #goal-arrow toward the upper
+ *    tower. Render-frame contact test:
+ *      distXZ(ball, towerAxis) <= ballR + towerBaseR * GOAL_CONTACT_PAD.
+ *  - CONTACT (clear-time instant, once): EVT.GOAL_GUIDE {active:false} +
+ *    EVT.GOAL_CONTACT; inputLocked/cameraOwned latch true (main gates
+ *    intent/absorb/spawner/curated/maybeRebase and skips cameraRig.update);
  *    cameraRig.beginCinematic().
- *  - MERGE: finale writes ball.pos (lerp into the moon center); ball view
- *    hidden at t >= 0.6s; moon scale pops 1 -> 1.06 -> 1.
- *  - ASCENSION: moon rises ease-in to ascendBaseY + MOON_ASCEND_HEIGHT_K * r;
- *    env.beginNightFade(MOON_ASCEND_S); effects.moonBurst(). The (hidden)
- *    ball is parked on the moon center so the fountain/blob shadow track it.
- *  - AFTERGLOW: glow breathing, then state = 'done' — main.js (the SOLE v2
- *    'game:win' emitter) fires EVT.GAME_WIN.
+ *  - MERGE: finale writes ball.pos (lerp into the glowing tower axis); ball
+ *    view hidden at t >= 0.6 s; tower glow flash across the merge.
+ *  - ASCENSION: the (hidden) anchor point rises ease-in to
+ *    ascendBaseY + GOAL_ASCEND_HEIGHT_K * r over the night diorama;
+ *    env.beginNightFade(GOAL_ASCEND_S); effects.ascensionBurst() golden
+ *    fountain rides the anchor (ball.pos is parked on it).
+ *  - AFTERGLOW: tower glow breathing over night Tokyo, then state = 'done' —
+ *    main.js (the SOLE 'game:win' emitter) fires EVT.GAME_WIN.
+ *
+ * SILHOUETTE -> MESH HANDOFF (BLOCKER 2): finale.update drives
+ * skytree.update(dt, cameraPos) every frame and forwards
+ * env.setGoalSilFade(skytree.silFade01) — the env sky-dome silhouette and
+ * the goalTower mesh crossfade with the kept v2 handoff pacing (the two
+ * representations are angle-matched by construction: both derive from the
+ * same SKYTREE_POS real-meter pose).
  *
  * RESCALE/REBASE SAFETY (binding): _simCache is THE exhaustive list of
  * rescale/rebase-sensitive finale state — finale subscribes EVT.RESCALE
  * (every field *= S) and EVT.REBASE (every X/Z field -= sx/sz) itself.
- * Everything else (moon pose, camera targets) is DERIVED per frame from
- * _simCache + BallState, so a mid-DESCENT/LANDED rescale or rebase stays
- * pixel-identical. ANY new finale state field MUST be added to _simCache or
- * be derived per-frame (DESIGN-V2.md リスク).
- *
- * Post-CONTACT, main gates maybeRebase off and growth is frozen (absorb
- * skipped) so no rescale can fire — the cinematic phases never see either.
+ * towerX/towerZ/towerR are additionally REFRESHED from SkytreeView every
+ * pre-contact frame (SkytreeView derives them from the live worldScale, so a
+ * mid-APPROACH rescale or teleport-rebase stays pixel-identical either way);
+ * post-contact no rescale/rebase can fire (growth frozen, maybeRebase gated)
+ * and the cached fields carry the cinematic. ANY new finale state field MUST
+ * be added to _simCache or be derived per-frame (DESIGN-V2.md リスク, kept).
  *
  * Camera: from CONTACT the finale derives camPosTarget/lookTarget/fovTarget
- * per frame (pure functions of current moon pose + frozen ball radius — zero
+ * per frame (pure functions of the anchor pose + frozen ball radius — zero
  * cached camera state) and drives cameraRig.cinematicUpdate.
  *
  * Zero per-frame allocation: module scratch vectors, reused PAYLOADS.
  */
 
 import * as THREE from 'three';
-import { TIERS } from '../config/tiers.js';
 import { EVT, PAYLOADS } from '../core/events.js';
 import { clamp01, easeInOutCubic } from '../core/mathUtils.js';
 import {
-  ACCEL_K,
   AFTERGLOW_S,
   FOV_BASE,
-  MOON_ASCEND_HEIGHT_K,
-  MOON_ASCEND_S,
-  MOON_CALL_RADIUS_M,
-  MOON_CONTACT_PAD,
-  MOON_DESCENT_S,
-  MOON_GOAL_RADIUS_M,
-  MOON_LAND_DIST_K,
-  MOON_LAND_VEL_FRAC,
-  MOON_MAGNET_ACCEL_FRAC,
-  MOON_MAGNET_RANGE_K,
-  MOON_MERGE_S,
-  MOON_RADIUS_K,
-  SPEED_K,
+  GOAL_ASCEND_HEIGHT_K,
+  GOAL_ASCEND_S,
+  GOAL_CALL_RADIUS_M,
+  GOAL_CONTACT_PAD,
+  GOAL_MERGE_S,
+  GOAL_RADIUS_M,
 } from '../config/tuning.js';
 
 /** @typedef {import('../types.js').BallState} BallState */
@@ -76,25 +72,19 @@ import {
 const DEV = typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.DEV;
 
 /* ---- finale-local cosmetic tunables (not in tuning.js) -------------- */
-/** Sky-moon shader disc -> real mesh crossfade duration (s) at descent start. */
-const MOON_FADE_S = 2.0;
-/** Post-descent settle bounce duration (s) and amplitude (fraction of moonR). */
-const SETTLE_S = 0.4;
-const SETTLE_AMP = 0.045;
-/** EVT.MOON_GUIDE emission interval (10Hz). */
+/** EVT.GOAL_GUIDE emission interval (10Hz). */
 const GUIDE_INTERVAL_S = 0.1;
+/** Guide arrow aims at this fraction of the tower height (upper tower). */
+const GUIDE_HEIGHT_FRAC = 0.55;
 /** Ball view hidden this far into MERGE (s). */
 const BALL_HIDE_AT_S = 0.6;
-/** MERGE moon scale pop amplitude (1.0 -> 1+AMP -> 1.0). */
-const MERGE_POP_AMP = 0.06;
-/** Cinematic shot: camPos = moonPos + back*BACK_K*r + up*UP_K*r; FOV 60 -> 52. */
+/** Cinematic shot: camPos = anchor + back*BACK_K*r + up*UP_K*r; FOV 60 -> 52. */
 const CINE_BACK_K = 14;
 const CINE_UP_K = 4;
 const CINE_FOV_END = 52;
-/** Moon spin rates (rad/s): descent/landed vs ascension. */
-const SPIN_SLOW = 0.12;
-const SPIN_ASCEND = 0.28;
-/** Afterglow glow breathing frequency (Hz). */
+/** APPROACH tower glow breathing (base level + amp, Hz). */
+const APPROACH_GLOW_BASE = 0.45;
+const APPROACH_GLOW_AMP = 0.15;
 const GLOW_BREATH_HZ = 0.5;
 /** skipCinematic() time multiplier — MERGE+ASCENSION+AFTERGLOW (8.7 s)
  *  compress to ~1.7 s. A fast-forward, not a hard cut: every phase still
@@ -108,7 +98,7 @@ const _v3a = new THREE.Vector3();
 const _v3b = new THREE.Vector3();
 
 /**
- * Moon-ending state machine. Construct once at boot; main.js calls
+ * Skytree-ending state machine. Construct once at boot; main.js calls
  * update(frameDt, ballPhys.state) at frame-order step 4.5 and reset() inside
  * resetWorld(). Subscribes EVT.RESCALE / EVT.REBASE itself (for _simCache).
  */
@@ -116,57 +106,55 @@ export class Finale {
   /**
    * @param {import('../core/events.js').EventBus} bus Shared event bus.
    * @param {import('../world/scaleManager.js').ScaleManager} scaleMgr worldScale/tierIndex source.
-   * @param {import('../render/moon.js').MoonView} moonView The real moon mesh.
-   * @param {object} env Environment — setSkyMoonFade/setSkyMoonPulse/
-   *   beginNightFade/getMoonDirWorld (Stream B; typeof-guarded for bring-up).
+   * @param {import('../render/goalTower.js').SkytreeView} goalView The goal
+   *   monument (v3: takes the v2 goal-view slot in the frozen 7-arg shape).
+   * @param {object} env Environment — setGoalSilFade/beginNightFade
+   *   (typeof-guarded for bring-up).
    * @param {import('../render/cameraRig.js').CameraRig} cameraRig Camera rig
-   *   (yaw read for the landing-direction fallback; cinematic drive from CONTACT).
-   * @param {object} ballView render/ball.js Ball — setVisible(b) (Stream C).
+   *   (cinematic drive from CONTACT).
+   * @param {object} ballView render/ball.js Ball — setVisible(b).
    * @param {THREE.PerspectiveCamera} camera Render camera (NDC projection for
-   *   MOON_GUIDE + descent start pose; matrixWorldInverse freshness = last
-   *   render, which is fine for a 10Hz guide).
-   * @param {object} [effects] render/effects.js Effects — moonBurst() +
-   *   dustRing() (optional; also injectable later via setEffects).
+   *   GOAL_GUIDE + skytree handoff distance; matrixWorldInverse freshness =
+   *   last render, which is fine for a 10Hz guide).
+   * @param {object} [effects] render/effects.js Effects — ascensionBurst()
+   *   (optional; also injectable later via setEffects).
    */
-  constructor(bus, scaleMgr, moonView, env, cameraRig, ballView, camera, effects = null) {
+  constructor(bus, scaleMgr, goalView, env, cameraRig, ballView, camera, effects = null) {
     this._bus = bus;
     this._scaleMgr = scaleMgr;
-    this._moonView = moonView;
+    this._goalView = goalView;
     this._env = env;
     this._cameraRig = cameraRig;
     this._ballView = ballView;
     this._camera = camera;
     this._effects = effects;
 
-    /** @type {'idle'|'called'|'descent'|'landed'|'contact'|'merge'|'ascension'|'afterglow'|'done'} */
+    /** @type {'idle'|'called'|'approach'|'contact'|'merge'|'ascension'|'afterglow'|'done'} */
     this._state = 'idle';
     this._inputLocked = false;
     this._cameraOwned = false;
 
     /**
      * THE exhaustive list of rescale/rebase-sensitive finale state
-     * (DESIGN-V2.md 月エンディング — binding). EVT.RESCALE: every field *= S.
-     * EVT.REBASE: every X/Z field -= sx/sz. Nothing else in the finale caches
-     * sim-space numbers; all poses/targets are derived per frame from here.
+     * (docs/DESIGN-V3.md ファイル変更一覧 — binding). EVT.RESCALE: every
+     * field *= S. EVT.REBASE: every X/Z field -= sx/sz. Nothing else in the
+     * finale caches sim-space numbers; all poses/targets are derived per
+     * frame from here (towerX/Z/R additionally refreshed from SkytreeView
+     * every pre-contact frame).
      */
     this._simCache = {
-      startX: 0, startY: 0, startZ: 0, // descent start pose
-      landX: 0, landY: 0, landZ: 0, // landing point (moon center when landed)
-      moonR: 0, // frozen moon radius (sim units)
+      towerX: 0, towerZ: 0, // tower axis (base center)
+      towerR: 0, // tower base radius (sim units)
       mergeFromX: 0, mergeFromY: 0, mergeFromZ: 0, // ball pos at merge start
-      ascendBaseY: 0, // moon center y at ascension start
+      ascendBaseY: 0, // anchor y at ascension start (= ball y at contact)
     };
 
     /** @type {number} Clock within the current phase (s). */
     this._phaseT = 0;
     /** @type {number} Clock since CONTACT (cinematic FOV ease). */
     this._cineT = 0;
-    /** @type {number} Accumulated moon spin angle (rad — dimensionless). */
-    this._spin = 0;
-    /** @type {number} MOON_GUIDE 10Hz accumulator. */
+    /** @type {number} GOAL_GUIDE 10Hz accumulator. */
     this._guideAcc = 0;
-    /** @type {boolean} Sky-moon fade reached 0 (stop calling the uniform). */
-    this._fadeDone = false;
     /** @type {boolean} Ball view hidden during MERGE. */
     this._ballHidden = false;
     /** @type {boolean} DEV: missing-env-API warning emitted once. */
@@ -178,28 +166,29 @@ export class Finale {
     /** @type {number} Post-contact cinematic time multiplier (1 = normal;
      * skipCinematic() sets SKIP_TIME_SCALE — replayers fast-forward). */
     this._timeScale = 1;
+    /** @type {number} Last forwarded env silhouette fade (skip no-op calls). */
+    this._lastSilFade = -1;
 
-    // Current moon center — DERIVED, rewritten by _setMoonPose every active
-    // frame BEFORE any consumer (guide projection / cinematic targets) reads
-    // it, so it needs no rescale/rebase handling of its own.
-    this._moonX = 0;
-    this._moonY = 0;
-    this._moonZ = 0;
+    // Current cinematic anchor — DERIVED, rewritten every post-contact frame
+    // BEFORE any consumer (cinematic targets) reads it, so it needs no
+    // rescale/rebase handling of its own. Pre-contact the guide projects the
+    // tower itself (see _updateApproach).
+    this._anchorX = 0;
+    this._anchorY = 0;
+    this._anchorZ = 0;
 
     bus.on(EVT.RESCALE, (p) => {
       const S = p.S;
       const c = this._simCache;
-      c.startX *= S; c.startY *= S; c.startZ *= S;
-      c.landX *= S; c.landY *= S; c.landZ *= S;
-      c.moonR *= S;
+      c.towerX *= S; c.towerZ *= S;
+      c.towerR *= S;
       c.mergeFromX *= S; c.mergeFromY *= S; c.mergeFromZ *= S;
       c.ascendBaseY *= S;
       this._skipGuideOnce = true; // camera matrix is stale this frame
     });
     bus.on(EVT.REBASE, (p) => {
       const c = this._simCache;
-      c.startX -= p.sx; c.startZ -= p.sz;
-      c.landX -= p.sx; c.landZ -= p.sz;
+      c.towerX -= p.sx; c.towerZ -= p.sz;
       c.mergeFromX -= p.sx; c.mergeFromZ -= p.sz;
       this._skipGuideOnce = true; // camera matrix is stale this frame
     });
@@ -209,12 +198,12 @@ export class Finale {
   /* Public surface (frozen interface)                                 */
   /* ---------------------------------------------------------------- */
 
-  /** @returns {'idle'|'called'|'descent'|'landed'|'contact'|'merge'|'ascension'|'afterglow'|'done'} */
+  /** @returns {'idle'|'called'|'approach'|'contact'|'merge'|'ascension'|'afterglow'|'done'} */
   get state() {
     return this._state;
   }
 
-  /** True from CONTACT — main gates intent/absorb/spawner/maybeRebase. */
+  /** True from CONTACT — main gates intent/absorb/spawner/curated/maybeRebase. */
   get inputLocked() {
     return this._inputLocked;
   }
@@ -225,9 +214,9 @@ export class Finale {
   }
 
   /**
-   * Late wiring hook for render/effects.js (moonBurst + dustRing) — the
-   * 7-arg constructor shape is frozen, so the integrator may inject effects
-   * here instead of as the optional 8th argument.
+   * Late wiring hook for render/effects.js (ascensionBurst) — the 7-arg
+   * constructor shape is frozen, so the integrator may inject effects here
+   * instead of as the optional 8th argument.
    * @param {object} effects
    */
   setEffects(effects) {
@@ -235,10 +224,11 @@ export class Finale {
   }
 
   /**
-   * v2 replay-friction fix: fast-forward the post-contact cinematic
-   * (MERGE/ASCENSION/AFTERGLOW run at SKIP_TIME_SCALE). main.js calls this on
-   * any pointerdown/keydown while in the FINALE state. A no-op pre-contact —
-   * descent/landing are live gameplay and must never accelerate. Idempotent.
+   * Replay-friction fix (kept from v2): fast-forward the post-contact
+   * cinematic (MERGE/ASCENSION/AFTERGLOW run at SKIP_TIME_SCALE). main.js
+   * calls this on any pointerdown/keydown while in the FINALE state. A no-op
+   * pre-contact — the approach is live gameplay and must never accelerate.
+   * Idempotent.
    */
   skipCinematic() {
     if (!this._inputLocked || this._state === 'done') return;
@@ -248,9 +238,10 @@ export class Finale {
   /**
    * Per-frame finale drive (main.js frame-order step 4.5, AFTER
    * scaleMgr.maybeTierUp/maybeRebase so _simCache and BallState agree).
+   * Also the per-frame driver of the SkytreeView handoff (every state).
    * @param {number} frameDt Render-frame delta (s).
-   * @param {BallState} ball Single source of ball truth (vel biased in
-   *   LANDED; pos written directly during MERGE..AFTERGLOW).
+   * @param {BallState} ball Single source of ball truth (pos written
+   *   directly during MERGE..AFTERGLOW).
    */
   update(frameDt, ball) {
     const tr = ball.radiusSim * this._scaleMgr.worldScale;
@@ -258,29 +249,38 @@ export class Finale {
     // run at 1x — _timeScale only ever rises after inputLocked latches.
     const cineDt = frameDt * this._timeScale;
 
-    // ---- threshold ladder (both may fire in one frame, e.g. ?r=740) -------
-    if (this._state === 'idle' && tr >= MOON_CALL_RADIUS_M) this._enterCalled(tr);
-    if (this._state === 'called' && tr >= MOON_GOAL_RADIUS_M) this._beginDescent(ball);
+    // ---- skytree handoff drive (every frame, every state) -----------------
+    // The mesh<->silhouette crossfade is gameplay-wide (not finale-gated):
+    // SkytreeView owns the latch; we forward its silhouette weight to the
+    // environment sky shader (mirrors the v2 sky-fade drive).
+    this._goalView.update(frameDt, this._camera.position);
+    const sil = this._goalView.silFade01;
+    if (sil !== this._lastSilFade) {
+      this._lastSilFade = sil;
+      this._envCall('setGoalSilFade', sil);
+    }
+
+    // ---- threshold ladder (both may fire in one frame, e.g. ?at=goal) -----
+    if (this._state === 'idle' && tr >= GOAL_CALL_RADIUS_M) this._enterCalled(tr);
+    if (this._state === 'called' && tr >= GOAL_RADIUS_M) this._beginApproach();
 
     // DEV watchdog: the finale is the ONLY end-of-game path — if the run grew
-    // past 1.2x goal while still pre-descent, something ate the trigger.
+    // past 1.2x goal while still pre-approach, something ate the trigger.
     if (
       DEV &&
       (this._state === 'idle' || this._state === 'called') &&
-      tr > 1.2 * MOON_GOAL_RADIUS_M
+      tr > 1.2 * GOAL_RADIUS_M
     ) {
       console.error(
-        `[finale] watchdog: trueRadius ${tr.toFixed(1)}m > 1.2x goal while '${this._state}' — forcing DESCENT`
+        `[finale] watchdog: trueRadius ${tr.toFixed(1)}m > 1.2x goal while '${this._state}' — forcing APPROACH`
       );
-      this._beginDescent(ball);
+      if (this._state === 'idle') this._enterCalled(tr);
+      this._beginApproach();
     }
 
     switch (this._state) {
-      case 'descent':
-        this._updateDescent(frameDt, ball);
-        break;
-      case 'landed':
-        this._updateLanded(frameDt, ball);
+      case 'approach':
+        this._updateApproach(frameDt, ball);
         break;
       case 'contact': // one observable frame, then the merge begins
         this._state = 'merge';
@@ -301,15 +301,16 @@ export class Finale {
     }
 
     // From CONTACT: derive cinematic camera targets per frame (pure function
-    // of current moon pose + frozen ball radius => rescale-safe, zero cached
-    // camera state) and drive the rig springs.
+    // of current anchor pose + frozen ball radius => rescale-safe, zero
+    // cached camera state) and drive the rig springs.
     if (this._cameraOwned) this._driveCinematic(frameDt, ball);
   }
 
   /**
    * Back to a fresh run (called directly by main.resetWorld — frozen reset
    * ownership; ball visibility is restored by ball.reset(), camera latch by
-   * cameraRig.reset() on GAME_RESET).
+   * cameraRig.reset() on GAME_RESET, SkytreeView handoff/shift by its own
+   * GAME_RESET handler, env uGoalSil/night fade by setTierPaletteImmediate).
    */
   reset() {
     this._state = 'idle';
@@ -317,24 +318,19 @@ export class Finale {
     this._cameraOwned = false;
     this._phaseT = 0;
     this._cineT = 0;
-    this._spin = 0;
     this._guideAcc = 0;
-    this._fadeDone = false;
     this._ballHidden = false;
     this._skipGuideOnce = false;
     this._timeScale = 1;
+    this._lastSilFade = -1; // re-forward on the first update
     const c = this._simCache;
-    c.startX = 0; c.startY = 0; c.startZ = 0;
-    c.landX = 0; c.landY = 0; c.landZ = 0;
-    c.moonR = 0;
+    c.towerX = 0; c.towerZ = 0;
+    c.towerR = 0;
     c.mergeFromX = 0; c.mergeFromY = 0; c.mergeFromZ = 0;
     c.ascendBaseY = 0;
-    this._moonX = 0; this._moonY = 0; this._moonZ = 0;
-    this._moonView.setVisible(false);
-    this._moonView.setGlow01(0);
-    this._moonView.setSpin(0);
-    this._envCall('setSkyMoonFade', 1);
-    this._envCall('setSkyMoonPulse', false);
+    this._anchorX = 0; this._anchorY = 0; this._anchorZ = 0;
+    this._goalView.setGlow01(0);
+    this._goalView.setBeamPulse(false);
     // Belt-and-suspenders: cameraRig.reset() (GAME_RESET) clears this too.
     if (this._cameraRig && typeof this._cameraRig.endCinematic === 'function') {
       this._cameraRig.endCinematic();
@@ -348,71 +344,23 @@ export class Finale {
   /** @param {number} tr Current trueRadius (m). */
   _enterCalled(tr) {
     this._state = 'called';
-    PAYLOADS.moonCall.trueRadius = tr;
-    this._bus.emit(EVT.MOON_CALL, PAYLOADS.moonCall);
-    this._envCall('setSkyMoonPulse', true); // 0.5Hz uMoonGlow breathing
+    PAYLOADS.goalCall.trueRadius = tr;
+    this._bus.emit(EVT.GOAL_CALL, PAYLOADS.goalCall);
+    this._goalView.setBeamPulse(true); // 0.5Hz beacon — 「スカイツリーが呼んでいる…！」
   }
 
-  /**
-   * DESCENT start: freeze moonR, pick the landing point, compute the
-   * angular-matched start pose so the real mesh takes over the shader disc
-   * with zero visual discontinuity.
-   * @param {BallState} ball
-   */
-  _beginDescent(ball) {
-    const c = this._simCache;
-    const r = ball.radiusSim;
-    this._state = 'descent';
+  /** APPROACH start: arm the contact test + the 10Hz guide arrow. */
+  _beginApproach() {
+    this._state = 'approach';
     this._phaseT = 0;
-    this._spin = 0;
     this._guideAcc = GUIDE_INTERVAL_S; // first guide emits immediately
-    this._fadeDone = false;
-    this._skipGuideOnce = false; // any pre-descent staleness flag is moot
-
-    c.moonR = MOON_RADIUS_K * r;
-
-    // Landing direction: horizontal velocity if moving with intent, else
-    // camera forward (cameraRig convention: forward = (sin yaw, 0, cos yaw)).
-    const vx = ball.vel.x;
-    const vz = ball.vel.z;
-    const sp = Math.sqrt(vx * vx + vz * vz);
-    let dx;
-    let dz;
-    if (sp >= MOON_LAND_VEL_FRAC * SPEED_K * r && sp > 1e-9) {
-      dx = vx / sp;
-      dz = vz / sp;
-    } else {
-      const yaw = this._cameraRig.yaw;
-      dx = Math.sin(yaw);
-      dz = Math.cos(yaw);
-    }
-    c.landX = ball.pos.x + dx * MOON_LAND_DIST_K * r;
-    c.landZ = ball.pos.z + dz * MOON_LAND_DIST_K * r;
-    c.landY = c.moonR; // rests ON the ground plane
-    c.ascendBaseY = c.moonR;
-
-    // Angular-matched start pose: distance such that a sphere of radius moonR
-    // subtends EXACTLY the sky-disc's angular radius from the camera, along
-    // the CURRENT blended sky-moon direction (T5: ~41.9r away).
-    let ti = this._scaleMgr.tierIndex;
-    if (ti < 0) ti = 0;
-    else if (ti >= TIERS.length) ti = TIERS.length - 1;
-    const dist = c.moonR / Math.tan(TIERS[ti].moonAngSize);
-    this._getMoonDir(_v3a, ti);
-    const cp = this._camera.position;
-    c.startX = cp.x + _v3a.x * dist;
-    c.startY = cp.y + _v3a.y * dist;
-    c.startZ = cp.z + _v3a.z * dist;
-
-    this._envCall('setSkyMoonPulse', false); // the real moon takes over
-    this._moonView.setGlow01(0);
-    this._moonView.setVisible(true);
-    this._setMoonPose(c.startX, c.startY, c.startZ, c.moonR);
+    this._skipGuideOnce = false; // any pre-approach staleness flag is moot
+    this._refreshTowerCache();
   }
 
   /**
    * CONTACT: the clear-time instant. Latches input/camera ownership, records
-   * mergeFrom, emits the guide-off + MOON_CONTACT pair.
+   * mergeFrom, emits the guide-off + GOAL_CONTACT pair.
    * @param {BallState} ball
    */
   _onContact(ball) {
@@ -425,12 +373,21 @@ export class Finale {
     c.mergeFromX = ball.pos.x;
     c.mergeFromY = ball.pos.y;
     c.mergeFromZ = ball.pos.z;
+    c.ascendBaseY = ball.pos.y;
     this._ballHidden = false;
+    this._goalView.setBeamPulse(false);
+    this._goalView.setGlow01(1); // contact flash on the monument
 
     // Hide the HUD arrow first, then announce the clear (subscribers: runStats
-    // freeze+GOAL, bgm duck->stop, sfx fanfare, hud hide, screens flash).
+    // freeze+GOAL, bgm duck->stop, sfx fanfare, hud hide, screens flash;
+    // #donack-root survives — it lives outside #hud).
+    this._setGuidePoint(c.towerX, this._goalView.heightSim * GUIDE_HEIGHT_FRAC, c.towerZ);
     this._projectAndEmitGuide(false);
-    this._bus.emit(EVT.MOON_CONTACT, PAYLOADS.moonContact);
+    this._bus.emit(EVT.GOAL_CONTACT, PAYLOADS.goalContact);
+
+    // Seed the cinematic anchor at the ball so the same-frame cinematic
+    // drive continues from the gameplay shot (no 1-frame target hop).
+    this._setAnchor(ball.pos.x, ball.pos.y, ball.pos.z);
 
     if (this._cameraRig && typeof this._cameraRig.beginCinematic === 'function') {
       this._cameraRig.beginCinematic();
@@ -444,76 +401,34 @@ export class Finale {
   /* ---------------------------------------------------------------- */
 
   /** @param {number} dt @param {BallState} ball */
-  _updateDescent(dt, ball) {
-    this._phaseT += dt;
-    const c = this._simCache;
-
-    // Sky-disc -> mesh crossfade (1 -> 0 over MOON_FADE_S, then stop calling).
-    if (!this._fadeDone) {
-      const k = 1 - this._phaseT / MOON_FADE_S;
-      if (k <= 0) {
-        this._fadeDone = true;
-        this._envCall('setSkyMoonFade', 0);
-      } else {
-        this._envCall('setSkyMoonFade', k);
-      }
-    }
-
-    // Pose: easeInOutCubic start -> landing, then a small settle bounce.
-    const e = easeInOutCubic(clamp01(this._phaseT / MOON_DESCENT_S));
-    const mx = c.startX + (c.landX - c.startX) * e;
-    let my = c.startY + (c.landY - c.startY) * e;
-    const mz = c.startZ + (c.landZ - c.startZ) * e;
-    if (this._phaseT > MOON_DESCENT_S) {
-      const u = clamp01((this._phaseT - MOON_DESCENT_S) / SETTLE_S);
-      my = c.landY + c.moonR * SETTLE_AMP * Math.sin(Math.PI * u) * (1 - u);
-    }
-    this._spin += SPIN_SLOW * dt;
-    this._moonView.setGlow01(0.55 * clamp01(this._phaseT / 1.5)); // glow ramps in
-    this._setMoonPose(mx, my, mz, c.moonR);
-
-    this._updateGuide(dt);
-
-    if (this._phaseT >= MOON_DESCENT_S + SETTLE_S) {
-      this._state = 'landed';
-      this._phaseT = 0;
-      this._setMoonPose(c.landX, c.landY, c.landZ, c.moonR);
-      if (this._effects && typeof this._effects.dustRing === 'function') {
-        this._effects.dustRing(c.landX, 0, c.landZ, c.moonR); // touchdown dust, once
-      }
-    }
-  }
-
-  /** @param {number} dt @param {BallState} ball */
-  _updateLanded(dt, ball) {
+  _updateApproach(dt, ball) {
     this._phaseT += dt;
     const c = this._simCache;
     const r = ball.radiusSim;
 
-    // Re-derive the (static) pose every frame — free, and exactly right on
-    // the frame a rescale/rebase rewrote _simCache.
-    this._spin += SPIN_SLOW * dt;
-    this._moonView.setGlow01(0.5 + 0.08 * Math.sin(TWO_PI * GLOW_BREATH_HZ * this._phaseT));
-    this._setMoonPose(c.landX, c.landY, c.landZ, c.moonR);
+    // Refresh the tower cache from the live SkytreeView pose every pre-contact
+    // frame (derived => exactly right on the frame a rescale/rebase or dev
+    // teleport rewrote the world; the _simCache handlers cover post-contact).
+    this._refreshTowerCache();
 
-    // Soft magnet: horizontal bias toward the moon — never overrides input
-    // (an acceleration, not a steering rewrite), engages within 20r.
-    const dxh = c.landX - ball.pos.x;
-    const dzh = c.landZ - ball.pos.z;
-    const dh = Math.sqrt(dxh * dxh + dzh * dzh);
-    if (dh > 1e-6 && dh < MOON_MAGNET_RANGE_K * r) {
-      const a = (MOON_MAGNET_ACCEL_FRAC * ACCEL_K * r * dt) / dh;
-      ball.vel.x += dxh * a;
-      ball.vel.z += dzh * a;
-    }
+    // Monument glow breathes while armed (ramps in over the first 1.5 s).
+    this._goalView.setGlow01(
+      (APPROACH_GLOW_BASE + APPROACH_GLOW_AMP * Math.sin(TWO_PI * GLOW_BREATH_HZ * this._phaseT)) *
+        clamp01(this._phaseT / 1.5)
+    );
 
+    // 10Hz guide arrow toward the upper tower.
+    this._setGuidePoint(c.towerX, this._goalView.heightSim * GUIDE_HEIGHT_FRAC, c.towerZ);
     this._updateGuide(dt);
 
-    // Render-frame contact test (the moon is pushback-free — rolling in
-    // always succeeds): dist(ball, moonCenter) <= ballR + moonR * PAD.
-    const dy = c.landY - ball.pos.y;
-    const reach = r + c.moonR * MOON_CONTACT_PAD;
-    if (dxh * dxh + dy * dy + dzh * dzh <= reach * reach) {
+    // Render-frame contact test (XZ vs the tower AXIS — the tower is a
+    // vertical monument; the terrain base collider at SKYTREE_COLLIDER_K 0.6
+    // < GOAL_CONTACT_PAD 0.85 guarantees contact wins before any bounce):
+    //   distXZ <= ballR + towerBaseR * PAD.
+    const dx = c.towerX - ball.pos.x;
+    const dz = c.towerZ - ball.pos.z;
+    const reach = r + c.towerR * GOAL_CONTACT_PAD;
+    if (dx * dx + dz * dz <= reach * reach) {
       this._onContact(ball);
     }
   }
@@ -524,13 +439,16 @@ export class Finale {
     this._cineT += dt;
     const c = this._simCache;
 
-    // Finale owns ball.pos now (intent is zeroed by main, so nothing fights).
-    const t01 = clamp01(this._phaseT / MOON_MERGE_S);
+    // Finale owns ball.pos now (intent is zeroed by main, so nothing fights):
+    // lerp into the tower axis at contact height — the ball sinks into the
+    // glowing monument.
+    const t01 = clamp01(this._phaseT / GOAL_MERGE_S);
     const e = easeInOutCubic(t01);
-    ball.pos.x = c.mergeFromX + (c.landX - c.mergeFromX) * e;
-    ball.pos.y = c.mergeFromY + (c.landY - c.mergeFromY) * e;
-    ball.pos.z = c.mergeFromZ + (c.landZ - c.mergeFromZ) * e;
+    ball.pos.x = c.mergeFromX + (c.towerX - c.mergeFromX) * e;
+    ball.pos.y = c.mergeFromY;
+    ball.pos.z = c.mergeFromZ + (c.towerZ - c.mergeFromZ) * e;
     ball.vel.set(0, 0, 0);
+    this._setAnchor(ball.pos.x, ball.pos.y, ball.pos.z);
 
     if (!this._ballHidden && this._phaseT >= BALL_HIDE_AT_S) {
       this._ballHidden = true;
@@ -541,18 +459,15 @@ export class Finale {
       }
     }
 
-    // Swallow pop: moon scale 1.0 -> 1.06 -> 1.0 across the merge.
-    const pop = 1 + MERGE_POP_AMP * Math.sin(Math.PI * t01);
-    this._spin += SPIN_SLOW * dt;
-    this._moonView.setGlow01(0.5 + 0.3 * Math.sin(Math.PI * t01));
-    this._setMoonPose(c.landX, c.landY, c.landZ, c.moonR * pop);
+    // Swallow flash: monument glow swells and settles across the merge.
+    this._goalView.setGlow01(0.6 + 0.4 * Math.sin(Math.PI * t01));
 
-    if (this._phaseT >= MOON_MERGE_S) {
+    if (this._phaseT >= GOAL_MERGE_S) {
       this._state = 'ascension';
       this._phaseT = 0;
-      this._envCall('beginNightFade', MOON_ASCEND_S); // day -> NIGHT palette
-      if (this._effects && typeof this._effects.moonBurst === 'function') {
-        this._effects.moonBurst(); // golden sparkle fountain
+      this._envCall('beginNightFade', GOAL_ASCEND_S); // dusk -> NIGHT palette
+      if (this._effects && typeof this._effects.ascensionBurst === 'function') {
+        this._effects.ascensionBurst(); // golden sparkle fountain
       }
     }
   }
@@ -564,20 +479,21 @@ export class Finale {
     const c = this._simCache;
     const r = ball.radiusSim;
 
-    const u = clamp01(this._phaseT / MOON_ASCEND_S);
-    const my = c.ascendBaseY + MOON_ASCEND_HEIGHT_K * r * u * u; // ease-in rise
-    this._spin += SPIN_ASCEND * dt;
-    this._moonView.setGlow01(0.7);
-    this._setMoonPose(c.landX, my, c.landZ, c.moonR);
+    // The (hidden) anchor rises ease-in above the tower; the camera pullback
+    // (below) reveals the night diorama. ball.pos is parked on the anchor so
+    // position-anchored systems (effects fountain, blob shadow) ride the
+    // ascent — v2 machinery verbatim, minus the monument motion.
+    const u = clamp01(this._phaseT / GOAL_ASCEND_S);
+    const ay = c.ascendBaseY + GOAL_ASCEND_HEIGHT_K * r * u * u; // ease-in rise
+    this._goalView.setGlow01(0.7);
+    this._setAnchor(c.towerX, ay, c.towerZ);
 
-    // Park the (hidden) ball on the moon center so position-anchored systems
-    // (effects fountain, blob shadow) ride the ascent.
-    ball.pos.x = c.landX;
-    ball.pos.y = my;
-    ball.pos.z = c.landZ;
+    ball.pos.x = c.towerX;
+    ball.pos.y = ay;
+    ball.pos.z = c.towerZ;
     ball.vel.set(0, 0, 0);
 
-    if (this._phaseT >= MOON_ASCEND_S) {
+    if (this._phaseT >= GOAL_ASCEND_S) {
       this._state = 'afterglow';
       this._phaseT = 0;
     }
@@ -590,14 +506,13 @@ export class Finale {
     const c = this._simCache;
     const r = ball.radiusSim;
 
-    const my = c.ascendBaseY + MOON_ASCEND_HEIGHT_K * r; // hangs as THE moon
-    this._spin += SPIN_ASCEND * 0.5 * dt;
-    this._moonView.setGlow01(0.55 + 0.25 * Math.sin(TWO_PI * GLOW_BREATH_HZ * this._phaseT));
-    this._setMoonPose(c.landX, my, c.landZ, c.moonR);
+    const ay = c.ascendBaseY + GOAL_ASCEND_HEIGHT_K * r; // hangs over night Tokyo
+    this._goalView.setGlow01(0.55 + 0.25 * Math.sin(TWO_PI * GLOW_BREATH_HZ * this._phaseT));
+    this._setAnchor(c.towerX, ay, c.towerZ);
 
-    ball.pos.x = c.landX;
-    ball.pos.y = my;
-    ball.pos.z = c.landZ;
+    ball.pos.x = c.towerX;
+    ball.pos.y = ay;
+    ball.pos.z = c.towerZ;
     ball.vel.set(0, 0, 0);
 
     if (this._phaseT >= AFTERGLOW_S) {
@@ -609,20 +524,36 @@ export class Finale {
   /* Per-frame derived helpers                                         */
   /* ---------------------------------------------------------------- */
 
-  /**
-   * Write the current moon center (derived state) + drive the MoonView.
-   * @param {number} x @param {number} y @param {number} z @param {number} radius
-   */
-  _setMoonPose(x, y, z, radius) {
-    this._moonX = x;
-    this._moonY = y;
-    this._moonZ = z;
-    this._moonView.setPose(x, y, z, radius);
-    this._moonView.setSpin(this._spin);
+  /** Refresh _simCache.towerX/Z/R from the live SkytreeView pose. */
+  _refreshTowerCache() {
+    const c = this._simCache;
+    this._goalView.getPosSim(_v3a);
+    c.towerX = _v3a.x;
+    c.towerZ = _v3a.z;
+    c.towerR = this._goalView.radiusSim;
   }
 
   /**
-   * 10Hz MOON_GUIDE throttle (DESCENT/LANDED).
+   * Write the current cinematic anchor (derived state).
+   * @param {number} x @param {number} y @param {number} z
+   */
+  _setAnchor(x, y, z) {
+    this._anchorX = x;
+    this._anchorY = y;
+    this._anchorZ = z;
+  }
+
+  /**
+   * Set the guide projection point (also reuses the anchor slot — the guide
+   * and the cinematic never run in the same state).
+   * @param {number} x @param {number} y @param {number} z
+   */
+  _setGuidePoint(x, y, z) {
+    this._setAnchor(x, y, z);
+  }
+
+  /**
+   * 10Hz GOAL_GUIDE throttle (APPROACH).
    * @param {number} dt
    */
   _updateGuide(dt) {
@@ -642,14 +573,14 @@ export class Finale {
   }
 
   /**
-   * Project the moon center through the render camera into 0..1 screen
-   * coords and emit EVT.MOON_GUIDE. Behind-camera points are mirrored so the
-   * HUD edge arrow still points the shorter way around.
+   * Project the guide point (upper tower) through the render camera into
+   * 0..1 screen coords and emit EVT.GOAL_GUIDE. Behind-camera points are
+   * mirrored so the HUD edge arrow still points the shorter way around.
    * @param {boolean} active False = the one final hide on CONTACT.
    */
   _projectAndEmitGuide(active) {
     const cam = this._camera;
-    _v3a.set(this._moonX, this._moonY, this._moonZ).applyMatrix4(cam.matrixWorldInverse);
+    _v3a.set(this._anchorX, this._anchorY, this._anchorZ).applyMatrix4(cam.matrixWorldInverse);
     const behind = _v3a.z >= 0; // camera looks down -Z in view space
     _v3a.applyMatrix4(cam.projectionMatrix); // perspective divide included
     let nx = _v3a.x;
@@ -658,25 +589,26 @@ export class Finale {
       nx = -nx;
       ny = -ny;
     }
-    const p = PAYLOADS.moonGuide;
+    const p = PAYLOADS.goalGuide;
     p.x01 = clamp01((nx + 1) * 0.5);
     p.y01 = clamp01((1 - ny) * 0.5); // 0 = top
     p.onScreen = !behind && nx >= -1 && nx <= 1 && ny >= -1 && ny <= 1;
     p.active = active;
-    this._bus.emit(EVT.MOON_GUIDE, p);
+    this._bus.emit(EVT.GOAL_GUIDE, p);
   }
 
   /**
-   * Cinematic camera targets, derived fresh every frame: camPos = moonPos +
-   * back*14r + up*4r (back = horizontal moon->mergeFrom direction, all from
-   * _simCache), look = moonPos, FOV eases 60 -> 52 over merge+ascension.
+   * Cinematic camera targets, derived fresh every frame: camPos = anchor +
+   * back*14r + up*4r (back = horizontal tower->mergeFrom direction, all from
+   * _simCache), look = anchor (the golden fountain / rising point over the
+   * night diorama), FOV eases 60 -> 52 over merge+ascension.
    * @param {number} dt @param {BallState} ball
    */
   _driveCinematic(dt, ball) {
     const c = this._simCache;
     const r = ball.radiusSim;
-    let bx = c.mergeFromX - c.landX;
-    let bz = c.mergeFromZ - c.landZ;
+    let bx = c.mergeFromX - c.towerX;
+    let bz = c.mergeFromZ - c.towerZ;
     const bl = Math.sqrt(bx * bx + bz * bz);
     if (bl > 1e-6) {
       bx /= bl;
@@ -686,15 +618,15 @@ export class Finale {
       bz = 1;
     }
     _v3a.set(
-      this._moonX + bx * CINE_BACK_K * r,
-      this._moonY + CINE_UP_K * r,
-      this._moonZ + bz * CINE_BACK_K * r
+      this._anchorX + bx * CINE_BACK_K * r,
+      this._anchorY + CINE_UP_K * r,
+      this._anchorZ + bz * CINE_BACK_K * r
     );
-    _v3b.set(this._moonX, this._moonY, this._moonZ);
+    _v3b.set(this._anchorX, this._anchorY, this._anchorZ);
     const fovTarget =
       FOV_BASE +
       (CINE_FOV_END - FOV_BASE) *
-        easeInOutCubic(clamp01(this._cineT / (MOON_MERGE_S + MOON_ASCEND_S)));
+        easeInOutCubic(clamp01(this._cineT / (GOAL_MERGE_S + GOAL_ASCEND_S)));
     if (this._cameraRig && typeof this._cameraRig.cinematicUpdate === 'function') {
       this._cameraRig.cinematicUpdate(dt, _v3a, _v3b, fovTarget);
     } else if (DEV) {
@@ -703,28 +635,8 @@ export class Finale {
   }
 
   /**
-   * Current blended sky-moon direction — env.getMoonDirWorld when available
-   * (Stream B), else the tier's static moonDir normalized (bring-up fallback;
-   * elevation floor is asserted in tiers.js either way).
-   * @param {THREE.Vector3} out
-   * @param {number} tierIndex Clamped tier index.
-   * @returns {THREE.Vector3} out
-   */
-  _getMoonDir(out, tierIndex) {
-    if (this._env && typeof this._env.getMoonDirWorld === 'function') {
-      return this._env.getMoonDirWorld(out);
-    }
-    if (DEV && !this._warnedEnv) {
-      this._warnedEnv = true;
-      console.warn('[finale] env.getMoonDirWorld(out) missing — using tiers.js moonDir');
-    }
-    const m = TIERS[tierIndex].moonDir;
-    return out.set(m[0], m[1], m[2]).normalize();
-  }
-
-  /**
-   * Guarded env call (setSkyMoonFade / setSkyMoonPulse / beginNightFade) —
-   * Stream B lands these; no-op with one DEV warn until then.
+   * Guarded env call (setGoalSilFade / beginNightFade) — no-op with one DEV
+   * warn if the environment build predates the v3 API.
    * @param {string} method
    * @param {*} arg
    */
@@ -736,7 +648,7 @@ export class Finale {
     }
     if (DEV && !this._warnedEnv) {
       this._warnedEnv = true;
-      console.warn(`[finale] env.${method}(...) missing (Stream B) — finale continues without it`);
+      console.warn(`[finale] env.${method}(...) missing — finale continues without it`);
     }
   }
 }

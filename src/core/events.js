@@ -19,26 +19,39 @@
  *   ---- v2 (moon update — docs/DESIGN-V2.md §インターフェース) ----
  *   'dash'        {gauge01}                       (ballPhysics -> cameraRig kick, effects burst, sfx whoosh, hud zero)
  *   'dashReady'   {}                              (ballPhysics, once per refill -> hud flash, sfx chime)
- *   'score'       {score, delta, combo, rare}     (runStats -> hud, sfx when rare)
+ *   'score'       {score, delta, combo, rare, archetypeCode} (runStats -> hud, sfx when rare)
  *   'time'        {timeS}                         (runStats, on 0.1s SIM-boundary -> hud)
- *   'moonCall'    {trueRadius}                    (finale once -> hud toast, env pulse, bgm swell, sfx pad)
- *   'moonGuide'   {x01, y01, onScreen, active}    (finale 10Hz during DESCENT/LANDED, +one active:false on CONTACT -> hud arrow)
- *   'moonContact' {}                              (finale once = run end -> runStats freeze+GOAL, bgm duck, sfx fanfare, hud hide, screens flash)
- *   'goal'        {timeS, score, rank, trueRadius, absorbed, raresFound, seed, newRecordTime, newRecordScore} (runStats once -> screens cache + X URL build)
+ *   'goal'        {timeS, score, rank, trueRadius, absorbed, raresFound, seed, newRecordTime, newRecordScore, collectFound} (runStats once -> screens cache + X URL build)
  *   'ui:muteRequest' {}                           (hud -> main, the single mute owner)
  *   'muteChanged' {muted}                         (main -> hud icon)
+ *   ---- v3 (Hakoniwa Tokyo — docs/DESIGN-V3.md §インターフェース) ----
+ *   'goalCall'    {trueRadius}                    (finale once -> hud toast 「スカイツリーが呼んでいる…！」, skytree beam pulse, bgm swell, sfx pad)
+ *   'goalGuide'   {x01, y01, onScreen, active}    (finale 10Hz during APPROACH, +one active:false on CONTACT -> hud #goal-arrow)
+ *   'goalContact' {}                              (finale once = run end -> runStats freeze+GOAL, bgm duck, sfx fanfare, hud hide, screens flash; #donack-root survives — outside #hud)
+ *   'landmark'    {landmarkId, nameJa, sizeReal}  (curated, AFTER the normal ABSORB chain -> hud toast, effects gold ring, sfx fanfare sting, Donack trivia, runStats bonus)
+ *   'collect'     {collectibleId, nameJa, isNew, found, total} (collection -> #collect-popup, Donack, sfx gliss)
  *
- * v2 CONTRACT NOTES (binding):
- *  - ABSORB subscription order at boot: spawner -> main attach-handler ->
- *    runStats -> sfx/effects/hud (handlers run in subscription order; the
- *    Spawner constructor subscribes first — its handler is internal
- *    bookkeeping ONLY and must never mutate instanceSlot/archetype/position
- *    fields, which main's attach-handler reads intact; runStats must see
- *    the payload after main but before the cosmetic consumers).
- *  - 'game:win' is now emitted by MAIN.JS when finale.state === 'done'
- *    (was ScaleManager's WIN_RADIUS_M latch in v1; payload unchanged).
+ * v3 CONTRACT NOTES (binding — docs/DESIGN-V3.md):
+ *  - FROZEN ABSORB subscription order at boot:
+ *      chunk spawner -> curated -> main attach (render/ball; sets
+ *      store.instanceSlot = -1 when it steals the world instance) ->
+ *      runStats -> collection -> sfx/effects/hud.
+ *    The chunk spawner's handler is bookkeeping ONLY and skips
+ *    FLAG_CURATED slots; curated keeps FLAG_RARE/identity valid THROUGH its
+ *    ABSORB handler and defers slot bookkeeping to its next update() tick;
+ *    because main's attach-handler runs AFTER curated, curated's ABSORB
+ *    handler MUST NOT read instanceSlot — only its consumed bitmask
+ *    (slot-steal convention).
+ *  - DUAL-TAG rule: an object carrying BOTH collectibleId and landmarkId
+ *    (ハチ公像) emits EVT.COLLECT FIRST, then EVT.LANDMARK, in the same
+ *    frame. sfx plays the landmark fanfare ONLY (one boolean suppresses the
+ *    collect gliss when both fire within one frame); Donack shows the single
+ *    merged line #42.
+ *  - 'game:win' is emitted by MAIN.JS when finale.state === 'done'.
  *  - 'goal' fields must be COPIED by subscribers (payload is reused like all
  *    others; screens.js caches a field-by-field copy).
+ *  - v3 integration: the @deprecated moon-era alias layer (Phase-0 migration
+ *    protocol) has been RETIRED — use the GOAL_* names only.
  */
 
 /** Frozen event-name constants — always use these, never string literals. */
@@ -59,12 +72,15 @@ export const EVT = Object.freeze({
   DASH_READY: 'dashReady',
   SCORE: 'score',
   TIME: 'time',
-  MOON_CALL: 'moonCall',
-  MOON_GUIDE: 'moonGuide',
-  MOON_CONTACT: 'moonContact',
   GOAL: 'goal',
   MUTE_REQUEST: 'ui:muteRequest',
   MUTE_CHANGED: 'muteChanged',
+  // ---- v3 (Hakoniwa Tokyo) ----
+  GOAL_CALL: 'goalCall',
+  GOAL_GUIDE: 'goalGuide',
+  GOAL_CONTACT: 'goalContact',
+  LANDMARK: 'landmark',
+  COLLECT: 'collect',
 });
 
 /**
@@ -80,7 +96,18 @@ export const PAYLOADS = {
   /** @type {import('../types.js').GameWinEvent} */
   gameWin: { trueRadius: 0, seed: 0 },
   /** @type {import('../types.js').AbsorbEvent} */
-  absorb: { objIndex: 0, archetypeId: '', sizeReal: 0, combo: 0, trueRadius: 0, count: 0, rare: false },
+  absorb: {
+    objIndex: 0,
+    archetypeId: '',
+    sizeReal: 0,
+    combo: 0,
+    trueRadius: 0,
+    count: 0,
+    rare: false,
+    // v3: stamped by absorb.js BEFORE store.free, next to the rare stamp.
+    archetypeCode: -1,
+    collectibleId: -1,
+  },
   /** @type {import('../types.js').GrowEvent} */
   grow: { trueRadius: 0, simRadius: 0, progress01ToNextTier: 0, dashGauge01: 1 },
   /** @type {import('../types.js').BounceEvent} */
@@ -101,15 +128,20 @@ export const PAYLOADS = {
   /** @type {import('../types.js').DashReadyEvent} */
   dashReady: {},
   /** @type {import('../types.js').ScoreEvent} */
-  score: { score: 0, delta: 0, combo: 0, rare: false },
+  score: { score: 0, delta: 0, combo: 0, rare: false, archetypeCode: -1 },
   /** @type {import('../types.js').TimeEvent} */
   time: { timeS: 0 },
-  /** @type {import('../types.js').MoonCallEvent} */
-  moonCall: { trueRadius: 0 },
-  /** @type {import('../types.js').MoonGuideEvent} */
-  moonGuide: { x01: 0, y01: 0, onScreen: false, active: false },
-  /** @type {import('../types.js').MoonContactEvent} */
-  moonContact: {},
+  // ---- v3 (Hakoniwa Tokyo) ----
+  /** @type {import('../types.js').GoalCallEvent} */
+  goalCall: { trueRadius: 0 },
+  /** @type {import('../types.js').GoalGuideEvent} */
+  goalGuide: { x01: 0, y01: 0, onScreen: false, active: false },
+  /** @type {import('../types.js').GoalContactEvent} */
+  goalContact: {},
+  /** @type {import('../types.js').LandmarkEvent} */
+  landmark: { landmarkId: -1, nameJa: '', sizeReal: 0 },
+  /** @type {import('../types.js').CollectEvent} */
+  collect: { collectibleId: -1, nameJa: '', isNew: false, found: 0, total: 12 },
   /** @type {import('../types.js').GoalEvent} */
   goal: {
     timeS: 0,
@@ -121,6 +153,7 @@ export const PAYLOADS = {
     seed: 0,
     newRecordTime: false,
     newRecordScore: false,
+    collectFound: 0, // v3: collection.foundCount at GOAL emit
   },
   /** @type {import('../types.js').MuteRequestEvent} */
   muteRequest: {},

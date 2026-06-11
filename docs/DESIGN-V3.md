@@ -350,3 +350,73 @@ INTEGRATION (lead + B): order B (shop playable) -> C (content pass) -> D (HUD on
 - Boot thumbnail pre-render (12 offscreen renders) is new title-screen work on mobile GPUs; measure title-tap-to-play on low-end Android; the lazy-render-at-first-COLLECT lever is pre-approved and is a one-call-site move.
 - Tokyo Tower's jump (262->406m) intentionally skips most of T6; if playtests show T6 content never touched, shrink the tower's dioramaR or raise GOAL_RADIUS_M — both single-constant edits by design.
 - The collection album persists across deploys by frozen-id contract; the contract is documentation-enforced only. The boot assert (ids unique <31) catches collisions but not reordering — DESIGN-V3.md must carry the append-only rule prominently so a v3.1 author sees it.
+## Phase 0 追補 — 実装台帳（BINDING、Phase 0 lead 記入）
+
+### 凍結: 70 チャンク・アーキタイプID（英語 snake_case ⇔ 日本語表示名）
+
+catalog.js (Stream C) は displayNameJa をこの対応表どおりに実装する。v2 と同名の id は「形状一致の v2 レシピ再利用」指示（ティア表）の凍結形。
+
+| T | slot 0..7 (absorbables) | slot 8/9 (chunk landmarks) |
+|---|---|---|
+| 0 パーツ棚 | screw=ネジ, resistor=抵抗, capacitor=コンデンサ, ic_chip=ICチップ, led=LED, button_battery=ボタン電池, eraser=消しゴム, paperclip=クリップ | junk_board=ジャンク基板, soldering_iron=はんだごて |
+| 1 ショップ | mouse=マウス, game_soft=ゲームソフト, junk_hdd=ジャンクHDD, speaker=スピーカー, toolbox=工具箱, magazine_stack=雑誌たば, round_stool=丸イス, cardboard_box=ダンボール箱 | parts_rack=パーツ棚ラック, arcade_cabinet=アーケード筐体 |
+| 2 電気街 | bicycle=自転車, person=通行人, signboard=看板, vending_machine=自販機, cat=ネコ, pigeon=ハト, nobori_banner=のぼり, trash_can=ゴミ箱 | utility_pole=電柱(cs .45), yatai_stall=屋台 |
+| 3 下町 | car=車, taxi=タクシー, bus=バス, truck=トラック, street_tree=街路樹, kiosk=売店, machiya=町家, torii=鳥居 | footbridge=歩道橋(cs .5), sento_chimney=銭湯の煙突(cs .35) |
+| 4 都心 | zakkyo_building=雑居ビル, mansion=マンション, konbini=コンビニ, parking_garage=立体駐車場, train_car=電車車両, gas_tank=ガスタンク, crane=クレーン, shrine=神社 | highway_junction=首都高ジャンクション(cs .6), ferris_wheel=観覧車 |
+| 5 大東京 | skyscraper=超高層ビル, tower_mansion=タワーマンション, hotel=ホテル, department_store=デパート, viaduct=高架橋, stadium=スタジアム, rail_yard=操車場, cruise_ship=客船 | mountain=丘陵(cs .85, v2 mountain レシピ), bay_complex=湾岸コンビナート |
+| 6 スカイライン | city_block=街区ブロック, park=公園, pier=埠頭, building_cluster=ビル群, river_block=川面ブロック, arena=競技場, forest=森, cloud=雲 | great_hill=大丘陵, ring_road=環状線リング |
+
+### 凍結: EXTRA コード 70..93 / landmarkId / collectibleId
+
+- **コレクティブル: code = 70 + COLLECTIBLE_ID（凍結写像）**
+  70 金の招き猫(id0), 71 真空管(id1), 72 レトロゲーム機(id2), 73 秋葉原フィギュア(id3), 74 ゲーミングPC(id4), 75 特上大トロ(id5), 76 だるま(id6), 77 パンダのぬいぐるみ(id7), 78 雷おこし(id8), 79 金色のオブジェ(id9), **80 ハチ公像(id10 — DUAL: landmarkId 0 を併持)**, 81 屋形船(id11)
+- **ランドマーク単体（非ハチ公）: code 82..91**
+  82 西郷さん像, 83 雷門, 84 ラジオ会館風ビル, 85 渋谷109, 86 スクランブル交差点(デカール+群衆), 87 東京ドーム, 88 東京駅丸の内駅舎, 89 国会議事堂, 90 レインボーブリッジ橋スパン, 91 東京タワー
+- **92 アキバパーツ館（shop shell）**
+- **93 東京スカイツリー（display-name 専用スロット — store には絶対にスポーンしない。render/goalTower.js + env シルエットのみ。DISPLAY_NAME_BY_CODE を 94 で揃えるための予約）**
+- **landmarkId 0..10（しきい値ラダー順）**: 0 ハチ公像, 1 西郷さん像, 2 雷門, 3 ラジオ会館風ビル, 4 渋谷109, 5 スクランブル交差点, 6 東京ドーム, 7 東京駅丸の内駅舎, 8 国会議事堂, 9 レインボーブリッジ, 10 東京タワー
+- COLLECTIBLE_IDS は **append-only**（v3.1 以降は id 12+ を追記、再利用・並べ替え禁止。boot assert: unique かつ < 31。LS マスクの未知上位ビットは保存）。
+
+### 例外台帳（exemptions ledger）
+
+1. **scaleManager.js が GOAL_RADIUS_M を直接 import**（Phase 0 クロスストリーム例外 #1。grow-exit のみ、_rebuildHashes 不変）。
+2. **ballPhysics.js の terrain 注入**（Phase 0 例外 #2。constructor(bus, terrain=null)、XZ 積分直後に collide(state)。reset() は不変 — ORIGIN = BALL START）。
+3. **Donack 8 webp（~20KB）** — zero-external-asset 法の文書化例外（自社ファーストパーティ・キャラ資産）。scripts/verify-donack-assets.sh が 8 ファイル・40KB 上限・余剰なしを強制。
+4. **Skytree fog:false + ~1400 tris**（sky-element 例外、moon.js と同型）+ env シルエットスロット再利用（uMoon* → uGoalSil* リネーム）。
+5. **ブートサムネイル描画**（タイトル中の 12 回オフスクリーン描画、使い捨て。lazy-at-first-COLLECT レバー承認済み）。
+6. **ショップ地形リリース（4.0m）** — 半径連続性に対する唯一の one-shot 構造ハンドオフ（0.6s 窓: 壁フェード+y-drop+カメラクランプ解除）。
+7. **WebAudio 有界アロケーション**（v2 から継続、<=60 nodes/s）。
+
+### リセット所有権表 v3
+
+| 起点 | 担当 |
+|---|---|
+| main.resetWorld() | spawner.reset → store.reset → pools.reset → absorb.reset → scaleMgr.reset → hashes rebuild → ball.reset → ballPhys.reset → finale.reset → runStats.reset → **terrain.reset → curated.reset → collection.resetRun** → preloadStartArea |
+| GAME_RESET (bus) | cameraRig.reset（cinematic flag）, env.setTierPaletteImmediate（v2 uniforms + night fade 取消 + uGoalSil リセット）, backdrop snap, **donack hard-reset（全タイマー/queue/dedupe/phase='title'）** |
+| GAME_START (bus) | hud reset+show, **donack phase='play'** |
+| 永続（リセットしない） | LS_COLLECTION_KEY（album mask）, LS_BEST_KEY, LS_MUTE_KEY, LS_DONACK_KEY |
+
+### MOON_ エイリアス退役計画
+
+- tuning.js: MOON_CALL_RADIUS_M/MOON_GOAL_RADIUS_M/MOON_CONTACT_PAD/MOON_MERGE_S/MOON_ASCEND_S/MOON_ASCEND_HEIGHT_K/MOON_SCORE_BONUS = GOAL_* 再export; MOON_RADIUS_K/MOON_DESCENT_S/MOON_LAND_DIST_K/MOON_LAND_VEL_FRAC/MOON_MAGNET_* は v2 降下専用の遺物定数。**MOON_DIR_MIN_ELEV のみ非deprecated（夜空の月コスメは v3 でも残る）— grep ゲートの唯一の恒久例外。**
+- events.js: EVT.MOON_CALL/MOON_GUIDE/MOON_CONTACT は GOAL_* と同一ワイヤ文字列（'goalCall' 等）。PAYLOADS.moonCall/moonGuide/moonContact は PAYLOADS.goalCall 等と同一オブジェクト。
+- 各ストリームは**自分の担当ファイル内のエイリアス消費だけ**を着地時に削除。**統合者が最後に** tuning.js/events.js のエイリアス定義ブロックを削除（ゲート: `grep -rn 'MOON_' src` が MOON_DIR_MIN_ELEV 以外 0 件）。
+
+### Phase 0 移行期シム（統合時に削除するもの）
+
+| シム | 場所 | 削除担当 |
+|---|---|---|
+| `#dash-gauge`/`#dash-gauge-fill`（ダッシュボタン上の移行期バー。v3 ゲージはリング） | index.html | Stream D が hud.js をリングに移行後、統合者が markup 削除 |
+| `#moon-arrow`（v2 hud.js 用エイリアス要素。#goal-arrow が v3 本体） | index.html | 同上 |
+| `#absorbed-inline` 内の入れ子 `#absorbed-value`（v2 hud.js 書き込み先） | index.html | Stream D 着地時に平坦化 |
+| main.js の terrain/curated/collection/donack スタブ + ローカル DEV_STARTS | src/main.js | 統合者（V3-WIRE マーカー検索） |
+| **DEV モード boot assert 不整合**: catalog.js（60 ids）/objects.js（length 60）の DEV assert は tiers.js の 70 ids と矛盾するため、**Stream C 着地まで `npm run dev` は boot しない**。Phase 0 の動作検証は `npm run build` + `vite preview`（prod は assert ストリップ + null フォールバックで v2 プレイ可能。未実装 id は空ジオメトリ=不可視で許容） | — | Stream C（asserts 60→70/94 更新で解消） |
+
+### Phase 0 凍結追加分（spec 補完）
+
+- **hud.js は `--gauge`（0–360deg, ring）と `--gauge01`（0–1, フォールバックバー）の両方を 10Hz で書く**。EVT.DASH で両方 0 スナップ、DASH_READY で `#dash-button.flash`。@property 非対応・conic 対応の帯域（旧 Chrome/Safari）はリング非補間で許容。
+- collect popup 内部 id 凍結: `#collect-popup-img` / `#collect-popup-name` / `#collect-popup-count`。
+- リザルトグリッド id/class 凍結: `#collection-grid-wrap` / `#collection-header` / `#result-collect-n` / `#collection-grid` / `.collect-cell`（`.unfound`, 内部 `.cell-new`）。staged 時は `#win-overlay.staged #collection-grid-wrap{opacity:0}` 済み — Stream D は 1.9s キューで `.result-reveal` を付与するだけ。
+- `MAP_BOUNDS` の単一ソースは **tuning.js**。cityMap.js は同オブジェクトを re-export（値の二重保守禁止）。
+- 7 ティア名（HUD バナー/ラベル凍結）: パーツ棚 / ショップ / 電気街 / 下町 / 都心 / 大東京 / スカイライン。
+- ドローコール台帳 64/72 は tuning.js DRAW_CALL_CAP コメントに転記済み（正本はこの章）。

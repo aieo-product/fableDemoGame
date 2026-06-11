@@ -7,8 +7,10 @@
  *   /** @typedef {import('../types.js').BallState} BallState *\/
  *
  * Any change to this file must go through the lead (Phase 0 owner).
- * See docs/DESIGN.md §モジュール間インターフェース for the binding v1 spec and
- * docs/DESIGN-V2.md §インターフェース for the binding v2 delta (moon update).
+ * See docs/DESIGN.md §モジュール間インターフェース for the binding v1 spec,
+ * docs/DESIGN-V2.md §インターフェース for the v2 delta (moon update), and
+ * docs/DESIGN-V3.md §インターフェース for the BINDING v3 delta (Hakoniwa
+ * Tokyo: GOAL_* + LANDMARK + COLLECT events, curated spawner shapes, 7 tiers).
  */
 
 /* ------------------------------------------------------------------ */
@@ -22,10 +24,13 @@
  *
  * v2: per-tier SKY PARAMS (sun/moon/stars/clouds) ride the existing
  * environment palette crossfade — still cosmetic-only. The env-local NIGHT
- * palette (finale ascension) is NOT a tier; tiers.js keeps exactly 6 entries.
+ * palette (finale ascension) is NOT a tier.
+ * v3 (Hakoniwa Tokyo): SEVEN tiers (パーツ棚 0.02m .. スカイライン 300m);
+ * tiers.js keeps exactly 7 entries, NIGHT stays env-local. moonAngSize is a
+ * night cosmetic in v3 (non-decreasing, no longer strictly increasing).
  *
  * @typedef {Object} Tier
- * @property {number}   index           0..5 (Desk..Skyline).
+ * @property {number}   index           0..6 (パーツ棚..スカイライン).
  * @property {string}   name            Display name for HUD banner.
  * @property {number}   enterTrueRadius Real-meter ball radius at which this tier begins.
  * @property {number}   cellSizeSim     Chunk/spatial-hash cell size in sim units (this tier's native scale, i.e. when it is the CURRENT tier).
@@ -46,11 +51,14 @@
 
 /**
  * One spawnable object archetype (config/catalog.js).
- * v2: 60 total = ARCH_PER_TIER (10) per tier x 6 tiers (slots 8/9 = landmarks).
+ * v3: 70 chunk codes (ARCH_PER_TIER 10 x 7 tiers, slots 8/9 = chunk landmarks)
+ * + 24 EXTRA curated codes 70..93 (12 collectibles, 10 landmark singletons,
+ * shop shell, Skytree display slot) = DISPLAY_NAME_BY_CODE length 94.
+ * Every entry additionally carries displayNameJa (Stream C, catalog.js).
  *
  * @typedef {Object} Archetype
  * @property {string}  id              Unique id, lowercase snake_case (must match Tier.archetypeIds).
- * @property {number}  tier            Home tier index 0..5.
+ * @property {number}  tier            Home tier index 0..6 (EXTRA codes: naturalBand).
  * @property {(rng: () => number) => import('three').BufferGeometry} buildGeometry
  *   Builds the merged, vertex-colored composite geometry (<=350 tris). Called once at boot.
  * @property {number}   radiusNominal  Nominal bounding-sphere radius in REAL METERS.
@@ -159,6 +167,8 @@
  * @property {number} trueRadius  Ball radius in real meters AFTER the absorb.
  * @property {number} count       Total objects absorbed this run.
  * @property {boolean} rare       v2: absorb.js stamps (store.flags[i] & FLAG_RARE) !== 0 BEFORE store.free.
+ * @property {number} archetypeCode v3: store.archetype[i], stamped by absorb.js BEFORE store.free (next to the rare stamp). 0..93 (70..93 = EXTRA curated).
+ * @property {number} collectibleId  v3: frozen collectible id 0..11 via injected curated.collectibleIdFor(i), or -1. Stamped BEFORE store.free.
  */
 
 /**
@@ -233,6 +243,7 @@
  * @property {number}  delta Points just gained (combo + rare bonus included).
  * @property {number}  combo Combo count used for the multiplier.
  * @property {boolean} rare  This absorb was a rare (RARE_SCORE_BONUS applied).
+ * @property {number}  archetypeCode v3: copied from AbsorbEvent by runStats — hud renders `+${delta} ${DISPLAY_NAME_BY_CODE[code]}` with FLOAT_MERGE_S burst merging.
  */
 
 /**
@@ -243,37 +254,65 @@
  */
 
 /**
- * 'moonCall' — trueRadius crossed MOON_CALL_RADIUS_M, once (game/finale.js).
- * -> hud toast 「月が呼んでいる…！」, env sky-moon pulse, bgm shimmer swell, sfx pad.
- * @typedef {Object} MoonCallEvent
+ * 'goalCall' — trueRadius crossed GOAL_CALL_RADIUS_M, once (game/finale.js).
+ * v3: 「スカイツリーが呼んでいる…！」 toast + skytree beam pulse, bgm swell, sfx pad.
+ * @typedef {Object} GoalCallEvent
  * @property {number} trueRadius Ball radius in real meters at the call.
  */
+/** @typedef {GoalCallEvent} MoonCallEvent @deprecated v3: use GoalCallEvent (same shape, wire name 'goalCall'). */
 
 /**
- * 'moonGuide' — moon screen-position guide, 10Hz during DESCENT/LANDED plus
- * one final {active:false} on CONTACT (game/finale.js). -> hud #moon-arrow.
- * @typedef {Object} MoonGuideEvent
- * @property {number}  x01      Moon center NDC x mapped to 0..1 (clamped).
- * @property {number}  y01      Moon center NDC y mapped to 0..1 (clamped, 0 = top).
- * @property {boolean} onScreen Moon center is inside the frustum.
+ * 'goalGuide' — goal screen-position guide, 10Hz during APPROACH plus one
+ * final {active:false} on CONTACT (game/finale.js). -> hud #goal-arrow.
+ * @typedef {Object} GoalGuideEvent
+ * @property {number}  x01      Goal center NDC x mapped to 0..1 (clamped).
+ * @property {number}  y01      Goal center NDC y mapped to 0..1 (clamped, 0 = top).
+ * @property {boolean} onScreen Goal center is inside the frustum.
  * @property {boolean} active   Guide visible; false = hide the arrow.
+ */
+/** @typedef {GoalGuideEvent} MoonGuideEvent @deprecated v3: use GoalGuideEvent (same shape, wire name 'goalGuide'). */
+
+/**
+ * 'goalContact' — ball touched the Skytree = CLEAR TIME instant, once
+ * (game/finale.js). -> runStats (freeze + GOAL), bgm duck->stop, sfx grand
+ * fanfare, hud hide (#donack-root survives — it lives OUTSIDE #hud), screens
+ * flash. From this frame finale.inputLocked and finale.cameraOwned are true.
+ * @typedef {Object} GoalContactEvent
+ */
+/** @typedef {GoalContactEvent} MoonContactEvent @deprecated v3: use GoalContactEvent (same shape, wire name 'goalContact'). */
+
+/**
+ * 'landmark' — a fixed-position landmark singleton was absorbed (emitted by
+ * world/curated.js AFTER the normal ABSORB chain). -> hud center toast,
+ * effects gold ring burst, sfx fanfare sting, Donack trivia (P3), runStats
+ * LANDMARK_SCORE_BONUS. DUAL-TAG rule: for objects carrying BOTH ids
+ * (ハチ公像), EVT.COLLECT is emitted FIRST, then EVT.LANDMARK, same frame.
+ * @typedef {Object} LandmarkEvent
+ * @property {number} landmarkId Frozen landmark id 0..10 (docs/DESIGN-V3.md Phase-0 appendix).
+ * @property {string} nameJa     Display name, e.g. '雷門'.
+ * @property {number} sizeReal   Real-world size (m) for HUD/trivia flavor.
  */
 
 /**
- * 'moonContact' — ball touched the landed moon = CLEAR TIME instant, once
- * (game/finale.js). -> runStats (freeze + GOAL), bgm duck->stop, sfx grand
- * fanfare, hud hide, screens flash. From this frame finale.inputLocked and
- * finale.cameraOwned are true.
- * @typedef {Object} MoonContactEvent
+ * 'collect' — a frozen-id collectible was absorbed for the album (emitted by
+ * game/collection.js on ABSORB with collectibleId >= 0). -> #collect-popup
+ * card, Donack (P2), sfx 5-note gliss (suppressed when LANDMARK fired the
+ * same frame — dual-tag rule).
+ * @typedef {Object} CollectEvent
+ * @property {number}  collectibleId Frozen id 0..11 (COLLECTIBLE_IDS — append-only, never reordered).
+ * @property {string}  nameJa        Display name, e.g. '金の招き猫'.
+ * @property {boolean} isNew         First time across ALL runs (localStorage mask bit was 0).
+ * @property {number}  found         Total found across all runs AFTER this collect.
+ * @property {number}  total         COLLECT_TOTAL (12).
  */
 
 /**
  * 'goal' — final results computed + best persisted, once (game/runStats.js,
- * synchronously inside the MOON_CONTACT dispatch). -> screens caches a COPY
+ * synchronously inside the GOAL_CONTACT dispatch). -> screens caches a COPY
  * and prebuilds the X intent URL.
  * @typedef {Object} GoalEvent
  * @property {number}  timeS          Clear time, sim seconds.
- * @property {number}  score          Final score incl. MOON_SCORE_BONUS + time bonus.
+ * @property {number}  score          Final score incl. GOAL_SCORE_BONUS + time bonus.
  * @property {string}  rank           'S'|'A'|'B'|'C'|'D' (RANK_*_S thresholds).
  * @property {number}  trueRadius     Final ball radius in real meters.
  * @property {number}  absorbed       Total objects absorbed this run.
@@ -281,6 +320,7 @@
  * @property {number}  seed           World seed (uint32).
  * @property {boolean} newRecordTime  bestTime record was replaced this run.
  * @property {boolean} newRecordScore bestScore record was replaced this run.
+ * @property {number}  collectFound   v3: collection.foundCount at GOAL emit (X intent 「レア${found}/12」 + result grid header).
  */
 
 /**
@@ -293,6 +333,85 @@
  * (bgm/sfx are called directly by main via setMuted, not via this event).
  * @typedef {Object} MuteChangedEvent
  * @property {boolean} muted New mute state.
+ */
+
+/* ------------------------------------------------------------------ */
+/* v3 city-map data shapes (config/cityMap.js — Stream B implements    */
+/* against these FROZEN shapes; Phase-0 contract)                      */
+/* ------------------------------------------------------------------ */
+
+/**
+ * One curated placement record (world/curated.js slot source; expanded at
+ * boot from cityMap.js cluster records via mulberry32(0x544f4b59) —
+ * seed-INDEPENDENT). All coordinates in REAL METERS, ORIGIN = BALL START.
+ *
+ * @typedef {Object} CuratedPlacement
+ * @property {number} archetypeCode Code 0..93 (chunk codes < 70 reinject via the chunk path on knock-off, stripping FLAG_CURATED|FLAG_RARE).
+ * @property {number} x             Real-meter X (+X east).
+ * @property {number} y             Real-meter rest height of the object CENTER offset base (interior shelf items <= INTERIOR_ITEM_Y_MAX; 0 = floor).
+ * @property {number} z             Real-meter Z (+Z south).
+ * @property {number} radiusReal    Bounding radius in REAL METERS.
+ * @property {number} yaw           Y rotation (rad).
+ * @property {number} naturalBand   Tier-table band 0..6; re-stamped live as store.tierOf[slot] = clamp(naturalBand, tierIndex-1, tierIndex+1) on activation + TIER_UP (dynamic re-banding, BINDING).
+ * @property {number} landmarkId    Frozen landmark id 0..10, or -1.
+ * @property {number} collectibleId Frozen collectible id 0..11, or -1 (ハチ公像 carries BOTH — dual-tag).
+ */
+
+/**
+ * One landmark singleton definition (cityMap.js LANDMARKS, frozen ids 0..10).
+ * @typedef {Object} LandmarkDef
+ * @property {number} landmarkId     Frozen id 0..10.
+ * @property {string} nameJa         Display name (toast/Donack).
+ * @property {number} x              Real-meter X.
+ * @property {number} z              Real-meter Z.
+ * @property {number} dioramaR       Authored diorama bounding radius (m).
+ * @property {number} collisionScale Collision fudge (catalog convention).
+ * @property {number} absorbableAtM  Threshold ladder entry = dioramaR / ABSORB_RATIO (display/validator).
+ * @property {number} sizeReal       Real-world size (m) for EVT.LANDMARK.sizeReal.
+ * @property {number} archetypeCode  EXTRA code 70..93 (docs/DESIGN-V3.md Phase-0 appendix).
+ */
+
+/**
+ * One collectible definition (cityMap.js COLLECTIBLES; COLLECTIBLE_IDS is the
+ * EXPLICIT frozen-id enum 0..11 — ids append-only 12+, never reused/reordered;
+ * boot assert: unique and < 31).
+ * @typedef {Object} CollectibleDef
+ * @property {number} id            FROZEN collectible id 0..11.
+ * @property {string} nameJa        Display name (popup/album/Donack).
+ * @property {number} x             Real-meter X.
+ * @property {number} y             Real-meter rest height (shop shelf/table items).
+ * @property {number} z             Real-meter Z.
+ * @property {number} radiusReal    Bounding radius (m).
+ * @property {number} archetypeCode EXTRA code = 70 + id (frozen mapping).
+ * @property {number} landmarkId    -1 except ハチ公像 (dual-tag: COLLECT before LANDMARK).
+ */
+
+/**
+ * One zone-mask rect (cityMap.js ZONES; bandAllowedAt(xReal, zReal, band)
+ * is a static pure lookup over ~20 of these — chunk contents stay a pure
+ * function of (seed, cx, cz, band)).
+ * @typedef {Object} ZoneRect
+ * @property {number} x0 West edge (real m).  @property {number} x1 East edge.
+ * @property {number} z0 North edge (real m). @property {number} z1 South edge.
+ * @property {number} bandMask Bitmask of allowed bands (bit b = band b allowed).
+ */
+
+/**
+ * One shop wall segment (world/terrain.js, circle-vs-AABB in XZ, rounded ends).
+ * @typedef {Object} TerrainWall
+ * @property {number} x0 @property {number} z0 Segment start (real m).
+ * @property {number} x1 @property {number} z1 Segment end (real m).
+ * @property {number} thickness WALL_THICK_M unless overridden.
+ * @property {number} yTop WALL_TOP_M unless overridden (roofless above).
+ */
+
+/**
+ * One solid interior prism (shelves/counter/table — footprint blocked at any
+ * height; items on top are reached by 3D absorb overlap, never by climbing).
+ * @typedef {Object} TerrainPrism
+ * @property {number} x0 @property {number} z0 Min corner (real m).
+ * @property {number} x1 @property {number} z1 Max corner (real m).
+ * @property {number} h  Prism height (real m).
  */
 
 // Make this file an ES module so typedefs are importable via import('./types.js').X

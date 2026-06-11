@@ -31,6 +31,24 @@
  *    are tracked in a bounded (storeIdx, slotGen) Int32Array list exposed via
  *    forEachAliveRare() (effects golden twinkles); reinjected knock-offs are
  *    NEVER rare (score credit was granted at absorb — no double count).
+ *  - v3 ZONE MASKS (docs/DESIGN-V3.md スポーンアーキテクチャ): AFTER the
+ *    deterministic draws complete, a placement is dropped unless
+ *    cityMap.bandAllowedAt(xReal, zReal, band) — a static pure lookup over
+ *    the authored district rects in REAL METERS (native coords ARE real
+ *    meters / worldScale_band, so the bridge is one multiply). Chunk
+ *    contents remain a pure function of (seed, cx, cz, band).
+ *  - v3 DENSITY: per-band placement counts are scaled by DENSITY_K_V3
+ *    (0.45 — the ONE pacing truth; wantK only truncates the placement list,
+ *    the per-placement draw sequence is untouched).
+ *  - v3 LOAD FLOOR: effective load radius = max(loadRadiusSim,
+ *    LOAD_RADIUS_MIN_M / worldScale) in the ring math (mirrors the fog
+ *    floor; fog < load holds at all radii — asserted in config/tiers.js).
+ *  - v3 FLAG_CURATED ownership: world/curated.js allocates from the SAME
+ *    store under FLAG_CURATED (16). _onAbsorb, _subPixelSweep and every
+ *    chunk-side free SKIP flagged slots (one bit test); _aliveCount counts
+ *    only chunk-owned objects. DEV assert: no chunk op ever frees a flagged
+ *    slot (_despawnIndex). NOTE store.tierOf is 'curated-mutable' for
+ *    flagged slots (dynamic re-banding) — never cache it across frames.
  *
  * SCALE MODEL: band b's chunk grid lives in b's NATIVE sim units (the sim
  * scale when b is the current tier, worldScale_b = 0.1 * 5^b). Conversion
@@ -49,13 +67,17 @@ import { TIERS, ARCH_PER_TIER } from '../config/tiers.js';
 import { hash } from '../core/rng.js';
 import { FreeList, IntRing } from '../core/pool.js';
 import { EVT } from '../core/events.js';
-import { FLAG_RARE } from './objects.js';
+import { FLAG_RARE, FLAG_CURATED } from './objects.js';
+import { bandAllowedAt } from '../config/cityMap.js';
 import {
   ALIVE_TOTAL_BUDGET,
+  DENSITY_K_V3,
   DESPAWN_BUDGET_PER_FRAME,
   DESPAWN_FADE_S,
   FIXED_DT,
   FOG_FAR_K,
+  FOG_FAR_MIN_M,
+  LOAD_RADIUS_MIN_M,
   PREWARM_FRACTION,
   RARE_CHANCE,
   RARE_LIST_CAP,
@@ -104,8 +126,13 @@ const SUBPIXEL_KILL_CAP = 32;
 const CLEANUP_RECORDS_PER_FRAME = 16;
 /** Store slot index mask (STORE_CAPACITY is a power of two). */
 const STORE_MASK = STORE_CAPACITY - 1;
-/** Powers of five for exact native<->current conversion (|exponent| <= 7). */
-const POW5 = [1, 5, 25, 125, 625, 3125, 15625, 78125];
+/** Powers of five for exact native<->current conversion (|exponent| <= 12 —
+ *  v3 headroom for KeyR force-rescale spam past the natural k <= 6 ladder). */
+const POW5 = [1, 5, 25, 125, 625, 3125, 15625, 78125, 390625, 1953125, 9765625, 48828125, 244140625];
+/* FLAG_CURATED (16, frozen) now imported from objects.js — unified at
+ * integration per the Phase-0 note. */
+/** Boot worldScale (band-native real meters per native sim unit at band 0). */
+const WS0 = START_RADIUS_M / SIM_RADIUS_MIN;
 
 const TWO_PI = Math.PI * 2;
 
@@ -115,8 +142,10 @@ const TWO_PI = Math.PI * 2;
 
 /**
  * Global numeric archetype index convention (shared with ObjectStore.archetype
- * U16 and absorb.js): index = tier * ARCH_PER_TIER + positionInTier (0..59),
- * derived from the FROZEN TIERS[t].archetypeIds order (slots 8/9 = landmarks).
+ * U16 and absorb.js): index = tier * ARCH_PER_TIER + positionInTier (0..69,
+ * v3: 7 tiers), derived from the FROZEN TIERS[t].archetypeIds order (slots
+ * 8/9 = chunk landmarks). EXTRA curated codes 70..93 are NOT spawner-known —
+ * world/curated.js owns them.
  * @type {string[]}
  */
 export const ARCHETYPE_IDS = [];
@@ -134,7 +163,7 @@ for (let t = 0; t < TIERS.length; t++) {
  * Resolve a catalog id to its global numeric archetype index
  * (tier*ARCH_PER_TIER + pos).
  * @param {string} id Catalog id.
- * @returns {number} Index 0..59, or -1 if unknown.
+ * @returns {number} Index 0..69, or -1 if unknown.
  */
 export function archetypeIndexFor(id) {
   const i = ARCH_INDEX.get(id);
@@ -143,7 +172,7 @@ export function archetypeIndexFor(id) {
 
 /**
  * Resolve a global numeric archetype index back to its catalog id.
- * @param {number} index Index 0..59.
+ * @param {number} index Index 0..69.
  * @returns {string} Catalog id, or '' if out of range.
  */
 export function archetypeIdFor(index) {
@@ -212,8 +241,14 @@ export class Spawner {
    * @param {Object<string, Archetype>|null} [catalog] CATALOG from
    *   config/catalog.js. Optional so this module integrates before Dev E
    *   lands; missing entries get neutral placeholder stats.
+   * @param {{ worldScale: number, rescaleCount: number }|null} [scaleMgr]
+   *   v3 OPTIONAL ScaleManager reference — used ONLY by onTeleport() to
+   *   resync the scale exponent after devTeleport's direct worldScale write
+   *   (steady-state scale tracking stays event-driven via EVT.RESCALE).
    */
-  constructor(worldSeed, store, hashes, instances, bus, catalog = null) {
+  constructor(worldSeed, store, hashes, instances, bus, catalog = null, scaleMgr = null) {
+    /** @type {{ worldScale: number, rescaleCount: number }|null} */
+    this._scaleMgr = scaleMgr;
     /** @type {number} uint32 world seed. */
     this.worldSeed = worldSeed >>> 0;
     this._store = store;
@@ -221,7 +256,7 @@ export class Spawner {
     this._instances = instances;
     this._bus = bus;
 
-    /* ---- resolved per-archetype stats (60 entries, fallback defaults) ---- */
+    /* ---- resolved per-archetype stats (70 entries v3, fallback defaults) ---- */
     const n = ARCHETYPE_IDS.length;
     this._radNom = new Float64Array(n);
     this._jit = new Float64Array(n);
@@ -450,6 +485,14 @@ export class Spawner {
    */
   reinject(re) {
     const archIdx = archetypeIndexFor(re.archetypeId);
+    /* v3 DEV assert: everything that reaches reinject must resolve — EXTRA
+       codes (>= 70) never get here (render/ball.knockOff skips them, they
+       are permanently stuck), and chunk-coded CURATED placements reinject
+       through this path as ORDINARY objects (flags = ALIVE below strips
+       FLAG_CURATED|FLAG_RARE; credit was granted at absorb — no recount). */
+    if (DEV && archIdx < 0) {
+      throw new Error(`[spawner] reinject: unknown archetype id '${re.archetypeId}' (archIdx must be >= 0)`);
+    }
     if (archIdx < 0) return false;
     const store = this._store;
     const idx = store.alloc();
@@ -520,6 +563,57 @@ export class Spawner {
     }
     /* Native ball chunk coords are invariant ((x+origin) unchanged) — band
        caches stay valid by construction. */
+  }
+
+  /**
+   * v3 devTeleport hook (main.js calls this after writing scaleMgr.worldScale
+   * and the ball pose DIRECTLY — no EVT.RESCALE fires, so the event-driven
+   * _scaleExp/_invWorldScale must be resynced here). Unloads every chunk
+   * record (immediate despawn — stale-scale debris must not linger), clears
+   * the queues and band caches, re-anchors the origin at 0 (devTeleport maps
+   * real meters with origin = 0) and snaps the scale exponent from the
+   * injected ScaleManager (or the explicit argument). Consumed bitmasks are
+   * KEPT — their keys are global and scale-independent.
+   * @param {number} [rescaleCount] Explicit ScaleManager.rescaleCount when no
+   *   scaleMgr was injected at construction.
+   */
+  onTeleport(rescaleCount = -1) {
+    let k = rescaleCount;
+    if (k < 0 && this._scaleMgr !== null) k = this._scaleMgr.rescaleCount;
+    if (k < 0) {
+      if (DEV) {
+        console.warn(
+          '[spawner] onTeleport without a scale source — pass scaleMgr at construction ' +
+            '(7th arg) or rescaleCount; keeping the current (possibly stale) exponent'
+        );
+      }
+      k = this._scaleExp;
+    }
+    for (let i = 0; i < MAX_RECORDS; i++) {
+      const rec = this._records[i];
+      if (!rec.active) continue;
+      for (let e = 0; e < rec.count; e++) {
+        const packed = rec.entries[e];
+        const idx = packed & STORE_MASK;
+        const j = packed >> 13;
+        if (this._chunkKeyOf[idx] !== rec.key || this._placementOf[idx] !== j) continue;
+        this._despawnIndex(idx, 0.05, false); // immediate — regenerates on revisit
+      }
+      this._recordByKey.delete(rec.key);
+      rec.active = false;
+      rec.gen = (rec.gen + 1) & 0xff;
+      rec.count = 0;
+      this._recordFree.free(i);
+    }
+    this._spawnQ.clear();
+    this._despawnQ.clear();
+    this._scaleExp = k;
+    this._invWorldScale = (SIM_RADIUS_MIN / START_RADIUS_M) / pow5(k);
+    this._originX = 0;
+    this._originZ = 0;
+    this._bandValid.fill(0);
+    this._haveLastBall = false;
+    for (let i = 0; i < REENTRY_CAP; i++) this._flights[i].active = false;
   }
 
   /**
@@ -610,6 +704,11 @@ export class Spawner {
   _onAbsorb(p) {
     const idx = p.objIndex;
     if (idx < 0 || idx >= STORE_CAPACITY) return;
+    /* v3 OWNERSHIP: curated-owned slots are none of our business — their
+       bookkeeping (consumed bitmask, alive count, render slot) lives in
+       world/curated.js. Flags are still intact here: absorb.js emits BEFORE
+       store.free and this handler is subscribed FIRST. */
+    if ((this._store.flags[idx] & FLAG_CURATED) !== 0) return;
     const key = this._chunkKeyOf[idx];
     if (key >= 0) this._markConsumed(key, this._placementOf[idx]);
     this._chunkKeyOf[idx] = -1;
@@ -687,14 +786,20 @@ export class Spawner {
    */
   _recomputeBand(s, band, nx, nz, cell) {
     const tierCfg = TIERS[band];
+    /* v3 LOAD FLOOR: the real-meter minimum in band-NATIVE units. At T0
+       (worldScale 0.04) the floor dominates: 281.25 native vs 96 — the 8 m
+       shop street stays loaded at r = 2 cm while fog (FOG_FAR_MIN_M floor)
+       still hides the spawn edge (config/tiers.js asserts the pair). */
+    const loadFloorNative = LOAD_RADIUS_MIN_M / (WS0 * pow5(band));
     let radius;
     let wantK;
     if (s === 0) {
-      radius = tierCfg.loadRadiusSim;
-      wantK = tierCfg.objectsPerChunk;
+      radius = Math.max(tierCfg.loadRadiusSim, loadFloorNative);
+      /* v3 DENSITY: the ONE pacing truth — per-band counts at 0.45x v2. */
+      wantK = Math.max(1, Math.round(tierCfg.objectsPerChunk * DENSITY_K_V3));
     } else {
-      radius = SCENERY_LOAD_RADIUS_SIM;
-      wantK = SCENERY_OBJECTS_PER_CHUNK;
+      radius = Math.max(SCENERY_LOAD_RADIUS_SIM, loadFloorNative);
+      wantK = Math.max(1, Math.round(SCENERY_OBJECTS_PER_CHUNK * DENSITY_K_V3));
       if (s === 2) {
         /* Pre-warm ring capped in CURRENT units so positions stay bounded. */
         const toNative = pow5(this._scaleExp - band);
@@ -982,6 +1087,13 @@ export class Spawner {
     const isRare = rareRoll < RARE_CHANCE && ai < 8;
     /* === all deterministic draws complete — runtime-dependent checks below === */
 
+    /* v3 ZONE MASK: native chunk coords are real meters / worldScale_band
+       (ORIGIN = BALL START), so the real-meter bridge is one multiply.
+       Dropped placements consumed their full draw sequence above — chunk
+       contents stay a pure function of (seed, cx, cz, band). */
+    const wsBand = WS0 * pow5(band);
+    if (!bandAllowedAt(gxN * wsBand, gzN * wsBand, band)) return true;
+
     const toCur = pow5(band - this._scaleExp);
     const x = gxN * toCur - this._originX;
     const z = gzN * toCur - this._originZ;
@@ -996,9 +1108,11 @@ export class Spawner {
 
     /* Pre-warm band (tier+2): only materialize beyond the fog wall so giant
        future-tier objects never pop into view. Skipped placements are lost
-       until the chunk reloads — beyond-fog by definition, invisible. */
+       until the chunk reloads — beyond-fog by definition, invisible.
+       v3: the fog wall is FLOORED at FOG_FAR_MIN_M real meters (environment
+       applies the same floor), so the skip radius takes the max too. */
     if (band - this._tier >= 2) {
-      const fogSkip = FOG_FAR_K * SIM_RADIUS_MAX * 1.2;
+      const fogSkip = Math.max(FOG_FAR_K * SIM_RADIUS_MAX, FOG_FAR_MIN_M * this._invWorldScale) * 1.2;
       if (distSq < fogSkip * fogSkip) return true;
     }
 
@@ -1047,8 +1161,9 @@ export class Spawner {
       pool.setColor(slot, pal[(paletteRoll * pal.length) | 0]);
     }
 
-    /* Belt-and-suspenders: anything landing inside fog range scale-fades in. */
-    const fogFar = FOG_FAR_K * this._ballR;
+    /* Belt-and-suspenders: anything landing inside fog range scale-fades in
+       (v3: floored fog — matches environment's FOG_FAR_MIN_M query floor). */
+    const fogFar = Math.max(FOG_FAR_K * this._ballR, FOG_FAR_MIN_M * this._invWorldScale);
     if (distSq < fogFar * fogFar) pool.fadeIn(slot, SPAWN_FADE_S);
 
     /* Spatial hash insert. hashes[i] = band tier-1+i; pre-warm (rel 3) stays
@@ -1078,6 +1193,14 @@ export class Spawner {
   _despawnIndex(idx, fadeS, consume) {
     const store = this._store;
     if ((store.flags[idx] & 1) === 0) return; // already gone
+    /* v3 DEV assert: no chunk-owned operation may ever free a curated slot.
+       Curated slots never enter chunk records/queues (chunkKeyOf stays -1
+       and slotGen guards recycled indices) — reaching here flagged means the
+       ownership protocol broke. */
+    if (DEV && (store.flags[idx] & FLAG_CURATED) !== 0) {
+      throw new Error(`[spawner] chunk op tried to free FLAG_CURATED slot ${idx}`);
+    }
+    if ((store.flags[idx] & FLAG_CURATED) !== 0) return; // prod: refuse quietly
     if (consume) {
       const key = this._chunkKeyOf[idx];
       if (key >= 0) this._markConsumed(key, this._placementOf[idx]);
@@ -1171,6 +1294,7 @@ export class Spawner {
       const i = this._sweepCursor;
       this._sweepCursor = (this._sweepCursor + 1) & STORE_MASK;
       if ((flags[i] & 1) !== 0 && radius[i] < threshR) {
+        if ((flags[i] & FLAG_CURATED) !== 0) continue; // v3: curated owns its own sweep
         if ((flags[i] & FLAG_RARE) !== 0 && tierOf[i] >= rareKeepBand) continue;
         this._despawnIndex(i, SUBPIXEL_FADE_S, true);
         if (++kills >= SUBPIXEL_KILL_CAP) return;

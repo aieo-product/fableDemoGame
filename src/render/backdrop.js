@@ -1,16 +1,20 @@
 /**
- * @file backdrop.js — v2 camera-centered horizon silhouette ring (1 draw call).
+ * @file backdrop.js — camera-centered horizon silhouette ring (1 draw call).
  *
  * Two jagged-top cylinder-strip layers (96 segments x 4 quad rows each,
  * 1536 tris total), vertex-colored, built ONCE at boot from
  * mulberry32(worldSeed ^ 0x42444b). Two height/color profiles are baked as
- * two vertex-attribute sets blended by uProfile01: rolling hills (T0-2) <->
- * tower skyline (T3-5), crossfaded on EVT.TIER_UP alongside the env palette
- * fade. A tiny ShaderMaterial mixes the silhouette color toward the LIVE fog
- * color (read from scene.fog each update — zero alloc) at BACKDROP_FOG_MIX,
- * so it reads as hazy distant mountains/skyline, never a hard edge — and it
- * fades toward near-black silhouette during the finale night fade for free
- * (the night palette's fog color is 0x1a1838).
+ * two vertex-attribute sets blended by uProfile01 — v3 Hakoniwa-Tokyo pair
+ * (docs/DESIGN-V3.md §箱庭東京マップ D): 下町屋根並み low shitamachi
+ * rooflines with sento-chimney spikes (T0-2) <-> 富士山+湾岸スカイライン
+ * one broad Mt. Fuji silhouette on the back layer over a bayside tower
+ * skyline (T3+), crossfaded on EVT.TIER_UP at T3 alongside the env palette
+ * fade so the horizon reads 'more Tokyo, then Fuji'. A tiny ShaderMaterial
+ * mixes the silhouette color toward the LIVE fog color (read from scene.fog
+ * each update — zero alloc) at BACKDROP_FOG_MIX, so it reads as a hazy
+ * distant skyline, never a hard edge — and it fades toward near-black
+ * silhouette during the finale night fade for free (the night palette's fog
+ * color is 0x1a1838).
  *
  * PIXEL-IDENTITY AT RESCALE / REBASE-FREE (binding, DESIGN-V2.md 背景強化):
  * update(dt, ball, camera) sets position = (cam.x, 0, cam.z) and
@@ -51,8 +55,13 @@ const BACKDROP_FOG_MIX_BACK = 0.9;
 const SEG = 96;
 /** Vertical quad rows per layer (4 rows x 96 seg x 2 layers = 1536 tris). */
 const ROWS = 4;
-/** First tier whose profile is the tower skyline (T0-2 hills, T3-5 skyline). */
+/** First tier whose profile is 富士山+湾岸スカイライン (v3 binding: crossfade
+ *  keyed to T3 下町 — T0-2 show the 下町屋根並み rooflines). */
 const SKYLINE_FROM_TIER = 3;
+/** Mt. Fuji silhouette half-width (columns) and peak height fraction (back
+ *  layer of profile B only — one broad cone dominating one bearing). */
+const FUJI_HALF_W = 9;
+const FUJI_PEAK_H = 1.0;
 /** Backdrop generation seed salt ('BDK'). */
 const SEED_SALT = 0x42444b;
 
@@ -61,12 +70,12 @@ const SEED_SALT = 0x42444b;
 /* ------------------------------------------------------------------ */
 
 const BACKDROP_VERT = /* glsl */ `
-attribute float aHeightA;  // hills profile (0..~1, per column; layer amp baked in)
-attribute float aHeightB;  // skyline profile
-attribute vec3 aColorA;    // hills silhouette color (per column)
-attribute vec3 aColorB;    // skyline silhouette color
+attribute float aHeightA;  // 下町屋根並み profile (0..~1, per column; layer amp baked in)
+attribute float aHeightB;  // 富士山+湾岸スカイライン profile
+attribute vec3 aColorA;    // roofline silhouette color (per column)
+attribute vec3 aColorB;    // Fuji/bay silhouette color
 attribute float aFog;      // per-layer fog-mix factor
-uniform float uProfile01;  // 0 = hills (T0-2), 1 = skyline (T3-5)
+uniform float uProfile01;  // 0 = 下町屋根並み (T0-2), 1 = 富士山+湾岸 (T3+)
 uniform float uHeight;     // BACKDROP_HEIGHT_K
 varying vec3 vColor;
 varying float vFog;
@@ -94,66 +103,66 @@ void main() {
 /* ------------------------------------------------------------------ */
 
 /**
- * Rolling-hills height profile: a few integer-wavenumber sines (seamless
- * wrap by construction) with seeded phases. Values clamped to [0.18, 1] then
- * scaled by `amp`. Column SEG duplicates column 0 (wrap seam).
- * @param {() => number} rnd Seeded PRNG.
+ * 下町屋根並み profile + colors (v3 profile A): runs of 2-4 columns share one
+ * LOW flat roofline (machiya/nagaya blocks, 0.22-0.5) with a tiny per-column
+ * ridge jitter (tiled-roof texture); ~4% of runs are 銭湯の煙突 spikes.
+ * Per-run warm roof-tile color jitter. Wrap seam duplicated; heights scaled
+ * by `amp`.
+ * @param {() => number} rnd Seeded PRNG (fixed draw order — deterministic).
  * @param {number} amp Layer amplitude.
- * @returns {Float32Array} SEG+1 heights.
- */
-function genHillHeights(rnd, amp) {
-  const out = new Float32Array(SEG + 1);
-  const p1 = rnd() * Math.PI * 2;
-  const p2 = rnd() * Math.PI * 2;
-  const p3 = rnd() * Math.PI * 2;
-  const k1 = 2 + Math.floor(rnd() * 2);  // 2-3 broad ridges
-  const k2 = 5 + Math.floor(rnd() * 3);  // mid detail
-  const k3 = 9 + Math.floor(rnd() * 4);  // fine detail
-  for (let c = 0; c < SEG; c++) {
-    const a = (c / SEG) * Math.PI * 2;
-    const h = 0.55 + 0.25 * Math.sin(k1 * a + p1) + 0.14 * Math.sin(k2 * a + p2) + 0.06 * Math.sin(k3 * a + p3);
-    out[c] = Math.min(1, Math.max(0.18, h)) * amp;
-  }
-  out[SEG] = out[0];
-  return out;
-}
-
-/**
- * Hills silhouette colors: per-column jitter around a muted green-grey base.
- * @param {() => number} rnd @param {number} r @param {number} g @param {number} b
- * @returns {Float32Array} (SEG+1)*3 linear-ish RGB.
- */
-function genHillColors(rnd, r, g, b) {
-  const out = new Float32Array((SEG + 1) * 3);
-  for (let c = 0; c < SEG; c++) {
-    const j = (rnd() - 0.5) * 0.06;
-    out[c * 3 + 0] = Math.max(0, r + j);
-    out[c * 3 + 1] = Math.max(0, g + j * 1.2);
-    out[c * 3 + 2] = Math.max(0, b + j);
-  }
-  out[SEG * 3 + 0] = out[0];
-  out[SEG * 3 + 1] = out[1];
-  out[SEG * 3 + 2] = out[2];
-  return out;
-}
-
-/**
- * Tower-skyline profile + colors: runs of 2-5 columns share one flat height
- * (building blocks) and one color; ~8% of runs are tall spires. Wrap seam
- * duplicated. Heights scaled by `amp`.
- * @param {() => number} rnd Seeded PRNG.
- * @param {number} amp Layer amplitude.
- * @param {number} r @param {number} g @param {number} b Base color.
+ * @param {number} r @param {number} g @param {number} b Base roof color.
  * @returns {{heights: Float32Array, colors: Float32Array}}
  */
-function genSkyline(rnd, amp, r, g, b) {
+function genShitamachi(rnd, amp, r, g, b) {
+  const heights = new Float32Array(SEG + 1);
+  const colors = new Float32Array((SEG + 1) * 3);
+  let c = 0;
+  while (c < SEG) {
+    const run = 2 + Math.floor(rnd() * 3); // 2-4 columns per roof block
+    let h = 0.22 + rnd() * 0.28; // low rooflines — the hakoniwa reads close
+    if (rnd() < 0.04) h = 0.65 + rnd() * 0.2; // 銭湯の煙突 spike
+    const j = (rnd() - 0.5) * 0.05;
+    const cr = Math.max(0, r + j * 1.3); // warm jitter (tile/wood tones)
+    const cg = Math.max(0, g + j);
+    const cb = Math.max(0, b + j * 0.7);
+    for (let i = 0; i < run && c < SEG; i++, c++) {
+      // Tiny ridge jitter per column so long roofs read as tiled, not flat.
+      heights[c] = Math.min(1, h + (rnd() - 0.5) * 0.03) * amp;
+      colors[c * 3 + 0] = cr;
+      colors[c * 3 + 1] = cg;
+      colors[c * 3 + 2] = cb;
+    }
+  }
+  heights[SEG] = heights[0];
+  colors[SEG * 3 + 0] = colors[0];
+  colors[SEG * 3 + 1] = colors[1];
+  colors[SEG * 3 + 2] = colors[2];
+  return { heights, colors };
+}
+
+/**
+ * 富士山+湾岸スカイライン profile + colors (v3 profile B): bayside tower
+ * skyline — runs of 2-5 columns share one height (0.2-0.7), ~7% of runs are
+ * tall tower spires — and, when `withFuji`, ONE broad smooth Mt. Fuji cone
+ * (cosine flank, FUJI_HALF_W columns each side) max-composited over the
+ * skyline at a seeded bearing, in a lighter blue-grey so it reads as the
+ * distant mountain behind the bay. Wrap-safe (modulo columns). Heights
+ * scaled by `amp`; wrap seam duplicated.
+ * @param {() => number} rnd Seeded PRNG (fixed draw order — deterministic).
+ * @param {number} amp Layer amplitude.
+ * @param {number} r @param {number} g @param {number} b Skyline base color.
+ * @param {number[]} fujiCol Fuji silhouette RGB.
+ * @param {boolean} withFuji Back layer only — the front layer is pure bay skyline.
+ * @returns {{heights: Float32Array, colors: Float32Array}}
+ */
+function genFujiBay(rnd, amp, r, g, b, fujiCol, withFuji) {
   const heights = new Float32Array(SEG + 1);
   const colors = new Float32Array((SEG + 1) * 3);
   let c = 0;
   while (c < SEG) {
     const run = 2 + Math.floor(rnd() * 4); // 2-5 columns per building
-    let h = 0.25 + rnd() * 0.6;
-    if (rnd() < 0.08) h = 0.85 + rnd() * 0.15; // spire
+    let h = 0.2 + rnd() * 0.5;
+    if (rnd() < 0.07) h = 0.78 + rnd() * 0.18; // waterfront tower spire
     const j = (rnd() - 0.5) * 0.05;
     const cr = Math.max(0, r + j);
     const cg = Math.max(0, g + j);
@@ -163,6 +172,21 @@ function genSkyline(rnd, amp, r, g, b) {
       colors[c * 3 + 0] = cr;
       colors[c * 3 + 1] = cg;
       colors[c * 3 + 2] = cb;
+    }
+  }
+  if (withFuji) {
+    // One broad cone, max-composited (never cuts a tower short).
+    const center = Math.floor(rnd() * SEG);
+    for (let k = -FUJI_HALF_W; k <= FUJI_HALF_W; k++) {
+      const col = ((center + k) % SEG + SEG) % SEG;
+      const flank = 0.5 + 0.5 * Math.cos((k / FUJI_HALF_W) * Math.PI); // 1 at peak -> 0 at edge
+      const fh = FUJI_PEAK_H * (0.25 + 0.75 * flank) * amp;
+      if (fh > heights[col]) {
+        heights[col] = fh;
+        colors[col * 3 + 0] = fujiCol[0];
+        colors[col * 3 + 1] = fujiCol[1];
+        colors[col * 3 + 2] = fujiCol[2];
+      }
     }
   }
   heights[SEG] = heights[0];
@@ -184,8 +208,8 @@ function genSkyline(rnd, amp, r, g, b) {
  *   ...per frame (step 6, AFTER cameraRig.update):
  *   backdrop.update(frameDt, ballPhys.state, renderer.camera);
  *   ?r= dev start (optional cosmetic): backdrop.setProfileImmediate(startTierIndex);
- * Subscribes 'tierUp' (profile crossfade) + 'game:reset' (snap to hills)
- * on the singleton bus. dispose() for teardown/tests.
+ * Subscribes 'tierUp' (profile crossfade at T3) + 'game:reset' (snap to the
+ * 下町屋根並み profile) on the singleton bus. dispose() for teardown/tests.
  */
 export class Backdrop {
   /**
@@ -196,7 +220,7 @@ export class Backdrop {
     /** @type {THREE.Scene} */
     this._scene = scene;
 
-    /* --- profile crossfade state (0 = hills, 1 = skyline) --- */
+    /* --- profile crossfade state (0 = 下町屋根並み, 1 = 富士山+湾岸) --- */
     /** @type {number} */ this._prof = 0;
     /** @type {number} */ this._profFrom = 0;
     /** @type {number} */ this._profTo = 0;
@@ -274,7 +298,7 @@ export class Backdrop {
 
   /**
    * Snap the profile blend with no fade (game reset; optional ?r= dev start).
-   * @param {number} tierIndex 0..5.
+   * @param {number} tierIndex 0..6 (v3 7-tier table).
    */
   setProfileImmediate(tierIndex) {
     this._prof = tierIndex >= SKYLINE_FROM_TIER ? 1 : 0;
@@ -299,7 +323,7 @@ export class Backdrop {
 
   /**
    * Begin a PALETTE_FADE_S crossfade toward a profile blend target.
-   * @param {number} to 0 (hills) or 1 (skyline).
+   * @param {number} to 0 (下町屋根並み) or 1 (富士山+湾岸スカイライン).
    */
   _startProfileFade(to) {
     if (to === this._profTo && this._fadeDur === 0 && this._prof === to) return; // already there
@@ -311,16 +335,18 @@ export class Backdrop {
 
   /**
    * Build the 2-layer ring geometry (boot only — allocates).
-   * Layer 0 (back): radius 48, full height, hazier; layer 1 (front): radius
-   * 38.4, ~0.62 height, BACKDROP_FOG_MIX. Both profiles + both color sets are
-   * baked as attributes; the vertex shader blends them by uProfile01.
+   * Layer 0 (back): radius 48, full height, hazier, carries the Mt. Fuji
+   * cone on profile B; layer 1 (front): radius 38.4, ~0.62 height,
+   * BACKDROP_FOG_MIX, pure rooflines/bay skyline. Both profiles + both color
+   * sets are baked as attributes; the vertex shader blends them by uProfile01.
    * @param {() => number} rnd Seeded PRNG (consumed in a fixed order — deterministic).
    * @returns {THREE.BufferGeometry}
    */
   _buildGeometry(rnd) {
     const layers = [
-      { radius: BACKDROP_DIST_K, amp: 1.0, fogMix: BACKDROP_FOG_MIX_BACK, hillCol: [0.16, 0.22, 0.19], skyCol: [0.15, 0.17, 0.23] },
-      { radius: BACKDROP_DIST_K * 0.8, amp: 0.62, fogMix: BACKDROP_FOG_MIX, hillCol: [0.08, 0.13, 0.10], skyCol: [0.07, 0.08, 0.12] },
+      // roofCol: warm dark tile/wood; bayCol: cool blue towers; fujiCol: pale blue-grey mountain.
+      { radius: BACKDROP_DIST_K, amp: 1.0, fogMix: BACKDROP_FOG_MIX_BACK, roofCol: [0.20, 0.17, 0.15], bayCol: [0.15, 0.17, 0.23], fujiCol: [0.30, 0.33, 0.42], withFuji: true },
+      { radius: BACKDROP_DIST_K * 0.8, amp: 0.62, fogMix: BACKDROP_FOG_MIX, roofCol: [0.11, 0.09, 0.08], bayCol: [0.07, 0.08, 0.12], fujiCol: [0.30, 0.33, 0.42], withFuji: false },
     ];
     const cols = SEG + 1;
     const rows = ROWS + 1;
@@ -339,9 +365,8 @@ export class Backdrop {
     for (let L = 0; L < layers.length; L++) {
       const lay = layers[L];
       // Fixed draw order from one rnd stream => deterministic per worldSeed.
-      const hillH = genHillHeights(rnd, lay.amp);
-      const hillC = genHillColors(rnd, lay.hillCol[0], lay.hillCol[1], lay.hillCol[2]);
-      const skyl = genSkyline(rnd, lay.amp, lay.skyCol[0], lay.skyCol[1], lay.skyCol[2]);
+      const roofs = genShitamachi(rnd, lay.amp, lay.roofCol[0], lay.roofCol[1], lay.roofCol[2]);
+      const fujiBay = genFujiBay(rnd, lay.amp, lay.bayCol[0], lay.bayCol[1], lay.bayCol[2], lay.fujiCol, lay.withFuji);
       const base = L * vertsPerLayer;
 
       for (let row = 0; row < rows; row++) {
@@ -353,14 +378,14 @@ export class Backdrop {
           positions[v * 3 + 0] = Math.cos(ang) * lay.radius;
           positions[v * 3 + 1] = rowFrac;
           positions[v * 3 + 2] = Math.sin(ang) * lay.radius;
-          heightA[v] = hillH[c];
-          heightB[v] = skyl.heights[c];
-          colorA[v * 3 + 0] = hillC[c * 3 + 0];
-          colorA[v * 3 + 1] = hillC[c * 3 + 1];
-          colorA[v * 3 + 2] = hillC[c * 3 + 2];
-          colorB[v * 3 + 0] = skyl.colors[c * 3 + 0];
-          colorB[v * 3 + 1] = skyl.colors[c * 3 + 1];
-          colorB[v * 3 + 2] = skyl.colors[c * 3 + 2];
+          heightA[v] = roofs.heights[c];
+          heightB[v] = fujiBay.heights[c];
+          colorA[v * 3 + 0] = roofs.colors[c * 3 + 0];
+          colorA[v * 3 + 1] = roofs.colors[c * 3 + 1];
+          colorA[v * 3 + 2] = roofs.colors[c * 3 + 2];
+          colorB[v * 3 + 0] = fujiBay.colors[c * 3 + 0];
+          colorB[v * 3 + 1] = fujiBay.colors[c * 3 + 1];
+          colorB[v * 3 + 2] = fujiBay.colors[c * 3 + 2];
           fogMix[v] = lay.fogMix;
         }
       }

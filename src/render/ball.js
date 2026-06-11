@@ -25,7 +25,22 @@
  * the absorbed object's color. family = (code % ARCH_PER_TIER) & 7, where the
  * ObjectStore archetype code is the flat catalog index
  * tier*ARCH_PER_TIER + slotInTier (order frozen in config/tiers.js
- * archetypeIds; v2 landmark slots 8/9 fold onto proxy families 0/1).
+ * archetypeIds; landmark slots 8/9 fold onto proxy families 0/1). v3: EXTRA
+ * curated codes 70..93 fold onto proxy families with the SAME
+ * (code % ARCH_PER_TIER) & 7 formula (e.g. 80 ハチ公像 -> family 0).
+ *
+ * v3 KNOCK-OFF RULE (DESIGN-V3.md MAJOR 4): knockOff() SKIPS stuck entries
+ * with archetype code >= EXTRA_CODE_BASE (70) — EXTRA landmarks/collectibles
+ * are PERMANENTLY stuck (credit was granted at absorb; curated identity lives
+ * in its consumed bitmask, never re-injected). Chunk-coded curated placements
+ * (< 70) re-enter via the normal spawner.reinject path, which strips
+ * FLAG_CURATED|FLAG_RARE.
+ *
+ * v3 SLOT-STEAL CONVENTION (load-bearing): main.js's ABSORB attach handler
+ * calls attachStuck and then sets store.instanceSlot[i] = -1 — it runs AFTER
+ * curated in the frozen subscription order, and curated's deferred cleanup
+ * frees a render-pool slot ONLY when instanceSlot >= 0 at cleanup time. Do
+ * not reorder those subscriptions and do not stop zeroing instanceSlot.
  *
  * Zero-allocation discipline: all records, rings and scratch are
  * preallocated; per-frame code writes matrices via module-level scratch only.
@@ -45,7 +60,7 @@ import {
   KNOCKOFF_POP_SPEED_K,
 } from '../config/tuning.js';
 import { TIERS, ARCH_PER_TIER } from '../config/tiers.js';
-import { ARCHETYPE_ID_BY_CODE } from '../world/objects.js';
+import { ARCHETYPE_ID_BY_CODE, EXTRA_CODE_BASE } from '../world/objects.js';
 import { FreeList, IntRing } from '../core/pool.js';
 import { mulberry32 } from '../core/rng.js';
 import { easeOutCubic, lerp, damp } from '../core/mathUtils.js';
@@ -105,9 +120,11 @@ const FAMILY_PALETTES = [
   [0xc0c5ce, 0xe3e6ea, 0x9aa1ad, 0xf5f6f8],
 ];
 
-/** Flat archetype-id table: code = tier*ARCH_PER_TIER + slot -> id (frozen
- *  in tiers.js; 60 entries incl. landmark slots 8/9 — knockOff must resolve
- *  ANY absorbed code back to its catalog id). */
+/** Flat CHUNK archetype-id table: code = tier*ARCH_PER_TIER + slot -> id
+ *  (frozen in tiers.js; 70 entries incl. landmark slots 8/9 — knockOff must
+ *  resolve any CHUNK code back to its catalog id; EXTRA codes >= 70 never
+ *  reach the lookup because knockOff skips them). Derived independently from
+ *  TIERS so the dev cross-assert below catches a tiers/objects divergence. */
 const ARCHETYPE_IDS = (() => {
   const ids = new Array(TIERS.length * ARCH_PER_TIER);
   for (let t = 0; t < TIERS.length; t++) {
@@ -117,16 +134,23 @@ const ARCHETYPE_IDS = (() => {
   return ids;
 })();
 
-/* Boot DEV cross-assert (v2 stride migration): this table must agree with
-   objects.js ARCHETYPE_ID_BY_CODE entry-for-entry across all 60 codes. */
+/* Boot DEV cross-assert (v3 stride migration): the chunk table must agree
+   with objects.js ARCHETYPE_ID_BY_CODE entry-for-entry across all 70 chunk
+   codes, and objects.js must carry the full 94 (70 chunk + 24 EXTRA). */
 if (import.meta.env && import.meta.env.DEV) {
-  if (ARCHETYPE_IDS.length !== 60 || ARCHETYPE_ID_BY_CODE.length !== 60) {
+  if (ARCHETYPE_IDS.length !== 70 || EXTRA_CODE_BASE !== 70) {
     throw new Error(
-      `[ball.js invariant] archetype code tables must both have 60 entries ` +
-        `(ball ${ARCHETYPE_IDS.length}, objects ${ARCHETYPE_ID_BY_CODE.length})`
+      `[ball.js invariant] chunk archetype table must have 70 entries with EXTRA_CODE_BASE 70 ` +
+        `(ball ${ARCHETYPE_IDS.length}, base ${EXTRA_CODE_BASE})`
     );
   }
-  for (let c = 0; c < 60; c++) {
+  if (ARCHETYPE_ID_BY_CODE.length !== 94) {
+    throw new Error(
+      `[ball.js invariant] objects.js ARCHETYPE_ID_BY_CODE must have 94 entries ` +
+        `(70 chunk + 24 EXTRA), found ${ARCHETYPE_ID_BY_CODE.length}`
+    );
+  }
+  for (let c = 0; c < 70; c++) {
     if (ARCHETYPE_IDS[c] !== ARCHETYPE_ID_BY_CODE[c]) {
       throw new Error(
         `[ball.js invariant] code ${c} mismatch vs objects.js: ` +
@@ -319,8 +343,10 @@ export class Ball {
    */
   attachStuck(objIndex, store, ball, colorHex = -1) {
     const code = store.archetype[objIndex];
-    // v2 stride 10: slot-in-tier folds to the 8 proxy families; landmark
-    // slots 8/9 land on families 0/1 (boxy/roundish proxies).
+    // Stride 10: slot-in-tier folds to the 8 proxy families; landmark slots
+    // 8/9 land on families 0/1 (boxy/roundish proxies). v3 EXTRA codes
+    // 70..93 fold with the same formula (and become permanently stuck —
+    // knockOff skips code >= EXTRA_CODE_BASE).
     const family = (code % ARCH_PER_TIER) & 7;
     const objR = store.radius[objIndex];
     const sg = this.group.scale.x;
@@ -418,6 +444,9 @@ export class Ball {
    * Eject the NEWEST n stuck objects with a ballistic pop (hard-bonk beat).
    * Returns a REUSED array of REUSED WorldReentry records — the caller
    * (absorb.js / spawner) must consume them synchronously, never retain.
+   * v3 (MAJOR 4): entries with archetype code >= EXTRA_CODE_BASE (70) are
+   * SKIPPED — EXTRA landmarks/collectibles are permanently stuck trophies
+   * (the ring walks past them to older chunk-coded entries instead).
    * @param {number} n How many to eject (clamped to KNOCKOFF_MAX and availability).
    * @param {BallState} ball Ball truth (ejection origin/velocity basis).
    * @returns {WorldReentry[]} 0..n reentry records.
@@ -430,6 +459,7 @@ export class Ball {
     for (let k = 1; k <= STUCK_CAP && found < want; k++) {
       const rec = this._recs[(this._tail - k) & RING_MASK];
       if (rec.stage === 'culled') continue;
+      if (rec.code >= EXTRA_CODE_BASE) continue; // v3: EXTRA = permanently stuck
       const re = this._reentries[found];
       // World-space socket direction from the ball-local socket.
       _v1.set(rec.tx, rec.ty, rec.tz).multiplyScalar(sg).applyQuaternion(ball.quat);

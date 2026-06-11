@@ -12,18 +12,34 @@
  * overshoot "breath") + speed bonus above 80% of speed cap, bonk micro-shake
  * (SHAKE_AMP_K * r amplitude, SHAKE_DECAY_S exponential decay).
  *
- * v2 (moon update):
+ * v2 (kept):
  *  - EVT.DASH additive FOV kick: +DASH_FOV_BONUS deg swelling/decaying over
  *    DASH_DURATION_S (same clock+envelope idiom as the tierUp kick).
  *  - CINEMATIC MODE (finale CONTACT onward): beginCinematic() latches a flag
  *    (springs keep their state — no pop); finale then drives
  *    cinematicUpdate(dt, posTarget, lookTarget, fovTarget) per frame instead
  *    of main calling update() (main gates on finale.cameraOwned). The injected
- *    targets are DERIVED per frame by the finale (pure functions of moon pose
- *    + ball radius => rescale-safe with zero cached camera state here).
+ *    targets are DERIVED per frame by the finale (pure functions of the goal
+ *    anchor + ball radius => rescale-safe with zero cached camera state here).
  *    endCinematic() / reset() (GAME_RESET) clear the flag. While latched,
  *    update()/updateIdle() early-return so the WIN-state idle orbit cannot
- *    yank the final moon shot from behind the result screen.
+ *    yank the final goal shot from behind the result screen.
+ *
+ * v3 (Hakoniwa Tokyo — docs/DESIGN-V3.md 箱庭東京マップ A, salvaged camera
+ * blocker layers 2+3; layer 1 is the roofless shop):
+ *  - INTERIOR PROFILE: main.js injects {interior01, clampBoom} at
+ *    construction (terrain.interiorAt01 / terrain.clampCameraBoom — Phase-0
+ *    stubs return 0/false until Stream B lands). interior01(x, z) in [0, 1]
+ *    crossfades (INTERIOR_FADE_S exponential damp, radius-continuous) the
+ *    distance/height coefficients toward CAM_DIST_K * INTERIOR_CAM_DIST_MUL
+ *    (~4.0) and CAM_HEIGHT_K * INTERIOR_CAM_HEIGHT_MUL (~4.5) — closer and
+ *    more top-down inside the roofless shop, so at r = 2 cm the boom is
+ *    ~8 cm inside a >= 1.1 m aisle.
+ *  - BOOM CLAMP: clampBoom(ballPos, desiredCamPos, out) shortens the boom to
+ *    the nearest wall/prism hit (minus CAM_WALL_MARGIN_K * r, terrain-side);
+ *    applied to the position TARGET before the spring, so the existing
+ *    critically-damped spring smooths the clamp (no snap). Inert during the
+ *    cinematic (the finale fires only post-release at goal scale).
  *
  * Spring state lives in SIM SPACE: ScaleManager multiplies it by S at the
  * one-frame similarity rescale via rescaleState(S) so the camera pose stays a
@@ -50,11 +66,14 @@ import {
   FOV_KICK_S,
   FOV_SPEED_BONUS,
   FOV_SPEED_FRAC,
+  INTERIOR_CAM_DIST_MUL,
+  INTERIOR_CAM_HEIGHT_MUL,
+  INTERIOR_FADE_S,
   SHAKE_AMP_K,
   SHAKE_DECAY_S,
   SPEED_K,
 } from '../config/tuning.js';
-import { springVec3, damp, clamp01 } from '../core/mathUtils.js';
+import { springVec3, damp, clamp01, lerp } from '../core/mathUtils.js';
 import { bus, EVT } from '../core/events.js';
 
 /** @typedef {import('../types.js').BallState} BallState */
@@ -73,6 +92,9 @@ const KICK_OMEGA_DIP = 0.4;
 const IDLE_ORBIT_SPEED = 0.12;
 /** Cinematic FOV approach halflife (s) toward the injected fovTarget. */
 const CINE_FOV_HALFLIFE_S = 0.25;
+/** v3 interior-profile crossfade halflife: INTERIOR_FADE_S is the spec's
+ *  "0.5s crossfade" — /4 puts the exponential ~94% settled at 0.5 s. */
+const INTERIOR_HALFLIFE_S = INTERIOR_FADE_S / 4;
 
 const TWO_PI = Math.PI * 2;
 
@@ -80,6 +102,7 @@ const TWO_PI = Math.PI * 2;
 const _target = new THREE.Vector3();
 const _lookTarget = new THREE.Vector3();
 const _rebaseOffset = new THREE.Vector3();
+const _clampOut = new THREE.Vector3(); // v3 boom-clamp result
 
 /**
  * Wrap an angle difference to (-PI, PI].
@@ -101,10 +124,23 @@ export class CameraRig {
   /**
    * @param {THREE.PerspectiveCamera} camera The render camera (owned by render/renderer.js).
    * @param {import('../core/events.js').EventBus} [eventBus] Bus to subscribe on; defaults to the singleton.
+   * @param {{clampBoom?: (ballPos: THREE.Vector3, desired: THREE.Vector3, out: THREE.Vector3) => boolean,
+   *          interior01?: (x: number, z: number) => number}} [hooks]
+   *   v3 terrain injection (frozen main.js wiring): clampBoom =
+   *   terrain.clampCameraBoom, interior01 = terrain.interiorAt01. Optional —
+   *   Phase-0 stubs no-op; null-safe for v2-era tests.
    */
-  constructor(camera, eventBus = bus) {
+  constructor(camera, eventBus = bus, hooks = null) {
     /** @type {THREE.PerspectiveCamera} */
     this.camera = camera;
+
+    /** @type {?(ballPos: THREE.Vector3, desired: THREE.Vector3, out: THREE.Vector3) => boolean} */
+    this._clampBoom = hooks !== null && typeof hooks.clampBoom === 'function' ? hooks.clampBoom : null;
+    /** @type {?(x: number, z: number) => number} */
+    this._interior01 =
+      hooks !== null && typeof hooks.interior01 === 'function' ? hooks.interior01 : null;
+    /** @type {number} Smoothed interior weight (0 outdoors .. 1 deep inside). */
+    this._interiorK = 0;
 
     /**
      * Current effective camera yaw (radians, includes mouse offset).
@@ -174,6 +210,7 @@ export class CameraRig {
     this._cinematic = false;
     this._speedFov = 0;
     this._shakeAmp = 0;
+    this._interiorK = 0; // re-snapped to the live interior01 on the next update
     this._needSnap = true;
   }
 
@@ -215,12 +252,29 @@ export class CameraRig {
       omegaScale = 1 - KICK_OMEGA_DIP * k; // loosen for the overshoot breath
     }
 
+    // ---- v3 interior camera profile (radius-continuous crossfade) ----------
+    // interior01 is the injected terrain.interiorAt01 (0 outdoors, 1 deep in
+    // the roofless shop); the smoothed weight crossfades the dist/height
+    // coefficients toward the closer, more top-down interior shot. Snaps with
+    // the springs so a reset inside the shop starts on-profile.
+    const interiorTarget = this._interior01 !== null ? clamp01(this._interior01(ball.pos.x, ball.pos.z)) : 0;
+    this._interiorK = this._needSnap
+      ? interiorTarget
+      : damp(this._interiorK, interiorTarget, INTERIOR_HALFLIFE_S, dt);
+
     // ---- position / look springs (pure functions of radius) ----------------
     const fx = Math.sin(this.yaw);
     const fz = Math.cos(this.yaw);
-    const dist = CAM_DIST_K * r;
-    const height = CAM_HEIGHT_K * r;
+    const ik = this._interiorK;
+    const dist = CAM_DIST_K * lerp(1, INTERIOR_CAM_DIST_MUL, ik) * r;
+    const height = CAM_HEIGHT_K * lerp(1, INTERIOR_CAM_HEIGHT_MUL, ik) * r;
     _target.set(ball.pos.x - fx * dist, ball.pos.y + height, ball.pos.z - fz * dist);
+    // v3 boom clamp: shorten the desired boom to the nearest wall/prism hit
+    // (terrain-side segment-vs-AABB, margin CAM_WALL_MARGIN_K * r). Applied
+    // to the TARGET — the critically-damped spring below smooths the clamp.
+    if (this._clampBoom !== null && this._clampBoom(ball.pos, _target, _clampOut)) {
+      _target.copy(_clampOut);
+    }
     _lookTarget.set(
       ball.pos.x + ball.vel.x * CAM_LOOKAHEAD_S,
       ball.pos.y + ball.vel.y * CAM_LOOKAHEAD_S,
@@ -278,7 +332,7 @@ export class CameraRig {
    * @param {number} dt Frame delta (s).
    */
   updateIdle(dt) {
-    if (this._cinematic) return; // hold the finale's final moon shot behind the result screen
+    if (this._cinematic) return; // hold the finale's final goal shot behind the result screen
     this._clock += dt;
     const a = this._clock * IDLE_ORBIT_SPEED;
     const r = Math.max(this._lastRadius, 0.5);
@@ -309,7 +363,7 @@ export class CameraRig {
    * Per-frame cinematic camera drive (frame-order step 4.5, called by
    * finale.update INSTEAD of main calling update()). Drives the existing
    * position/look springs toward the INJECTED targets (read-only — derived
-   * per frame by the finale from moon pose + ball radius, so rescale-safe
+   * per frame by the finale from the goal anchor + ball radius, so rescale-safe
    * with zero cached camera state) and eases FOV toward fovTarget. The
    * gameplay FOV bonuses (kick/dash/speed) are intentionally ignored here.
    * @param {number} dt Render-frame delta (s).

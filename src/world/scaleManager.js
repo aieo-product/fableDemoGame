@@ -4,7 +4,7 @@
  * trueRadius/formatSize, tierUp/rescale/grow emission (Dev B).
  *
  * v2 (moon update): the v1 'game:win' WIN_RADIUS_M latch is REMOVED — the
- * goal now lives in game/finale.js (DESCENT triggers at MOON_GOAL_RADIUS_M)
+ * goal now lives in game/finale.js (v3: contact arms at GOAL_RADIUS_M)
  * and main.js is the SOLE 'game:win' emitter (at finale.state === 'done').
  * The throttled 'grow' payload additionally carries BallState.dashGauge01
  * for the HUD dash gauge (smooth 10Hz fill).
@@ -45,7 +45,12 @@ import { EVT, PAYLOADS } from '../core/events.js';
 import { formatLength } from '../core/mathUtils.js';
 import {
   HUD_THROTTLE_HZ,
-  MOON_GOAL_RADIUS_M,
+  // v3 PHASE-0 DOCUMENTED CROSS-STREAM EXCEPTION #1 (docs/DESIGN-V3.md
+  // 並列作業分割): the grow-progress last-tier exit reads GOAL_RADIUS_M
+  // directly (the Phase-0 alias layer is retired).
+  // No other scaleManager change in v3 — _rebuildHashes untouched (dynamic
+  // re-banding lives in world/curated.js).
+  GOAL_RADIUS_M,
   REBASE_DISTANCE_SIM,
   SIM_RADIUS_MAX,
   SIM_RADIUS_MIN,
@@ -75,7 +80,7 @@ export class ScaleManager {
     this.worldSeed = worldSeed >>> 0;
     /** @type {number} REAL METERS per sim unit (plain double; exactly 0.1 * 5^k). */
     this.worldScale = START_RADIUS_M / SIM_RADIUS_MIN;
-    /** @type {number} Current tier 0..5 (cosmetics + spawn bands ONLY). */
+    /** @type {number} Current tier 0..TIERS.length-1 (cosmetics + spawn bands ONLY). */
     this.tierIndex = 0;
     /** @type {number} How many similarity rescales have been applied. */
     this.rescaleCount = 0;
@@ -133,7 +138,7 @@ export class ScaleManager {
    * the one-frame similarity rescale when simRadius >= SIM_RADIUS_MAX,
    * advances tierIndex (hysteresis), rebuilds the per-band hashes when either
    * happened, and emits rescale/tierUp/grow (v2: 'game:win' is main's — the
-   * finale owns the goal at MOON_GOAL_RADIUS_M).
+   * finale owns the goal at GOAL_RADIUS_M).
    *
    * Steady-state cost: a handful of float compares — zero allocation. The
    * rescale path (once per ~60-90 s) may touch Map iterators.
@@ -180,12 +185,12 @@ export class ScaleManager {
     if (now - this._lastGrowMs >= this._growIntervalMs) {
       this._lastGrowMs = now;
       const enter = TIERS[this.tierIndex].enterTrueRadius;
-      // Last tier's progress target is the moon-goal radius so the bar hits
-      // exactly 100% as the finale's DESCENT triggers.
+      // Last tier's progress target is the goal radius (v3: Skytree contact
+      // arms at GOAL_RADIUS_M) so the bar hits exactly 100% as it arms.
       const exit =
         this.tierIndex < TIERS.length - 1
           ? TIERS[this.tierIndex + 1].enterTrueRadius
-          : MOON_GOAL_RADIUS_M;
+          : GOAL_RADIUS_M;
       let p = (tr - enter) / (exit - enter);
       if (p < 0) p = 0;
       else if (p > 1) p = 1;

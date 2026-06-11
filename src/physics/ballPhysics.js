@@ -75,10 +75,21 @@ export class BallPhysics {
    * @param {import('../core/events.js').EventBus} [bus] Shared event bus for
    *   'dash' / 'dashReady' emission. Optional — null-safe for headless tests
    *   (dash mechanics run, events are simply not emitted).
+   * @param {{ collide(state: BallState): void }} [terrain] v3 PHASE-0
+   *   DOCUMENTED OVERLAP EXCEPTION #2 (docs/DESIGN-V3.md, like v2's
+   *   WIN_RADIUS_M note): the injected CityTerrain (world/terrain.js,
+   *   Stream B). When present, terrain.collide(state) runs once per substep
+   *   AFTER XZ integration (shop walls/prisms + permanent Skytree base
+   *   circle + map-bounds clamp + soft edge damping). Default null so the
+   *   Phase-0 build boots unchanged; reset() is deliberately UNTOUCHED —
+   *   the v3 map is authored with ORIGIN = BALL START so (0, r, 0) stays
+   *   correct.
    */
-  constructor(bus = null) {
+  constructor(bus = null, terrain = null) {
     /** @type {import('../core/events.js').EventBus|null} */
     this._bus = bus;
+    /** @type {{ collide(state: BallState): void }|null} */
+    this._terrain = terrain;
     /**
      * Single source of ball truth — absorb.js mutates radiusSim/sluggish/
      * dashGauge01, bounce response mutates pos/vel; everyone else reads only.
@@ -208,6 +219,13 @@ export class BallPhysics {
     /* --- Integrate position ----------------------------------------- */
     s.pos.x += vel.x * dt;
     s.pos.z += vel.z * dt;
+
+    /* --- v3 terrain collision (AFTER XZ integration — binding order) --
+       CityTerrain resolves shop walls/prisms (circle-vs-AABB, BOUNCE with
+       cooldown), the permanent Skytree base circle, the map-bounds hard
+       clamp and the soft edge damping. Mutates pos/vel in place; no-op
+       until main.js injects the real terrain (Phase-0 stub is null). */
+    if (this._terrain !== null) this._terrain.collide(s);
 
     /* --- Ground y-spring (underdamped 'pop' on growth) -------------- */
     springDamped(this._ySpring, s.radiusSim, BALL_Y_OMEGA, BALL_Y_ZETA, dt);

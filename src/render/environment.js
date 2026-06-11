@@ -22,19 +22,45 @@
  *   rescale: worldXZ *= S, r *= S      => gridOrigin *= S
  *   rebase:  worldXZ -= offset         => gridOrigin += offset
  *
- * v2 MOON (docs/DESIGN-V2.md 月エンディング): the telegraph moon is rendered
- * INSIDE the sky-dome fragment shader (zero extra draw calls). uMoonDir /
- * uMoonAngSize crossfade per tier; uMoonGlow carries the CALLED 0.5Hz pulse
- * (setSkyMoonPulse); uMoonFade 0..1 scales disc+halo for the finale handoff
- * crossfade (setSkyMoonFade); getMoonDirWorld(out) exposes the CURRENT
- * blended direction with a MOON_DIR_MIN_ELEV elevation clamp
- * (belt-and-suspenders — tiers.js asserts the endpoints).
+ * SKY MOON (v3: NIGHT COSMETIC ONLY — uMoonFade stays 1): the moon disc is
+ * rendered INSIDE the sky-dome fragment shader (zero extra draw calls).
+ * uMoonDir / uMoonAngSize crossfade per tier; getMoonDirWorld(out) exposes
+ * the CURRENT blended direction with a MOON_DIR_MIN_ELEV elevation clamp.
+ * setSkyMoonFade/setSkyMoonPulse are kept (inert in v3 play — nothing drives
+ * them; the v3 goal beacon lives on render/goalTower.js).
  *
- * v2 NIGHT PALETTE: appended ENV-LOCALLY as _palettes[6] (tiers.js keeps
- * exactly 6 tiers). Reachable only via beginNightFade(seconds), which drives
- * the SAME _toIndex crossfade machinery with a custom duration — so
- * setTierPaletteImmediate's snap structurally cancels an in-flight night
- * fade, and it additionally resets uMoonFade=1, pulse off, star intensity.
+ * v3 SKYTREE SILHOUETTE (BLOCKER 2 — the KEPT v2 sky-element slot,
+ * re-textured; uniforms uGoalSil*): while the ball is small the 634 m goal
+ * tower at SKYTREE_POS is far outside the fog/load rings, so the sky dome
+ * paints a hazy tapered tower silhouette whose azimuth AND angular size are
+ * recomputed per frame from the camera -> SKYTREE_POS real-meter geometry
+ * (cheap CPU math; angle-matched to the goalTower mesh by construction —
+ * the proven v2 angular-matched handoff in reverse). The finale forwards
+ * setGoalSilFade(SkytreeView.silFade01) every frame: 1 = silhouette owns the
+ * tower, fading to 0 over 2 s as the mesh takes over at
+ * simDist < 0.8*CAMERA_FAR. setTierPaletteImmediate resets the fade to 1.
+ *
+ * v3 BAY (map-edge cosmetics, +2 draw calls, counted in the 64/72 ledger):
+ * one merged two-rect water quad (fog-on Lambert 0x2a4a6e) over Tokyo Bay
+ * (south x[-200,1800] z[1500,2000] + east x[1400,1800] z[-400,1500]) plus an
+ * L-shaped quay-wall strip along the shoreline. Both are authored in REAL
+ * METERS and ride a group whose scale (1/worldScale) and position (rebase
+ * shift) are refreshed every update — radius-continuous, rescale/rebase
+ * exact. (The water sits at +0.3 m: the v1 ground plane is opaque at y = 0
+ * and would occlude a submerged quad; the quay wall hides the seam.)
+ *
+ * v3 FOG FLOOR (FOG_FAR_MIN_M, applied at query time): fog.far =
+ * max(FOG_FAR_K * rv, FOG_FAR_MIN_M / worldScale) so the 8 m shop is never
+ * fog-swallowed at r = 2 cm. worldScale is tracked locally: boot value
+ * 0.04, exact resync from every 10 Hz 'grow' payload (trueRadius/simRadius),
+ * /= S on each rescale hook — never read from a foreign module.
+ *
+ * NIGHT PALETTE (kept): appended ENV-LOCALLY as _palettes[TIERS.length]
+ * (tiers.js keeps exactly 7 tiers). Reachable only via beginNightFade
+ * (seconds), which drives the SAME _toIndex crossfade machinery with a
+ * custom duration — so setTierPaletteImmediate's snap structurally cancels
+ * an in-flight night fade, and it additionally resets uMoonFade=1, pulse
+ * off, star intensity, and the uGoalSil fade.
  *
  * Custom fog uniforms on the ground shader replicate THREE.Fog's LINEAR
  * factor exactly, so the ground fogs identically to the Lambert instances.
@@ -45,10 +71,22 @@
  */
 
 import * as THREE from 'three';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { TIERS } from '../config/tiers.js';
-import { FOG_NEAR_K, FOG_FAR_K, PALETTE_FADE_S, MOON_DIR_MIN_ELEV } from '../config/tuning.js';
+import {
+  FOG_NEAR_K,
+  FOG_FAR_K,
+  FOG_FAR_MIN_M,
+  PALETTE_FADE_S,
+  MOON_DIR_MIN_ELEV,
+  SIM_RADIUS_MIN,
+  SKYTREE_BASE_R_M,
+  START_RADIUS_M,
+} from '../config/tuning.js';
+import { SKYTREE_POS } from '../config/cityMap.js';
 import { bus, EVT } from '../core/events.js';
 import { easeInOutCubic, clamp01, lerp } from '../core/mathUtils.js';
+import { SKYTREE_HEIGHT_M } from './goalTower.js';
 
 /** @typedef {import('../types.js').BallState} BallState */
 /** @typedef {import('../types.js').TierUpEvent} TierUpEvent */
@@ -73,28 +111,54 @@ const LIGHT_DIST_K = 40;
 /* ---- v2 sky constants (env-local) ---- */
 /** Cloud drift speed in noise-space units per second (uTime * uCloudDrift). */
 const CLOUD_DRIFT = 0.010;
-/** CALLED pulse: uMoonGlow breathes 1.0 -> 1.0 + MOON_PULSE_AMP at 0.5 Hz. */
-const MOON_PULSE_AMP = 0.7;
+/** CALLED pulse: uMoonGlow breathes 1.0 -> 1.0 + GLOW_PULSE_AMP at 0.5 Hz. */
+const GLOW_PULSE_AMP = 0.7;
+
+/* ---- v3 constants (env-local) ---- */
+/** Boot worldScale — the local tracker's start value (resynced from 'grow'). */
+const BOOT_WORLD_SCALE = START_RADIUS_M / SIM_RADIUS_MIN;
+/** Bay water surface height, REAL meters. SPEC NOTE: DESIGN-V3.md says
+ *  y = -0.3, but the v1 ground plane is opaque at y = 0 and would fully
+ *  occlude a submerged quad — the surface sits at +0.3 instead and the quay
+ *  wall hides the shoreline seam (documented deviation). */
+const WATER_Y_M = 0.3;
+/** Water color (fog-on Lambert — DESIGN-V3.md 箱庭東京マップ D). */
+const WATER_COLOR = 0x2a4a6e;
+/** Quay wall: concrete strip along the shoreline (REAL meters). */
+const QUAY_COLOR = 0x767e8a;
+const QUAY_H_M = 3.0;
+const QUAY_W_M = 6.0;
+/** Bay rects (REAL meters; union = the spec coverage, authored non-overlapping):
+ *  south band x[-200,1800] z[1500,2000]; east band x[1400,1800] z[-400,1500]. */
+const BAY_SOUTH = { x0: -200, x1: 1800, z0: 1500, z1: 2000 };
+const BAY_EAST = { x0: 1400, x1: 1800, z0: -400, z1: 1500 };
+/** Skytree silhouette tint -> fog mix factor, baked into the GLSL below. */
+const SIL_FOG_MIX_GLSL = (0.45).toFixed(2);
+
+/* SKYTREE_POS shape guard (cityMap.js, Stream B): accept {x,z} or [x,z]. */
+const SK_X = SKYTREE_POS.x !== undefined ? SKYTREE_POS.x : SKYTREE_POS[0];
+const SK_Z = SKYTREE_POS.z !== undefined ? SKYTREE_POS.z : SKYTREE_POS[1];
 /**
- * Env-LOCAL night palette source (finale ascension; _palettes index 6).
+ * Env-LOCAL night palette source (finale ascension; _palettes[TIERS.length]).
  * Same shape as a tiers.js entry's sky fields. starIntensity 1.0, sun off,
- * clear sky. moonDir/moonAngSize continue from T5 (the SKY moon is faded out
- * by the finale before the night fade ever starts — values are inert).
+ * clear sky. moonDir/moonAngSize continue from the last tier — v3: the sky
+ * moon is the NIGHT COSMETIC (uMoonFade stays 1), so the full moon hangs
+ * over the ascended night diorama.
  */
 const NIGHT = {
   fogColor: 0x1a1838,
   skyTop: 0x101030,
   skyBottom: 0x06061a,
-  sunDir: TIERS[5].sunDir,
+  sunDir: TIERS[TIERS.length - 1].sunDir,
   sunIntensity: 0,
-  moonDir: TIERS[5].moonDir,
-  moonAngSize: TIERS[5].moonAngSize,
+  moonDir: TIERS[TIERS.length - 1].moonDir,
+  moonAngSize: TIERS[TIERS.length - 1].moonAngSize,
   starIntensity: 1.0,
   cloudDensity: 0,
   cloudHex: 0x1a1838,
 };
-/** Night palette index inside _palettes (== TIERS.length; NEVER in tiers.js). */
-const NIGHT_INDEX = 6;
+/** Night palette index inside _palettes (== TIERS.length, v3: 7; NEVER in tiers.js). */
+const NIGHT_INDEX = TIERS.length;
 
 /* ------------------------------------------------------------------ */
 /* Shaders                                                              */
@@ -172,6 +236,11 @@ uniform float uCloudDensity;
 uniform vec3 uCloudColor;
 uniform float uCloudDrift;
 uniform float uTime;
+// v3 Skytree silhouette (uGoalSil* — the kept sky-element slot, re-textured)
+uniform vec3 uGoalSilDir;   // horizontal unit dir camera -> tower
+uniform float uGoalSilTanH; // tan(angular height) = towerHeightSim / dist
+uniform float uGoalSilTanW; // tan(angular half-width at base) = baseRSim / dist
+uniform float uGoalSilFade; // 1 = silhouette owns the tower, 0 = mesh does
 varying vec3 vDir;
 
 float hash21(vec2 p) {
@@ -248,6 +317,30 @@ void main() {
   float halo = exp(-(1.0 - md) / max(uMoonAngSize * uMoonAngSize * 3.0, 1e-6));
   sky += vec3(0.62, 0.68, 0.85) * (halo * 0.35 * uMoonGlow * uMoonFade);
 
+  // (f) v3 SKYTREE SILHOUETTE — hazy tapered tower at the true azimuth +
+  // angular size (uniforms recomputed per frame on the CPU from the camera ->
+  // SKYTREE_POS geometry, so the goalTower mesh handoff is angle-matched by
+  // construction). Tangent-space math: tanE = dir.y / |dir.xz| vs uGoalSilTanH;
+  // azimuthal offset sinAz vs the tapered width profile; two Gaussian bumps
+  // for the observation decks. Drawn after sun/moon (the tower silhouettes
+  // against them), before the horizon melt (its base melts into the haze).
+  float hl = max(length(dir.xz), 1e-4);
+  vec2 hdir = dir.xz / hl;
+  float caz = dot(hdir, uGoalSilDir.xz);
+  float sinAz = abs(hdir.x * uGoalSilDir.z - hdir.y * uGoalSilDir.x);
+  float tanE = h / hl;
+  float st01 = clamp(tanE / max(uGoalSilTanH, 1e-5), 0.0, 1.0);
+  float silW = uGoalSilTanW * (mix(1.0, 0.10, pow(st01, 0.55))
+             + 0.50 * exp(-pow((st01 - 0.552) * 16.0, 2.0))
+             + 0.32 * exp(-pow((st01 - 0.710) * 20.0, 2.0)));
+  float silM = (1.0 - smoothstep(silW * 0.72, silW, sinAz))
+             * step(0.5, caz)
+             * (1.0 - smoothstep(uGoalSilTanH * 0.94, uGoalSilTanH, tanE))
+             * smoothstep(-0.01, 0.01, tanE)
+             * uGoalSilFade;
+  vec3 silCol = mix(vec3(0.42, 0.47, 0.56), uFogColor, ${SIL_FOG_MIX_GLSL});
+  sky = mix(sky, silCol, silM);
+
   // Horizon fog melt LAST so distant objects vanish seamlessly.
   float horizon = 1.0 - smoothstep(0.02, 0.20, h);
   gl_FragColor = vec4(mix(sky, uFogColor, horizon), 1.0);
@@ -262,13 +355,13 @@ void main() {
  *   const env = new Environment(renderer.scene, renderer.camera);
  *   ...per frame (step 6, after ScaleManager): env.update(frameDt, ballPhys.state);
  *   ScaleManager hooks: env.rescale(S); env.rebase(offsetX, offsetZ);
- *   ?r= dev start: env.setTierPaletteImmediate(startTierIndex);
- *   Finale (Stream A): env.setSkyMoonPulse(true) on CALLED;
- *     env.setSkyMoonFade(k01) during the DESCENT handoff crossfade;
- *     env.getMoonDirWorld(out) for the descent start pose;
- *     env.beginNightFade(MOON_ASCEND_S) on ASCENSION.
- * Subscribes to 'tierUp' (palette crossfade) and 'game:reset' (snap to T0,
- * resets all v2 uniforms) on the singleton bus.
+ *   ?at=/?r= dev start: env.setTierPaletteImmediate(startTierIndex);
+ *   Finale (Stream A, v3): env.setGoalSilFade(skytree.silFade01) every frame
+ *     (silhouette <-> goalTower mesh handoff);
+ *     env.beginNightFade(GOAL_ASCEND_S) on ASCENSION.
+ * Subscribes to 'tierUp' (palette crossfade), 'game:reset' (snap to T0,
+ * resets all uniforms + ws/shift trackers) and 'grow' (10 Hz worldScale
+ * resync) on the singleton bus.
  */
 export class Environment {
   /**
@@ -330,15 +423,29 @@ export class Environment {
     /** @type {number} */ this._fadeDur = 0; // 0 = not fading
     /** @type {number} */ this._toIndex = 0;
 
-    /* --- v2 moon control state (finale-driven; cosmetic) --- */
+    /* --- v2 moon control state (v3: night cosmetic; uMoonFade stays 1) --- */
     /** Sky-moon disc+halo fade 0..1 (1 = fully shader moon). @type {number} */
     this._moonFade = 1;
-    /** CALLED pulse flag (0.5Hz uMoonGlow breathing). @type {boolean} */
+    /** Pulse flag (0.5Hz uMoonGlow breathing — inert in v3 play). @type {boolean} */
     this._pulseOn = false;
     /** Pulse phase accumulator (s) — starts at glow 1.0 so it never snaps. @type {number} */
     this._pulsePhase = 0;
     /** Plain accumulating shader clock (s) — direction-space, rescale-invariant. @type {number} */
     this._time = 0;
+
+    /* --- v3 worldScale + rebase-shift trackers (real-meter cosmetics) --- */
+    /** Local worldScale estimate: boot 0.04; exact resync from every 10 Hz
+     *  'grow' payload (trueRadius/simRadius); /= S on each rescale() hook.
+     *  Used ONLY by the fog floor, the bay group and the silhouette size —
+     *  all cosmetic, all self-correcting within 0.1 s. @type {number} */
+    this._ws = BOOT_WORLD_SCALE;
+    /** Accumulated floating-origin shift (sim units; sim = real/ws - shift). */
+    this._shiftX = 0;
+    this._shiftZ = 0;
+    /** v3 Skytree silhouette fade (finale-driven via setGoalSilFade). */
+    this._goalSilFade = 1;
+    /** Hoisted silhouette direction (uniform holds the live ref). */
+    this._vGoalSilDir = new THREE.Vector3(0, 0, 1);
 
     /* --- fog --- */
     /** @type {THREE.Fog} */
@@ -403,6 +510,11 @@ export class Environment {
       uCloudColor: { value: this._cCloud },
       uCloudDrift: { value: CLOUD_DRIFT },
       uTime: { value: 0 },
+      // v3 Skytree silhouette (live ref + per-frame scalars).
+      uGoalSilDir: { value: this._vGoalSilDir },
+      uGoalSilTanH: { value: 0 },
+      uGoalSilTanW: { value: 0 },
+      uGoalSilFade: { value: 1 },
     };
     const skyMat = new THREE.ShaderMaterial({
       uniforms: this._skyUniforms,
@@ -435,6 +547,63 @@ export class Environment {
     this.blobShadow.renderOrder = 1; // over the ground
     scene.add(this.blobShadow);
 
+    /* --- v3 Tokyo Bay: water quad pair (1 draw) + quay-wall strip (1 draw).
+     * Authored in REAL METERS inside this._bay; the group's scale (1/ws) and
+     * position (-shift) are refreshed every update() — radius-continuous,
+     * pixel-exact across rescale/rebase, and self-correcting after a dev
+     * teleport (live ws). Both materials are fog:true (Lambert default):
+     * beyond the fog wall the bay simply melts away like world scenery. --- */
+    /** @type {THREE.Group} */
+    this._bay = new THREE.Group();
+    {
+      const water = new THREE.BufferGeometry();
+      // Two horizontal rects (4 tris) at WATER_Y_M.
+      const w = new Float32Array([
+        // south band
+        BAY_SOUTH.x0, WATER_Y_M, BAY_SOUTH.z0, BAY_SOUTH.x0, WATER_Y_M, BAY_SOUTH.z1,
+        BAY_SOUTH.x1, WATER_Y_M, BAY_SOUTH.z1, BAY_SOUTH.x0, WATER_Y_M, BAY_SOUTH.z0,
+        BAY_SOUTH.x1, WATER_Y_M, BAY_SOUTH.z1, BAY_SOUTH.x1, WATER_Y_M, BAY_SOUTH.z0,
+        // east band
+        BAY_EAST.x0, WATER_Y_M, BAY_EAST.z0, BAY_EAST.x0, WATER_Y_M, BAY_EAST.z1,
+        BAY_EAST.x1, WATER_Y_M, BAY_EAST.z1, BAY_EAST.x0, WATER_Y_M, BAY_EAST.z0,
+        BAY_EAST.x1, WATER_Y_M, BAY_EAST.z1, BAY_EAST.x1, WATER_Y_M, BAY_EAST.z0,
+      ]);
+      water.setAttribute('position', new THREE.BufferAttribute(w, 3));
+      water.computeVertexNormals();
+      /** @type {THREE.Mesh} */
+      this._bayWater = new THREE.Mesh(
+        water,
+        new THREE.MeshLambertMaterial({ color: WATER_COLOR })
+      );
+      this._bayWater.frustumCulled = false;
+      this._bay.add(this._bayWater);
+
+      // Quay wall: L-strip along the two shorelines (2 boxes merged by hand
+      // into one geometry via two BoxGeometries in a single mesh group would
+      // cost a draw each — use one geometry with both boxes baked).
+      const south = new THREE.BoxGeometry(BAY_SOUTH.x1 - BAY_SOUTH.x0, QUAY_H_M, QUAY_W_M);
+      south.translate(
+        (BAY_SOUTH.x0 + BAY_SOUTH.x1) / 2,
+        QUAY_H_M / 2,
+        BAY_SOUTH.z0 - QUAY_W_M / 2
+      );
+      const east = new THREE.BoxGeometry(QUAY_W_M, QUAY_H_M, BAY_EAST.z1 - BAY_EAST.z0);
+      east.translate(
+        BAY_EAST.x0 - QUAY_W_M / 2,
+        QUAY_H_M / 2,
+        (BAY_EAST.z0 + BAY_EAST.z1) / 2
+      );
+      const quay = mergeGeometries([south, east], false);
+      south.dispose();
+      east.dispose();
+      /** @type {THREE.Mesh} */
+      this._bayQuay = new THREE.Mesh(quay, new THREE.MeshLambertMaterial({ color: QUAY_COLOR }));
+      this._bayQuay.frustumCulled = false;
+      this._bay.add(this._bayQuay);
+    }
+    this._bay.scale.setScalar(1 / this._ws);
+    scene.add(this._bay);
+
     this.setTierPaletteImmediate(0);
 
     /* --- bus subscriptions (cosmetic only) --- */
@@ -442,12 +611,24 @@ export class Environment {
     this._onTierUp = (p) => this.startPaletteFade(p.tierIndex);
     bus.on(EVT.TIER_UP, this._onTierUp);
     /** @type {() => void} */
-    this._onGameReset = () => this.setTierPaletteImmediate(0);
+    this._onGameReset = () => {
+      // World origin + scale are rebuilt from scratch (scaleMgr.reset).
+      this._ws = BOOT_WORLD_SCALE;
+      this._shiftX = 0;
+      this._shiftZ = 0;
+      this.setTierPaletteImmediate(0);
+    };
     bus.on(EVT.GAME_RESET, this._onGameReset);
+    /** v3: exact worldScale resync at 10 Hz (covers dev-teleport snaps too).
+     * @type {(p: import('../types.js').GrowEvent) => void} */
+    this._onGrow = (p) => {
+      if (p.simRadius > 0) this._ws = p.trueRadius / p.simRadius;
+    };
+    bus.on(EVT.GROW, this._onGrow);
 
     if (import.meta.env && import.meta.env.DEV) {
       if (this._palettes.length !== NIGHT_INDEX + 1) {
-        throw new Error('[environment] _palettes must be 6 tiers + NIGHT at index 6');
+        throw new Error('[environment] _palettes must be TIERS.length tiers + NIGHT appended');
       }
     }
   }
@@ -464,12 +645,23 @@ export class Environment {
     const rv = ball.radiusVisualSim;
     const gu = this._groundUniforms;
 
-    // Fog — continuous in radius (SEAMLESSNESS LAW).
+    // Fog — continuous in radius (SEAMLESSNESS LAW). v3: floored at
+    // FOG_FAR_MIN_M real meters (applied AT QUERY TIME — the 8 m shop is
+    // never fog-swallowed at r = 2 cm; pairs with LOAD_RADIUS_MIN_M so
+    // fog < load holds everywhere, asserted in tiers.js).
     this.fog.near = FOG_NEAR_K * rv;
-    this.fog.far = FOG_FAR_K * rv;
+    this.fog.far = Math.max(FOG_FAR_K * rv, FOG_FAR_MIN_M / this._ws);
     gu.uFogNear.value = this.fog.near;
     gu.uFogFar.value = this.fog.far;
     gu.uCell.value = GRID_CELL_K * rv;
+
+    // v3 bay group: real-meter geometry mapped into the current sim frame
+    // (sim = real / ws - shift). Cheap scalar writes every frame; exact on
+    // the rescale/rebase frame because rescale()/rebase() update _ws/_shift
+    // synchronously before the render.
+    const invWs = 1 / this._ws;
+    this._bay.scale.setScalar(invWs);
+    this._bay.position.set(-this._shiftX, 0, -this._shiftZ);
 
     // Blob shadow under the ball.
     const ss = SHADOW_SCALE_K * rv;
@@ -518,12 +710,12 @@ export class Environment {
       if (this._fadeT >= this._fadeDur) this._fadeDur = 0;
     }
 
-    // v2 sky clock + CALLED pulse (0.5Hz: glow 1 .. 1+MOON_PULSE_AMP).
+    // v2 sky clock + CALLED pulse (0.5Hz: glow 1 .. 1+GLOW_PULSE_AMP).
     this._time += dt;
     let glow = 1;
     if (this._pulseOn) {
       this._pulsePhase += dt;
-      glow = 1 + MOON_PULSE_AMP * 0.5 * (1 - Math.cos(Math.PI * this._pulsePhase));
+      glow = 1 + GLOW_PULSE_AMP * 0.5 * (1 - Math.cos(Math.PI * this._pulsePhase));
     }
 
     // Scalar sky uniforms (vec3/Color uniforms hold live refs — no write needed).
@@ -535,6 +727,34 @@ export class Environment {
     su.uMoonAngSize.value = this._moonAngSize;
     su.uStarIntensity.value = this._starIntensity;
     su.uCloudDensity.value = this._cloudDensity;
+
+    // v3 Skytree silhouette: azimuth + angular size recomputed per frame
+    // from the camera -> SKYTREE_POS real-meter geometry (BLOCKER 2). The
+    // dome is camera-centred, so view direction == world direction.
+    su.uGoalSilFade.value = this._goalSilFade;
+    if (this._goalSilFade > 0) {
+      const tx = SK_X * invWs - this._shiftX;
+      const tz = SK_Z * invWs - this._shiftZ;
+      let cx = 0;
+      let cz = 0;
+      if (this._camera !== null) {
+        cx = this._camera.position.x;
+        cz = this._camera.position.z;
+      } else {
+        cx = ball.pos.x;
+        cz = ball.pos.z;
+      }
+      const dx = tx - cx;
+      const dz = tz - cz;
+      const dist = Math.sqrt(dx * dx + dz * dz);
+      if (dist > 1e-3) {
+        this._vGoalSilDir.set(dx / dist, 0, dz / dist);
+        su.uGoalSilTanH.value = (SKYTREE_HEIGHT_M * invWs) / dist;
+        su.uGoalSilTanW.value = (SKYTREE_BASE_R_M * invWs) / dist;
+      } else {
+        su.uGoalSilTanH.value = 0; // degenerate: standing on the axis
+      }
+    }
   }
 
   /**
@@ -557,6 +777,14 @@ export class Environment {
     this.blobShadow.scale.z *= S;
     this.dirLight.position.multiplyScalar(S);
     this.dirLight.target.position.multiplyScalar(S);
+    // v3: worldScale tracker (ws /= S, matching ScaleManager) + shift and the
+    // real-meter bay group (update() re-derives both the same frame — these
+    // direct writes keep the hook self-contained for tests).
+    this._ws /= S;
+    this._shiftX *= S;
+    this._shiftZ *= S;
+    this._bay.scale.multiplyScalar(S);
+    this._bay.position.multiplyScalar(S);
   }
 
   /**
@@ -576,11 +804,16 @@ export class Environment {
     this.dirLight.position.z -= offsetZ;
     this.dirLight.target.position.x -= offsetX;
     this.dirLight.target.position.z -= offsetZ;
+    // v3: shift tracker + the real-meter bay group ride the rebase.
+    this._shiftX += offsetX;
+    this._shiftZ += offsetZ;
+    this._bay.position.x -= offsetX;
+    this._bay.position.z -= offsetZ;
   }
 
   /**
    * Begin the PALETTE_FADE_S crossfade toward a tier's palette ('tierUp').
-   * @param {number} tierIndex 0..5.
+   * @param {number} tierIndex 0..TIERS.length-1.
    */
   startPaletteFade(tierIndex) {
     this._beginFade(tierIndex, PALETTE_FADE_S);
@@ -591,16 +824,26 @@ export class Environment {
    * sky 0x101030/0x06061a, fog 0x1a1838, starIntensity -> 1.0) over a custom
    * duration, riding the SAME machinery as the tier fade. Cancelled
    * structurally by setTierPaletteImmediate (game reset / dev start).
-   * @param {number} seconds Fade duration (finale passes MOON_ASCEND_S).
+   * @param {number} seconds Fade duration (finale passes GOAL_ASCEND_S).
    */
   beginNightFade(seconds) {
     this._beginFade(NIGHT_INDEX, Math.max(seconds, 1e-3));
   }
 
   /**
-   * v2 finale handoff — scales the SHADER moon disc + halo (uMoonFade 0..1).
-   * The finale fades 1 -> 0 over the descent handoff while the real MoonView
-   * mesh (angular-size/direction matched) takes over. Default 1.
+   * v3 Skytree silhouette weight (uGoalSilFade 0..1). The finale forwards
+   * SkytreeView.silFade01 every frame: 1 while the sky silhouette owns the
+   * tower, fading to 0 over 2 s as the goalTower mesh takes over (the kept
+   * v2 angular-matched handoff). Default 1; reset by setTierPaletteImmediate.
+   * @param {number} k01 0..1.
+   */
+  setGoalSilFade(k01) {
+    this._goalSilFade = clamp01(k01);
+  }
+
+  /**
+   * Sky-moon disc + halo scale (uMoonFade 0..1). v3: the moon is a NIGHT
+   * COSMETIC — nothing drives this in play (it stays 1); kept for tests.
    * @param {number} k01 0..1.
    */
   setSkyMoonFade(k01) {
@@ -608,8 +851,8 @@ export class Environment {
   }
 
   /**
-   * v2 finale CALLED — toggle the 0.5Hz uMoonGlow breathing pulse. Turning it
-   * on starts at glow 1.0 (cosine ramp) so there is never a snap.
+   * Toggle the 0.5Hz uMoonGlow breathing pulse (cosine ramp — never snaps).
+   * v3: inert in play (the goal beacon lives on render/goalTower.js); kept.
    * @param {boolean} on
    */
   setSkyMoonPulse(on) {
@@ -656,11 +899,12 @@ export class Environment {
   }
 
   /**
-   * Snap to a tier's palette with no fade (boot, game reset, ?r= dev start).
-   * v2: also resets every finale-driven sky control — uMoonFade=1, pulse off,
-   * star intensity to the palette value — which structurally cancels an
-   * in-flight night fade (same _fadeDur machinery).
-   * @param {number} tierIndex 0..5.
+   * Snap to a tier's palette with no fade (boot, game reset, ?at=/?r= dev
+   * start). Also resets every finale-driven sky control — uMoonFade=1, pulse
+   * off, star intensity to the palette value, uGoalSilFade=1 (the silhouette
+   * owns the tower again) — which structurally cancels an in-flight night
+   * fade (same _fadeDur machinery).
+   * @param {number} tierIndex 0..TIERS.length-1.
    */
   setTierPaletteImmediate(tierIndex) {
     const p = this._palettes[tierIndex];
@@ -681,13 +925,15 @@ export class Environment {
     this._cloudDensity = p.cloudDensity;
     this._toIndex = tierIndex;
     this._fadeDur = 0; // cancels any in-flight fade (incl. night fade)
-    // v2 finale-control reset.
+    // Finale-control reset (v2 moon controls + v3 silhouette fade).
     this._moonFade = 1;
     this._pulseOn = false;
     this._pulsePhase = 0;
+    this._goalSilFade = 1;
     const su = this._skyUniforms;
     su.uMoonFade.value = 1;
     su.uMoonGlow.value = 1;
+    su.uGoalSilFade.value = 1;
     su.uSunIntensity.value = this._sunIntensity;
     su.uMoonAngSize.value = this._moonAngSize;
     su.uStarIntensity.value = this._starIntensity;
@@ -698,7 +944,12 @@ export class Environment {
   dispose() {
     bus.off(EVT.TIER_UP, this._onTierUp);
     bus.off(EVT.GAME_RESET, this._onGameReset);
-    this._scene.remove(this.sky, this.ground, this.blobShadow, this.hemiLight, this.dirLight, this.dirLight.target);
+    bus.off(EVT.GROW, this._onGrow);
+    this._scene.remove(this.sky, this.ground, this.blobShadow, this.hemiLight, this.dirLight, this.dirLight.target, this._bay);
+    this._bayWater.geometry.dispose();
+    /** @type {THREE.MeshLambertMaterial} */ (this._bayWater.material).dispose();
+    this._bayQuay.geometry.dispose();
+    /** @type {THREE.MeshLambertMaterial} */ (this._bayQuay.material).dispose();
     this.ground.geometry.dispose();
     /** @type {THREE.ShaderMaterial} */ (this.ground.material).dispose();
     this.sky.geometry.dispose();

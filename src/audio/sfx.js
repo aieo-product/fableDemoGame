@@ -3,18 +3,32 @@
  *
  * Sounds: rising-pitch absorb combo blips, bonk clonk, knock-off plink,
  * tierUp 3-note arpeggio, a continuous filtered-noise roll loop whose
- * gain/brightness follow ball speed, and the v2 set: dash whoosh, dash-ready
- * chime, rare sparkle gliss, moon-call pad, MOON_CONTACT 8-note grand fanfare
- * + AM9 pad (replaces the v1 GAME_WIN fanfare — the fanfare already happened
- * at contact), and the rank-stamp thud scheduled +1.6 s in CTX TIME on
- * EVT.GAME_WIN — GAME_WIN fires when the finale cinematic completes, and
- * screens.js reveals the rank stamp at CUE_RANK_MS = 1600 ms after the same
- * event, so the thud lands exactly on the CSS rank-stamp reveal. (EVT.GOAL
- * fires ~8.7 s earlier, at the contact instant — wrong cue for the stamp.)
+ * gain/brightness follow ball speed, the v2 set: dash whoosh, dash-ready
+ * chime, rare sparkle gliss, goal-call pad (renamed from v2), the
+ * GOAL_CONTACT 8-note grand fanfare + AM9 pad (replaces the v1 GAME_WIN
+ * fanfare — the fanfare already happened at contact), the rank-stamp thud
+ * scheduled +1.6 s in CTX TIME on EVT.GAME_WIN — GAME_WIN fires when the
+ * finale cinematic completes, and screens.js reveals the rank stamp at
+ * CUE_RANK_MS = 1600 ms after the same event, so the thud lands exactly on
+ * the CSS rank-stamp reveal (EVT.GOAL fires ~8.7 s earlier, at the contact
+ * instant — wrong cue for the stamp) — and the v3 pair: a landmark fanfare
+ * STING on EVT.LANDMARK and a 5-note collect gliss on EVT.COLLECT.
+ *
+ * v3 DUAL-TAG RULE (binding, docs/DESIGN-V3.md): an object carrying BOTH
+ * collectibleId and landmarkId (ハチ公像) emits COLLECT FIRST then LANDMARK
+ * in the same frame, and sfx must play the landmark fanfare ONLY. Because
+ * COLLECT arrives first, the collect gliss is DEFERRED one microtask
+ * (_collectPending + the prebound _flushCollectGliss): both emissions are
+ * synchronous inside the same task, so a LANDMARK in the same frame clears
+ * the flag before the flush runs — one boolean, no timers. Collect events
+ * are rare (<= 12/run) so the microtask is bounded (allocation law).
+ * Curated collectibles are also FLAG_RARE -> their ScoreEvent has rare:true;
+ * the rare sparkle gliss is gated to archetypeCode < 70 (chunk score-rares)
+ * so the collect gliss doesn't double with it (EXTRA codes are 70..93).
  *
  * Bus-driven: subscribes to ABSORB / BOUNCE / KNOCK_OFF / TIER_UP / DASH /
- * DASH_READY / SCORE(rare) / MOON_CALL / MOON_CONTACT / GAME_WIN /
- * GAME_START / GAME_RESET. The AudioContext is created and resumed on the FIRST user input
+ * DASH_READY / SCORE(rare) / LANDMARK / COLLECT / GOAL_CALL / GOAL_CONTACT /
+ * GAME_WIN / GAME_START / GAME_RESET. The AudioContext is created and resumed on the FIRST user input
  * (pointerdown / keydown / touchstart on window) — browser autoplay policy.
  * Until then every trigger is a silent no-op.
  *
@@ -51,8 +65,19 @@ const FANFARE_SPACING_S = 0.13;
 const AM9_PAD_NOTES = [220.0, 277.18, 329.63, 415.3, 493.88];
 /** Rare sparkle gliss — 5 ascending E6-pentatonic notes, 40 ms apart. */
 const RARE_GLISS_NOTES = [1318.51, 1479.98, 1760.0, 1975.53, 2217.46];
-/** Moon-call pad chord (A major, low-mid). */
-const MOON_PAD_NOTES = [220.0, 277.18, 329.63, 440.0];
+/** v3 collect gliss ('collect') — 5 ascending C-major notes (C6 E6 G6 A6 C7),
+ *  brighter/rounder than the rare sparkle so the album pickup reads distinct. */
+const COLLECT_GLISS_NOTES = [1046.5, 1318.51, 1567.98, 1760.0, 2093.0];
+/** v3 landmark fanfare sting ('landmark') — short rising E5 G5 B5 E6 brass-ish
+ *  call under the gold-ring burst; the GRAND fanfare stays GOAL_CONTACT-only. */
+const LANDMARK_STING_NOTES = [659.25, 783.99, 987.77, 1318.51];
+const LANDMARK_STING_SPACING_S = 0.1;
+/** Goal-call pad chord (A major, low-mid) — renamed from the v2 call pad. */
+const GOAL_PAD_NOTES = [220.0, 277.18, 329.63, 440.0];
+/** First EXTRA curated archetype code (landmarks/collectibles, frozen 70..93):
+ *  ScoreEvent rares at >= this are curated collectibles — the COLLECT gliss
+ *  handles them, the chunk score-rare sparkle is skipped (no doubling). */
+const EXTRA_CODE_MIN = 70;
 /** Roll loop maximum gain / lowpass sweep. */
 const ROLL_GAIN_MAX = 0.14;
 const ROLL_FREQ_MIN = 180;
@@ -88,11 +113,21 @@ export class Sfx {
     this._rollLevel = -1;
     /** @type {boolean} */
     this._muted = initialMuted === true;
-    /** @type {boolean} Run-over latch (MOON_CONTACT..GAME_START) — gameplay
+    /** @type {boolean} Run-over latch (GOAL_CONTACT..GAME_START) — gameplay
      *  chimes (dash-ready) must not play over the finale cinematic. */
     this._runOver = false;
     /** @type {number} Ctx time of the last absorb blip (rate cap). */
     this._lastBlipAt = -1;
+    /** @type {boolean} v3 dual-tag: collect gliss deferred one microtask; a
+     *  same-frame LANDMARK clears it (fanfare only — see header). */
+    this._collectPending = false;
+    /** Prebound microtask flush (reused — no per-event closure). */
+    this._flushCollectGliss = () => {
+      if (this._collectPending) {
+        this._collectPending = false;
+        this._collectGliss();
+      }
+    };
     /** @type {import('../core/events.js').EventBus} */
     this._bus = eventBus;
     /** @type {Array<[string, (p?: object) => void]>} Bus subscriptions (for dispose). */
@@ -140,14 +175,32 @@ export class Sfx {
       if (!this._runOver) this._readyChime();
     });
     sub(EVT.SCORE, (p) => {
-      if (p.rare) this._rareGliss();
+      // v3: curated collectibles (EXTRA codes >= 70) are FLAG_RARE too — the
+      // COLLECT gliss owns them; chunk score-rares keep the sparkle. Until
+      // Stream D lands, v2 runStats leaves archetypeCode at -1 (< 70), so
+      // chunk rares keep sparkling through the transition.
+      if (p.rare && p.archetypeCode < EXTRA_CODE_MIN) this._rareGliss();
     });
-    sub(EVT.MOON_CALL, () => {
-      this._moonPad();
+    // ---- v3 ----
+    sub(EVT.LANDMARK, () => {
+      // Dual-tag rule: COLLECT (same frame, already dispatched) is silenced —
+      // the landmark fanfare sting is the single sound for ハチ公像.
+      this._collectPending = false;
+      this._landmarkSting();
     });
-    // The grand fanfare fires at MOON_CONTACT (= clear instant). The v1
+    sub(EVT.COLLECT, () => {
+      if (this._silent()) return;
+      // Defer one microtask: a LANDMARK later in this same frame suppresses
+      // the gliss (dual-tag rule — see header). Bounded: <= 12 collects/run.
+      this._collectPending = true;
+      queueMicrotask(this._flushCollectGliss);
+    });
+    sub(EVT.GOAL_CALL, () => {
+      this._goalPad();
+    });
+    // The grand fanfare fires at GOAL_CONTACT (= clear instant). The v1
     // GAME_WIN fanfare handler is REMOVED — the fanfare already happened.
-    sub(EVT.MOON_CONTACT, () => {
+    sub(EVT.GOAL_CONTACT, () => {
       this._runOver = true; // gameplay chimes off until the next run
       this._grandFanfare();
       this.setRollIntensity(0);
@@ -447,8 +500,9 @@ export class Sfx {
     this._note(2500, 2500, 'sine', t, 0.5, 0.035);
   }
 
-  /** Moon-call pad ('moonCall'): lowpassed swelling A-major chord, 1.2 s, .08. */
-  _moonPad() {
+  /** Goal-call pad ('goalCall' — renamed from v2): lowpassed swelling
+   *  A-major chord, 1.2 s, .08. */
+  _goalPad() {
     if (this._silent()) return;
     const ctx = /** @type {AudioContext} */ (this._ctx);
     const t = ctx.currentTime;
@@ -461,18 +515,49 @@ export class Sfx {
     g.gain.linearRampToValueAtTime(0, t + 1.2);
     lp.connect(g);
     g.connect(/** @type {GainNode} */ (this._master));
-    for (let i = 0; i < MOON_PAD_NOTES.length; i++) {
+    for (let i = 0; i < GOAL_PAD_NOTES.length; i++) {
       const osc = ctx.createOscillator();
       osc.type = 'triangle';
-      osc.frequency.setValueAtTime(MOON_PAD_NOTES[i], t);
+      osc.frequency.setValueAtTime(GOAL_PAD_NOTES[i], t);
       osc.connect(lp);
       osc.start(t);
       osc.stop(t + 1.25);
     }
   }
 
+  /* ---------------------------------------------------------------- */
+  /* v3 triggers                                                        */
+  /* ---------------------------------------------------------------- */
+
   /**
-   * Grand fanfare ('moonContact' = the clear instant): 8-note arpeggio
+   * Landmark fanfare sting ('landmark'): short rising 4-note triangle call
+   * (E5 G5 B5 E6) + a low E root swell — celebratory but clearly smaller
+   * than the GOAL_CONTACT grand fanfare. ~11 nodes, landmark absorbs are
+   * singletons (11/run max) — bounded.
+   */
+  _landmarkSting() {
+    if (this._silent()) return;
+    const t = /** @type {AudioContext} */ (this._ctx).currentTime;
+    this._arpeggio(LANDMARK_STING_NOTES, LANDMARK_STING_SPACING_S, 0.2, 0.5, t);
+    this._note(164.81, 164.81, 'triangle', t, 0.55, 0.1); // E3 root under the call
+  }
+
+  /**
+   * Collect gliss ('collect', microtask-deferred — dual-tag rule): 5-note
+   * ascending C-major sine gliss + a soft high shimmer. Distinct from the
+   * chunk score-rare sparkle (which is gated to codes < 70 above).
+   */
+  _collectGliss() {
+    if (this._silent()) return;
+    const t = /** @type {AudioContext} */ (this._ctx).currentTime;
+    for (let i = 0; i < COLLECT_GLISS_NOTES.length; i++) {
+      this._note(COLLECT_GLISS_NOTES[i], COLLECT_GLISS_NOTES[i], 'sine', t + i * 0.04, 0.24, 0.1);
+    }
+    this._note(3135.96, 3135.96, 'sine', t + 0.16, 0.45, 0.03); // G7 shimmer tail
+  }
+
+  /**
+   * Grand fanfare ('goalContact' = the clear instant): 8-note arpeggio
    * (.24) over a sustained AM9 triangle pad (2.5 s).
    */
   _grandFanfare() {

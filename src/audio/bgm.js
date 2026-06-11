@@ -8,7 +8,7 @@
  * short-lived nodes per second for BGM ALONE (worst case here, all layers
  * unlocked, is ~52.3/s: bass 8 + kick 4 + rim 4 + hats 16 + stabs 14 +
  * lead 12 (densest MELODY bar has 6 notes x osc+gain) + shaker 32 + arp 8
- * = 98 per 1.875 s bar; the one-shot MOON_CALL shimmer adds 6 in one
+ * = 98 per 1.875 s bar; the one-shot GOAL_CALL shimmer adds 6 in one
  * second). sfx.js has its own allowance and rate-caps its absorb blips
  * (BLIP_MIN_INTERVAL_S) so combined creation stays bounded even during
  * dense-cluster dashes. Expensive allocations are HOISTED: ONE persistent
@@ -25,9 +25,11 @@
  * Lifecycle (bus-driven):
  *   GAME_START   -> (re)create+resume ctx (the start click IS the gesture),
  *                   rewind to bar 0, restore master gain, start the scheduler.
- *   TIER_UP      -> layer unlock fades (LAYER_FADE_S ramps; cosmetic only).
- *   MOON_CALL    -> momentary shimmer swell.
- *   MOON_CONTACT -> master ducks to DUCK_GAIN over 0.3 s then linear-ramps to
+ *   TIER_UP      -> layer unlock fades (LAYER_FADE_S ramps; cosmetic only —
+ *                   v3: re-keyed to the 7-tier table, L1 t>=2 / L2 t>=3 /
+ *                   L3 t>=5 so unlocks land on 電気街 / 下町 / 大東京).
+ *   GOAL_CALL    -> momentary shimmer swell.
+ *   GOAL_CONTACT -> master ducks to DUCK_GAIN over 0.3 s then linear-ramps to
  *                   0 ending 1.5 s later; scheduler stops (run is over).
  *   GAME_RESET   -> stop + rewind (title is silent).
  *
@@ -88,10 +90,12 @@ const MELODY = [
   2, -1,  1, -1,  0, -1, -1, -1,   // bar 8
 ];
 
-/** Tier gates for layers L1..L3 (L0 plays from GAME_START). */
-const L1_TIER = 1;
-const L2_TIER = 2;
-const L3_TIER = 4;
+/** Tier gates for layers L1..L3 (L0 plays from GAME_START).
+ *  v3 (7-tier table, docs/DESIGN-V3.md): L1 at T2 電気街 (out of the shop),
+ *  L2 at T3 下町, L3 at T5 大東京 — the unlock arc spans the longer run. */
+const L1_TIER = 2;
+const L2_TIER = 3;
+const L3_TIER = 5;
 
 /**
  * Tier-layered lookahead-scheduled BGM. Construct once at boot; main.js owns
@@ -149,8 +153,8 @@ export class Bgm {
     this._onGameStart = this._onGameStart.bind(this);
     this._onGameReset = this._onGameReset.bind(this);
     this._onTierUp = this._onTierUp.bind(this);
-    this._onMoonCall = this._onMoonCall.bind(this);
-    this._onMoonContact = this._onMoonContact.bind(this);
+    this._onGoalCall = this._onGoalCall.bind(this);
+    this._onGoalContact = this._onGoalContact.bind(this);
 
     /* --- first-gesture AudioContext bootstrap (own listeners; the START
      * click also routes here via GAME_START) --- */
@@ -162,8 +166,8 @@ export class Bgm {
     eventBus.on(EVT.GAME_START, this._onGameStart);
     eventBus.on(EVT.GAME_RESET, this._onGameReset);
     eventBus.on(EVT.TIER_UP, this._onTierUp);
-    eventBus.on(EVT.MOON_CALL, this._onMoonCall);
-    eventBus.on(EVT.MOON_CONTACT, this._onMoonContact);
+    eventBus.on(EVT.GOAL_CALL, this._onGoalCall);
+    eventBus.on(EVT.GOAL_CONTACT, this._onGoalContact);
   }
 
   /* ---------------------------------------------------------------- */
@@ -207,8 +211,8 @@ export class Bgm {
     this._bus.off(EVT.GAME_START, this._onGameStart);
     this._bus.off(EVT.GAME_RESET, this._onGameReset);
     this._bus.off(EVT.TIER_UP, this._onTierUp);
-    this._bus.off(EVT.MOON_CALL, this._onMoonCall);
-    this._bus.off(EVT.MOON_CONTACT, this._onMoonContact);
+    this._bus.off(EVT.GOAL_CALL, this._onGoalCall);
+    this._bus.off(EVT.GOAL_CONTACT, this._onGoalContact);
     this._stopTick();
     this._playing = false;
     if (this._ctx !== null) {
@@ -300,8 +304,8 @@ export class Bgm {
     this._applyLayerGains(ctx.currentTime, false);
   }
 
-  /** 'moonCall' — momentary shimmer swell (high sine arp, swelling gain). */
-  _onMoonCall() {
+  /** 'goalCall' — momentary shimmer swell (high sine arp, swelling gain). */
+  _onGoalCall() {
     const ctx = this._ctx;
     if (ctx === null || this._master === null || this._muted || !this._playing) return;
     const t = ctx.currentTime;
@@ -323,11 +327,11 @@ export class Bgm {
   }
 
   /**
-   * 'moonContact' — duck then stop, all in ctx time: master linear-ramps to
+   * 'goalContact' — duck then stop, all in ctx time: master linear-ramps to
    * DUCK_GAIN by +0.3s, then to 0 ending 1.5s later (+1.8s total). The
    * scheduler stops immediately (the run is over; GAME_RESET rewinds).
    */
-  _onMoonContact() {
+  _onGoalContact() {
     this._playing = false;
     this._stopTick();
     const ctx = this._ctx;
@@ -404,7 +408,7 @@ export class Bgm {
     const len = (ctx.sampleRate * 1.0) | 0;
     const buf = ctx.createBuffer(1, len, ctx.sampleRate);
     const data = buf.getChannelData(0);
-    let seed = 0x6d6f6f6e; // 'moon'
+    let seed = 0x6d6f6f6e; // legacy v2 noise seed (value kept — same noise texture)
     for (let i = 0; i < len; i++) {
       seed = (seed * 1664525 + 1013904223) | 0;
       data[i] = ((seed >>> 9) / 0x3fffff - 1) * 0.8;

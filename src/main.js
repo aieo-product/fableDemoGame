@@ -6,33 +6,42 @@
  * and wires all modules via constructor injection + the event bus.
  * NO GAME LOGIC lives here.
  *
- * ============ v2 (moon update) — BINDING FRAME ORDER ============
- * (docs/DESIGN-V2.md §インターフェース; stub call sites below are marked
- *  "V2-WIRE" for the integrator; stubs no-op so v1 mode keeps running.)
+ * ============ v3 (Hakoniwa Tokyo) — BINDING FRAME ORDER ============
+ * (docs/DESIGN-V3.md §インターフェース; all five v3 streams INTEGRATED.)
  *  1   intent = input.read(); if (finale.inputLocked) zero x/y/boost/dash
- *  2   fixed steps { ballPhys.step(dt, intent, yaw+PI);
+ *  2   fixed steps { ballPhys.step(dt, intent, yaw+PI)
+ *                      // terrain.collide runs INSIDE step, after XZ
+ *                      // integration (injected CityTerrain — Stream B);
  *                    if (!finale.inputLocked) absorb.resolve(...) }
- *  3   if (!finale.inputLocked) spawner.update(...)
+ *  3   if (!finale.inputLocked) { spawner.update(...); curated.update(...) }
+ *                      // curated AFTER spawner, same gate (Stream B)
  *  4   scaleMgr.maybeTierUp(...); if (!finale.inputLocked) scaleMgr.maybeRebase(...)
- *  4.5 finale.update(frameDt, ballPhys.state)   // moon drive, render-frame
- *      contact test, cinematic camera (drives cameraRig.cinematicUpdate)
+ *  4.5 finale.update(frameDt, ballPhys.state)   // approach/contact vs
+ *      SkytreeView (Stream A re-theme; v2 moon machinery until then),
+ *      cinematic camera (drives cameraRig.cinematicUpdate)
  *  5   ball.update(...)
- *  6   if (!finale.cameraOwned) cameraRig.update(...);
+ *  6   if (!finale.cameraOwned) cameraRig.update(...)  // interior01 + boom
+ *      clamp are INTERNAL to cameraRig (injected at construction, Stream A);
  *      env.update(...); backdrop.update(...); effects.update(...)
- *  6.5 runStats.addSimTime(steps * FIXED_DT)    // internally frozen after MOON_CONTACT
+ *  6.5 runStats.addSimTime(steps * FIXED_DT)    // frozen after GOAL_CONTACT
  *  7   updateAndFlushPools(); renderer.render()
  * GameState: TITLE -> PLAYING -> FINALE (finale.inputLocked first true)
  *            -> WIN (main emits GAME_WIN at finale.state === 'done' — main
- *            is the SOLE game:win emitter in v2).
- * BINDING ABSORB subscription order at boot: spawner (bookkeeping only —
- * constructed first; MUST NOT touch instanceSlot/archetype/position fields)
- * -> main attach-handler -> runStats -> sfx/effects/hud.
+ *            is the SOLE game:win emitter).
+ * BINDING ABSORB subscription order at boot (v3, frozen in events.js):
+ *   chunk spawner (bookkeeping only; skips FLAG_CURATED slots)
+ *   -> curated (CuratedSpawner constructs right after Spawner)
+ *   -> main attach-handler (sets store.instanceSlot = -1 on steal —
+ *      load-bearing for curated's deferred cleanup, slot-steal convention)
+ *   -> runStats -> collection (constructs right after RunStats)
+ *   -> sfx/effects/hud.
  * MUTE ownership: main is the single owner — reads LS_MUTE_KEY BEFORE
  * constructing Bgm/Sfx (initialMuted); input.takeMuteToggle() OR
  * EVT.MUTE_REQUEST -> toggle, bgm.setMuted + sfx.setMuted, persist,
  * emit EVT.MUTE_CHANGED.
- * RESET ownership: finale.reset + runStats.reset via resetWorld() below;
- * cameraRig/env/backdrop/ball/hud self-reset via bus (see DESIGN-V2.md).
+ * RESET ownership (v3): finale.reset + runStats.reset + curated.reset +
+ * collection.resetRun via resetWorld() below; cameraRig/env/backdrop/ball/
+ * hud/donack self-reset via bus (see DESIGN-V3.md Phase-0 appendix).
  * ================================================================
  *
  * Integration notes (Phase 2):
@@ -58,14 +67,17 @@ import {
   MAX_FRAME_DT,
   SPEED_K,
   SIM_RADIUS_MIN,
-  MOON_GOAL_RADIUS_M,
+  SIM_RADIUS_MAX,
+  START_RADIUS_M,
+  GOAL_RADIUS_M,
   LS_MUTE_KEY,
+  LS_DONACK_KEY,
 } from './config/tuning.js';
 import { bus, EVT, PAYLOADS } from './core/events.js';
 import { resolveWorldSeed } from './core/rng.js';
 import { TIERS } from './config/tiers.js';
 import { CATALOG } from './config/catalog.js';
-import { ObjectStore } from './world/objects.js';
+import { ObjectStore, EXTRA_CODE_BASE } from './world/objects.js';
 import { SpatialHash } from './world/spatialHash.js';
 import { BallPhysics } from './physics/ballPhysics.js';
 import { Absorb } from './physics/absorb.js';
@@ -88,11 +100,19 @@ import { Hud } from './ui/hud.js';
 import { Screens } from './ui/screens.js';
 
 /* ---- v2 modules (all streams landed) -------------------------------- */
-import { Finale } from './game/finale.js'; // Stream A
-import { MoonView } from './render/moon.js'; // Stream A
+import { Finale } from './game/finale.js'; // Stream A (v3: re-themed in place)
 import { RunStats } from './game/runStats.js'; // Stream D
 import { Bgm } from './audio/bgm.js'; // Stream E
-import { Backdrop } from './render/backdrop.js'; // Stream B
+import { Backdrop } from './render/backdrop.js'; // Stream E (v3 profile pair)
+
+/* ---- v3 modules (integrated) ----------------------------------------- */
+import { CityTerrain } from './world/terrain.js'; // Stream B
+import { CuratedSpawner } from './world/curated.js'; // Stream B
+import { Collection } from './game/collection.js'; // Stream D
+import { Donack } from './ui/donack.js'; // Stream E
+import { SkytreeView } from './render/goalTower.js'; // Stream A (replaces MoonView)
+import { DEV_STARTS } from './config/cityMap.js'; // Stream B
+import { buildExtraPools, extraClassIndexForCode } from './render/extraPools.js'; // integration (4 shared EXTRA pools)
 
 /* ------------------------------------------------------------------ */
 /* Game state machine                                                  */
@@ -155,14 +175,54 @@ const poolList = [];
     poolList.push(pool);
   }
 }
-/** Pool lookup by archetype code (= flat index tier*ARCH_PER_TIER + slotInTier). */
-const POOL_BY_CODE = poolList;
+/** CHUNK pool lookup by archetype code (= flat index tier*ARCH_PER_TIER +
+ *  slotInTier, 0..69). Snapshot BEFORE the EXTRA pools are appended to
+ *  poolList below — EXTRA codes (>= 70) must never resolve here. */
+const POOL_BY_CODE = poolList.slice();
 
 const env = new Environment(renderer.scene, renderer.camera);
-const ballPhys = new BallPhysics(bus); // v2: bus injected for dash/dashReady emits
+
+/* ================================================================== */
+/* v3 world construction (integration order is BINDING — frozen ABSORB */
+/* subscription order: chunk spawner -> curated -> main attach ->       */
+/* runStats -> collection -> sfx/effects/hud).                          */
+/* ================================================================== */
+
 const scaleMgr = new ScaleManager(bus, worldSeed);
-const absorb = new Absorb(bus, scaleMgr, CATALOG);
-const spawner = new Spawner(worldSeed, store, hashes, instances, bus, CATALOG);
+
+/* CityTerrain (Stream B): shop walls/prisms + permanent Skytree base
+ * collider + map-bounds clamp. Injected into BallPhysics (collide after XZ
+ * integration) and CameraRig (clampCameraBoom / interiorAt01). The optional
+ * 3rd arg adds terrain.mesh to the scene (+1 draw, ledgered). */
+const terrain = new CityTerrain(bus, scaleMgr, renderer.scene);
+
+const ballPhys = new BallPhysics(bus, terrain);
+const spawner = new Spawner(worldSeed, store, hashes, instances, bus, CATALOG, scaleMgr);
+
+/* The 4 SHARED EXTRA size-class render pools (flat +4 draws worst case,
+ * ledger 64/72). Registered in the `instances` map under reserved keys so
+ * ScaleManager's eachPool covers their RESCALE/REBASE (Spawner/curated only
+ * ever look pools up by archetype id), and in poolList for update/flush/
+ * reset. BatchedMesh-backed: per-instance geometry by EXTRA code. */
+const extraPools = buildExtraPools(geos, getSharedObjectMaterial());
+for (let i = 0; i < extraPools.length; i++) {
+  if (extraPools[i] === null) continue;
+  renderer.scene.add(extraPools[i].mesh);
+  instances.set(`extra:${i}`, extraPools[i]);
+  poolList.push(extraPools[i]);
+}
+
+/* CuratedSpawner (Stream B) — constructs AFTER the Spawner (its ABSORB
+ * handler must run second) and BEFORE the KNOCK_OFF / ABSORB handlers below. */
+const curated = new CuratedSpawner(store, hashes, instances, extraPools, bus, scaleMgr);
+if (import.meta.env && import.meta.env.DEV) {
+  curated.attachChunkSpawner(spawner); // 300-frame ownership identity assert
+}
+
+/* Absorb (Stream C): stamps AbsorbEvent.archetypeCode/collectibleId (via
+ * curated.collectibleIdFor) BEFORE store.free. Emits only — construction
+ * after curated does not affect the ABSORB dispatch order. */
+const absorb = new Absorb(bus, scaleMgr, CATALOG, curated);
 const ball = new Ball(renderer.scene, geos, bus);
 
 /**
@@ -183,7 +243,13 @@ bus.on(EVT.KNOCK_OFF, (p) => {
 });
 
 const input = new Input(window);
-const cameraRig = new CameraRig(renderer.camera, bus);
+// v3 cameraRig injection {clampBoom, interior01}: interior camera profile +
+// wall boom clamp (CityTerrain). NOTE updateIdle (title orbit) does NOT
+// clamp — revisit here if the title shot ever clips the shop walls.
+const cameraRig = new CameraRig(renderer.camera, bus, {
+  clampBoom: terrain.clampCameraBoom.bind(terrain),
+  interior01: terrain.interiorAt01.bind(terrain),
+});
 
 /* ------------------------------------------------------------------ */
 /* BINDING ABSORB subscription order (v2 contract): spawner ->          */
@@ -208,16 +274,28 @@ const SCRATCH_COLOR = new THREE.Color();
 bus.on(EVT.ABSORB, (p) => {
   const i = p.objIndex;
   const slot = store.instanceSlot[i];
-  const pool = POOL_BY_CODE[store.archetype[i]];
+  const code = store.archetype[i];
   let colorHex = -1;
-  if (pool !== undefined && slot >= 0) {
-    const arr = pool.mesh.instanceColor.array;
-    // instanceColor stores linear-sRGB floats (setColor used Color.setHex).
-    SCRATCH_COLOR.setRGB(arr[slot * 3], arr[slot * 3 + 1], arr[slot * 3 + 2]);
-    colorHex = SCRATCH_COLOR.getHex();
-    pool.free(slot);
+  if (code < EXTRA_CODE_BASE) {
+    const pool = POOL_BY_CODE[code];
+    if (pool !== undefined && slot >= 0) {
+      const arr = pool.mesh.instanceColor.array;
+      // instanceColor stores linear-sRGB floats (setColor used Color.setHex).
+      SCRATCH_COLOR.setRGB(arr[slot * 3], arr[slot * 3 + 1], arr[slot * 3 + 2]);
+      colorHex = SCRATCH_COLOR.getHex();
+      pool.free(slot);
+    }
+  } else {
+    // EXTRA (70..92): the render slot is EXCLUSIVELY curated-owned — freed
+    // by curated's deferred cleanup, never here. Read the tint only.
+    const k = extraClassIndexForCode(code);
+    const pool = k >= 0 ? extraPools[k] : null;
+    if (pool !== null && slot >= 0) colorHex = pool.getColorHex(slot);
   }
   ball.attachStuck(i, store, ballPhys.state, colorHex);
+  // v3 slot-steal convention (load-bearing): mark the world instance stolen.
+  // Runs AFTER curated's ABSORB handler in the frozen subscription order.
+  store.instanceSlot[i] = -1;
 });
 
 /* v2 mute ownership: read the persisted flag BEFORE constructing audio so
@@ -229,19 +307,65 @@ try {
   /* private mode / blocked storage — default unmuted */
 }
 
-const runStats = new RunStats(bus, scaleMgr, worldSeed);
+/* RunStats (Stream D) constructs BEFORE Collection (frozen ABSORB order:
+ * ... -> runStats -> collection -> sfx/effects/hud); the collection ref for
+ * GoalEvent.collectFound is injected right after via setCollection. */
+const runStats = new RunStats(bus, scaleMgr, worldSeed, null);
+const collection = new Collection(bus);
+runStats.setCollection(collection);
 const effects = new Effects(renderer.scene, bus);
 const sfx = new Sfx(bus, initialMuted);
 const bgm = new Bgm(bus, initialMuted);
-const hud = new Hud(bus);
-const screens = new Screens(bus, worldSeed);
+const hud = new Hud(bus, collection); // collection = collect-popup thumbnails
+const screens = new Screens(bus, worldSeed, collection); // result grid + X text
 
-/* v2 finale chain + backdrop (Streams A/B/C wiring). */
-const moonView = new MoonView(renderer.scene, worldSeed);
-const finale = new Finale(bus, scaleMgr, moonView, env, cameraRig, ball, renderer.camera);
+/* v3 finale chain: SkytreeView (Stream A, replaces v2 MoonView) + backdrop. */
+const skytree = new SkytreeView(renderer.scene, scaleMgr);
+const finale = new Finale(bus, scaleMgr, skytree, env, cameraRig, ball, renderer.camera);
 finale.setEffects(effects);
 effects.setRareProvider(spawner.forEachAliveRare.bind(spawner));
+effects.setCollectibleProvider(curated.forEachAliveCollectible.bind(curated));
 const backdrop = new Backdrop(renderer.scene, worldSeed);
+
+/* ---- v3 real->sim origin bridge (Donack map-edge hint) --------------- */
+/* Accumulates the floating-origin shift exactly like curated/spawner so
+ * REAL meters = (sim + origin) * worldScale. Zero per-frame allocation:
+ * the provider returns a reused scratch object. */
+let simOriginX = 0;
+let simOriginZ = 0;
+bus.on(EVT.RESCALE, (p) => {
+  simOriginX *= p.S;
+  simOriginZ *= p.S;
+});
+bus.on(EVT.REBASE, (p) => {
+  simOriginX += p.sx;
+  simOriginZ += p.sz;
+});
+const BALL_REAL_SCRATCH = { x: 0, z: 0 };
+/** @returns {{x: number, z: number}} Ball position in REAL meters (reused). */
+function getBallPosReal() {
+  const ws = scaleMgr.worldScale;
+  BALL_REAL_SCRATCH.x = (ballPhys.state.pos.x + simOriginX) * ws;
+  BALL_REAL_SCRATCH.z = (ballPhys.state.pos.z + simOriginZ) * ws;
+  return BALL_REAL_SCRATCH;
+}
+
+/* Donack (Stream E): persisted OFF flag read BEFORE construction (like
+ * LS_MUTE_KEY); screens is the single WRITER of LS_DONACK_KEY (toggle). */
+let initialDonackOff = false;
+try {
+  initialDonackOff = localStorage.getItem(LS_DONACK_KEY) === '1';
+} catch (_) {
+  /* private mode / blocked storage — default ON */
+}
+const donack = new Donack(bus, initialDonackOff, getBallPosReal);
+screens.setDonack(donack); // #donack-toggle -> donack.setOff(b)
+
+/* Boot thumbnail pre-render during the title screen (12 collectible
+ * archetypes -> 96px data-URL canvases on the main renderer, disposed
+ * after; pre-approved lazy-at-first-COLLECT lever if title-tap-to-play
+ * exceeds budget on low-end Android). */
+collection.prerenderThumbnails(renderer, geos);
 
 renderer.setAliveProvider(() => store.aliveCount);
 renderer.onForceRescale = () => scaleMgr.forceRescale();
@@ -325,10 +449,16 @@ function resetWorld() {
   }
   ball.reset();
   ballPhys.reset(startRadiusSim());
-  // v2 (RESET OWNERSHIP, frozen): finale + runStats reset here; cameraRig /
-  // env / backdrop / hud self-reset via the GAME_RESET / GAME_START events.
+  // v3 (RESET OWNERSHIP, frozen): finale + runStats + curated + collection
+  // (+ terrain) reset here; cameraRig / env / backdrop / hud / donack
+  // self-reset via the GAME_RESET / GAME_START events.
   finale.reset();
   runStats.reset();
+  terrain.reset(); // re-arms the shop terrain release latch (after scaleMgr.reset)
+  curated.reset(); // frees curated slots + consumed bitmask
+  collection.resetRun(); // clears foundThisRun; the album mask persists
+  simOriginX = 0; // real->sim bridge follows the fresh origin/scale
+  simOriginZ = 0;
   spawner.preloadStartArea(ballPhys.state.pos, scaleMgr.tierIndex, ballPhys.state.radiusSim);
 }
 
@@ -374,21 +504,83 @@ function onGameWin() {
   sfx.setRollIntensity(0);
 }
 
+/* ------------------------------------------------------------------ */
+/* v3 dev teleport (?at=name[&r=meters] / window.devTeleport in dev)    */
+/* ------------------------------------------------------------------ */
+
+/* DEV_STARTS imported from config/cityMap.js (frozen spec numbers). */
+
+/**
+ * Dev teleport (docs/DESIGN-V3.md §インターフェース, integrator-owned):
+ * snaps worldScale to (START_RADIUS_M/SIM_RADIUS_MIN) * 5^k with the minimal
+ * k that lands r/ws inside the sim band [0.5, 2.5), poses the ball from
+ * DEV_STARTS (positions are REAL METERS — origin = ball start), then resyncs
+ * the streaming machinery: spawner.onTeleport() (Stream B), curated
+ * forceScan, tier/hash resync, one forced maybeRebase pass, palette snap and
+ * a start-area preload. Terrain release re-evaluates itself on the next
+ * fixed step (CityTerrain owns the SHOP_TERRAIN_RELEASE_M latch).
+ * @param {string} name DEV_STARTS key (?at=).
+ * @param {number} [rOverrideM] Optional true-radius override (?r=).
+ * @returns {boolean} True if the teleport ran.
+ */
+function devTeleport(name, rOverrideM = 0) {
+  const d = DEV_STARTS[name];
+  if (d === undefined) return false;
+  const rM = rOverrideM > 0 ? rOverrideM : d.r;
+  let ws = START_RADIUS_M / SIM_RADIUS_MIN; // boot worldScale (0.04)
+  while (rM / ws >= SIM_RADIUS_MAX) ws *= 5; // minimal k: r/ws in [0.5, 2.5)
+  scaleMgr.worldScale = ws;
+  scaleMgr.rescaleCount = Math.round(Math.log(ws / (START_RADIUS_M / SIM_RADIUS_MIN)) / Math.log(5));
+  scaleMgr.tierIndex = 0; // re-derived (and hashes rebuilt) by maybeTierUp below
+  ballPhys.reset(rM / ws);
+  ballPhys.state.pos.set(d.x / ws, rM / ws, d.z / ws);
+  simOriginX = 0; // bridge re-anchors with the pos = real/ws mapping above
+  simOriginZ = 0;
+  // Terrain release re-eval (spec): reset re-anchors origin + mesh scale to
+  // the snapped worldScale and re-arms the release latch — collide() then
+  // re-evaluates SHOP_TERRAIN_RELEASE_M on the next fixed step.
+  terrain.reset();
+  spawner.onTeleport(); // resyncs the chunk scale exponent (scaleMgr injected)
+  curated.forceScan(); // deactivate stale actives + full pass on next update()
+  scaleMgr.maybeTierUp(ballPhys.state, store, hashes, instances, cameraRig, env);
+  scaleMgr.maybeRebase(ballPhys.state, store, hashes, instances, cameraRig, env, spawner); // one forced pass
+  env.setTierPaletteImmediate(scaleMgr.tierIndex);
+  backdrop.setProfileImmediate(scaleMgr.tierIndex);
+  spawner.preloadStartArea(ballPhys.state.pos, scaleMgr.tierIndex, ballPhys.state.radiusSim);
+  return true;
+}
+if (import.meta.env && import.meta.env.DEV) {
+  /** @type {any} */ (window).devTeleport = devTeleport; // console access
+  // DEV-only integration probe (e2e harness reads sim state; never in prod).
+  /** @type {any} */ (window).__v3dbg = {
+    ballPhys, scaleMgr, curated, terrain, spawner, store, finale, collection,
+    getBallPosReal,
+  };
+}
+
 /* Populate the start area while the title screen is up (a few ms, once).
-   Mirrors resetWorld(): the ?r= dev radius is applied BEFORE the preload so
-   the preloaded world matches the actual start state, and the environment
+   Mirrors resetWorld(): the dev ?at=/?r= keys are applied BEFORE the preload
+   so the preloaded world matches the actual start state, and the environment
    palette lands directly on the requested tier (per Environment's contract)
    instead of crossfading through every TIER_UP on the first playing frame. */
-if (startRadiusM !== null) {
-  ballPhys.reset(startRadiusSim());
-  let devTier = 0;
-  while (devTier < TIERS.length - 1 && startRadiusM >= TIERS[devTier + 1].enterTrueRadius) {
-    devTier++;
-  }
-  env.setTierPaletteImmediate(devTier);
-  backdrop.setProfileImmediate(devTier); // skip the hills->skyline crossfade too
+let devAtName = null;
+try {
+  devAtName = new URLSearchParams(window.location.search).get('at');
+} catch (_) {
+  /* exotic environments without URLSearchParams — dev key only */
 }
-spawner.preloadStartArea(ballPhys.state.pos, scaleMgr.tierIndex, ballPhys.state.radiusSim);
+if (devAtName === null || !devTeleport(devAtName, startRadiusM !== null ? startRadiusM : 0)) {
+  if (startRadiusM !== null) {
+    ballPhys.reset(startRadiusSim());
+    let devTier = 0;
+    while (devTier < TIERS.length - 1 && startRadiusM >= TIERS[devTier + 1].enterTrueRadius) {
+      devTier++;
+    }
+    env.setTierPaletteImmediate(devTier);
+    backdrop.setProfileImmediate(devTier); // skip the profile crossfade too
+  }
+  spawner.preloadStartArea(ballPhys.state.pos, scaleMgr.tierIndex, ballPhys.state.radiusSim);
+}
 
 /* ------------------------------------------------------------------ */
 /* Fixed-timestep 60Hz accumulator loop                                */
@@ -454,10 +646,13 @@ function frame(now) {
   }
 
   /* 3) Amortized world streaming: chunk diff + spawn/despawn queues        */
-  /*    (<=64 each) + sub-pixel sweep + knock-off flights. v2: frozen       */
-  /*    post-contact.                                                       */
+  /*    (<=64 each) + sub-pixel sweep + knock-off flights, then the curated  */
+  /*    round-robin (<=64 placements: activation vs the floored load radius, */
+  /*    dynamic re-banding, deferred ABSORB bookkeeping). Curated AFTER      */
+  /*    spawner, same gate — BINDING v3 order. Frozen post-contact.          */
   if (!finale.inputLocked) {
     spawner.update(ballPhys.state.pos, scaleMgr.tierIndex, ballPhys.state.radiusSim, frameDt);
+    curated.update(ballPhys.state.pos, scaleMgr.tierIndex, ballPhys.state.radiusSim, frameDt);
   }
 
   /* 4) BETWEEN update and render — pixel-identity transforms:              */
@@ -470,9 +665,10 @@ function frame(now) {
     scaleMgr.maybeRebase(ballPhys.state, store, hashes, instances, cameraRig, env, spawner);
   }
 
-  /* 4.5) v2 FINALE (game/finale.js): moon descent/landing drive, render-   */
-  /*      frame contact test, MERGE ball.pos writes, cinematic camera via   */
-  /*      cameraRig.cinematicUpdate. Stub no-ops until Stream A lands.      */
+  /* 4.5) FINALE (game/finale.js): v3 = approach/contact vs SkytreeView     */
+  /*      (Stream A re-theme; the v2 moon machinery runs until it lands),   */
+  /*      render-frame contact test, MERGE ball.pos writes, cinematic       */
+  /*      camera via cameraRig.cinematicUpdate.                             */
   finale.update(frameDt, ballPhys.state);
   if (state === GameState.PLAYING && finale.inputLocked) {
     state = GameState.FINALE; // PLAYING -> FINALE on first contact frame
@@ -503,12 +699,12 @@ function frame(now) {
   sfx.setRollIntensity(speed / (SPEED_K * ballPhys.state.radiusSim));
 
   /* 6.5) v2 sim clock (game/runStats.js): deterministic SIM time — the     */
-  /*      official rank clock. Internally frozen after MOON_CONTACT.        */
+  /*      official rank clock. Internally frozen after GOAL_CONTACT.        */
   runStats.addSimTime(steps * FIXED_DT);
 
   /* 7) Flush instance buffers (one needsUpdate per mesh, updateRanges)     */
-  /*    then render. HUD is event-driven, not called here. v2: the goal     */
-  /*    lives in finale.js (DESCENT trigger at MOON_GOAL_RADIUS_M).         */
+  /*    then render. HUD is event-driven, not called here. v3: the goal     */
+  /*    lives in finale.js (contact arms at GOAL_RADIUS_M; Skytree finale).  */
   updateAndFlushPools(poolList, frameDt);
   renderer.render();
 }
@@ -517,7 +713,7 @@ requestAnimationFrame(frame);
 
 if (import.meta.env && import.meta.env.DEV) {
   console.log(
-    `[fable-katamari] booted — seed=${worldSeed} goal@${MOON_GOAL_RADIUS_M}m ` +
+    `[fable-katamari] booted — seed=${worldSeed} goal@${GOAL_RADIUS_M}m ` +
       `alive=${store.aliveCount} pools=${poolList.length} hud=${hud !== null} screens=${screens !== null}`
   );
 }

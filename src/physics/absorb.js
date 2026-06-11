@@ -28,6 +28,13 @@
  * (store.flags[i] & FLAG_RARE) BEFORE store.free, and (b) adds
  * DASH_ABSORB_GAIN to ball.dashGauge01 (clamped to 1 — the 'dashReady' edge
  * is emitted by ballPhysics on its next step; single-emitter rule).
+ *
+ * v3 (docs/DESIGN-V3.md フィードバック): each absorb additionally stamps,
+ * BEFORE store.free and next to the rare stamp:
+ *   AbsorbEvent.archetypeCode = store.archetype[i]   (0..93; 70..93 = EXTRA)
+ *   AbsorbEvent.collectibleId = curated.collectibleIdFor(i)  (frozen id 0..11
+ *     or -1; the injected CuratedSpawner keeps the mapping valid THROUGH the
+ *     ABSORB dispatch — frozen subscription-order contract in events.js).
  */
 
 import {
@@ -75,7 +82,7 @@ const KNOCKOFF_RNG_SEED = 0xb04b5eed;
 
 /**
  * Narrowphase resolver. Construct once at boot:
- *   const absorb = new Absorb(bus, scaleMgr, CATALOG);
+ *   const absorb = new Absorb(bus, scaleMgr, CATALOG, curated);
  *
  * @example
  * // per fixed substep (main.js):
@@ -86,16 +93,23 @@ export class Absorb {
    * @param {import('../core/events.js').EventBus} bus The shared event bus.
    * @param {{ worldScale: number }} [scaleProvider] ScaleManager (read for
    *   trueRadius/sizeReal in event payloads). Falls back to the tier-0
-   *   starting worldScale (0.1) when absent — headless tests.
+   *   starting worldScale (0.04) when absent — headless tests.
    * @param {Record<string, Archetype>} [catalog] CATALOG from config/catalog.js
-   *   — only collisionScale is read, at construction. Defaults to 1 for all
-   *   archetypes when absent.
+   *   — only collisionScale is read, at construction (covers all 94 codes:
+   *   chunk + EXTRA curated entries share the CATALOG). Defaults to 1 for
+   *   all archetypes when absent.
+   * @param {{ collectibleIdFor: (storeIdx: number) => number }} [curated]
+   *   v3: the CuratedSpawner (or the Phase-0 stub) — collectibleIdFor(i) is
+   *   queried per absorb to stamp AbsorbEvent.collectibleId BEFORE store.free.
+   *   Defaults to -1 stamping when absent (headless tests).
    */
-  constructor(bus, scaleProvider, catalog) {
+  constructor(bus, scaleProvider, catalog, curated) {
     /** @type {import('../core/events.js').EventBus} */
     this._bus = bus;
     /** @type {{ worldScale: number } | null} */
     this._scale = scaleProvider || null;
+    /** @type {{ collectibleIdFor: (storeIdx: number) => number } | null} */
+    this._curated = curated || null;
 
     /** @type {Float32Array} collisionScale per archetype code (sized from ARCHETYPE_ID_BY_CODE). */
     this._collisionScale = new Float32Array(ARCHETYPE_ID_BY_CODE.length).fill(1);
@@ -238,6 +252,11 @@ export class Absorb {
     p.count = this._count;
     // v2: rare stamped from the flags byte BEFORE store.free clears it.
     p.rare = (store.flags[i] & FLAG_RARE) !== 0;
+    // v3: archetype code + frozen collectible id stamped BEFORE store.free
+    // (collection.js matches on collectibleId >= 0; hud renders
+    // DISPLAY_NAME_BY_CODE[archetypeCode] floats).
+    p.archetypeCode = store.archetype[i];
+    p.collectibleId = this._curated !== null ? this._curated.collectibleIdFor(i) : -1;
     // Emit BEFORE freeing: render/ball reads px/py/pz/radius/instanceSlot
     // synchronously to start the attach animation. Handlers must not retain.
     this._bus.emit(EVT.ABSORB, p);

@@ -1,6 +1,7 @@
 /**
- * @file screens.js — Title / win / restart overlays, v2 staged result reveal,
- * X share intent, moon-contact flash, title 自己ベスト line.
+ * @file screens.js — Title / win / restart overlays, staged result reveal,
+ * X share intent, goal-contact flash, title 自己ベスト line, v3 result
+ * collection grid + #donack-toggle (docs/DESIGN-V3.md §フィードバック).
  *
  * Owns the #title-overlay and #win-overlay DOM (frozen in index.html) and is
  * the ONLY emitter of 'game:start' and 'game:reset'. Overlay visibility is
@@ -9,23 +10,32 @@
  *
  *   #start-button click   -> emit game:start
  *   #restart-button click -> emit game:reset (then game:start)
+ *   #donack-toggle click  -> flip + persist LS_DONACK_KEY, donack.setOff(b)
  *   on game:start -> hide title + win, clear staged result state
  *   on game:reset -> hide win, show title (refresh 自己ベスト line)
  *   on goal       -> cache a field-by-field COPY of the payload (payloads are
  *                    reused!) + prebuild the X intent URL immediately
- *   on moonContact-> #flash-overlay white pop (.flash class)
- *   on game:win   -> v2 staged reveal from the CACHED goal (0.0s time / 0.4s
+ *   on goalContact-> #flash-overlay white pop (.flash class)
+ *   on game:win   -> staged reveal from the CACHED goal (0.0s time / 0.4s
  *                    score count-up / 0.9s size+counts / 1.6s rank stamp /
- *                    2.2s record badge + best + seed + buttons). If no goal
- *                    was cached (legacy v1 win path), everything shows
- *                    immediately without .staged.
+ *                    1.9s collection grid / 2.2s record badge + best + seed +
+ *                    buttons). If no goal was cached (legacy v1 win path),
+ *                    everything shows immediately without .staged.
  *
- * X POST: the intent URL is built ONCE when EVT.GOAL is cached (values from
- * the payload, never the animating DOM). The click handler runs synchronously
- * in the gesture: const w = window.open(url, '_blank'); if (w === null)
- * location.href = url; — no 'noopener' in features (kills the null-ambiguity
- * and gives in-app webviews a same-tab fallback; abandoning the result screen
- * there is accepted — state is already persisted).
+ * v3 COLLECTION GRID (#collection-grid-wrap, frozen ids/classes): 12
+ * .collect-cell cells in frozen-id order — found = thumbnail + name, unfound
+ * = dark .unfound 「？」 cell, .cell-new badge on first-ever finds of this
+ * run; header n = GoalEvent.collectFound. Built once per win (one-shot
+ * allocation path). Reveal rides the 1.9s cue (index.html pre-wires
+ * #win-overlay.staged #collection-grid-wrap{opacity:0}).
+ *
+ * X POST (v3 text, SAME battle-tested mechanism — text/url/hashtags params
+ * untouched): the intent URL is built ONCE when EVT.GOAL is cached (values
+ * from the payload, never the animating DOM). The click handler runs
+ * synchronously in the gesture: const w = window.open(url, '_blank'); if
+ * (w === null) location.href = url; — no 'noopener' in features (kills the
+ * null-ambiguity and gives in-app webviews a same-tab fallback; abandoning
+ * the result screen there is accepted — state is already persisted).
  *
  * NOTE for the integrator: main.js contains a TEMPORARY #start-button click
  * block ("TEMPORARY title wiring — REMOVE") — it must be deleted when this
@@ -33,12 +43,24 @@
  */
 
 import { EVT, PAYLOADS } from '../core/events.js';
+import { COLLECT_TOTAL, LS_DONACK_KEY } from '../config/tuning.js';
 import { formatLength } from '../core/mathUtils.js';
 import { RunStats } from '../game/runStats.js';
+// Namespace import: DISPLAY_NAME_BY_CODE (string[94], frozen) lands with
+// Stream C's catalog.js — namespace access keeps this module loadable either
+// way (missing export -> empty table -> cells render without names).
+import * as catalogModule from '../config/catalog.js';
 
 /** @typedef {import('../core/events.js').EventBus} EventBus */
 /** @typedef {import('../types.js').GameWinEvent} GameWinEvent */
 /** @typedef {import('../types.js').GoalEvent} GoalEvent */
+
+/** Frozen display-name table (catalog.js, Stream C; boot-asserted length 94). */
+const DISPLAY_NAME_BY_CODE = /** @type {string[]} */ (
+  catalogModule.DISPLAY_NAME_BY_CODE !== undefined ? catalogModule.DISPLAY_NAME_BY_CODE : []
+);
+/** FROZEN mapping (DESIGN-V3.md Phase-0 appendix): collectible code = 70 + id. */
+const EXTRA_CODE_BASE = 70;
 
 /** Share target shown in the post + the intent text (live deployment). */
 const SHARE_URL = 'https://fable-katamari.pages.dev';
@@ -54,6 +76,8 @@ const CUE_TIME_MS = 0;
 const CUE_SCORE_MS = 400;
 const CUE_SIZE_MS = 900;
 const CUE_RANK_MS = 1600;
+/** v3: collection grid reveal cue (between rank stamp and record badge). */
+const CUE_COLLECT_MS = 1900;
 const CUE_RECORD_MS = 2200;
 /** Score count-up duration (ms, rAF-driven). */
 const COUNTUP_MS = 800;
@@ -83,10 +107,19 @@ export class Screens {
    * @param {number} worldSeed uint32 world seed (from resolveWorldSeed()) —
    *   shown on the win screen for shareable ?seed= runs; used as a fallback
    *   when the game:win payload carries no seed.
+   * @param {{ foundCount: number, isFound: (id: number) => boolean,
+   *   isNewThisRun: (id: number) => boolean,
+   *   thumbnailUrl: (id: number) => string }} [collection] v3 album — result
+   *   grid source. Optional (grid renders all-unfound without it).
    */
-  constructor(bus, worldSeed) {
+  constructor(bus, worldSeed, collection = null) {
     this._bus = bus;
     this._seed = worldSeed >>> 0;
+    /** @type {object|null} v3 album (result collection grid). */
+    this._collection = collection || null;
+    /** @type {{ setOff: (b: boolean) => void }|null} Donack (constructed
+     *  later — integrator wires via setDonack()). */
+    this._donack = null;
 
     /* --- DOM refs (frozen ids in index.html) --- */
     this._titleEl = /** @type {HTMLElement} */ (document.getElementById('title-overlay'));
@@ -117,6 +150,16 @@ export class Screens {
     this._titleBestValueEl = /** @type {HTMLElement} */ (
       document.getElementById('title-best-value')
     );
+    // ---- v3 collection grid (frozen ids/classes) ----
+    this._collectWrapEl = /** @type {HTMLElement} */ (
+      document.getElementById('collection-grid-wrap')
+    );
+    this._collectNEl = /** @type {HTMLElement} */ (document.getElementById('result-collect-n'));
+    this._collectGridEl = /** @type {HTMLElement} */ (document.getElementById('collection-grid'));
+    // ---- v3 Donack toggle (title screen) ----
+    this._donackToggleBtn = /** @type {HTMLButtonElement} */ (
+      document.getElementById('donack-toggle')
+    );
 
     /**
      * Field-by-field COPY of the last EVT.GOAL payload (payloads are reused —
@@ -133,20 +176,35 @@ export class Screens {
     /** @type {number} */
     this._countupRaf = 0;
 
+    /* --- v3 Donack-commentary OFF flag (persisted; donack.js reads the same
+       key at construction — this button is the single WRITE owner) --- */
+    /** @type {boolean} */
+    this._donackOff = false;
+    try {
+      this._donackOff = localStorage.getItem(LS_DONACK_KEY) === '1';
+    } catch (_) {
+      /* private mode — default ON */
+    }
+
     /* --- prebound listeners --- */
     this._onStartClick = this._onStartClick.bind(this);
     this._onRestartClick = this._onRestartClick.bind(this);
     this._onPostXClick = this._onPostXClick.bind(this);
+    this._onDonackToggleClick = this._onDonackToggleClick.bind(this);
     this._onGameStart = this._onGameStart.bind(this);
     this._onGameReset = this._onGameReset.bind(this);
     this._onGameWin = this._onGameWin.bind(this);
     this._onGoal = this._onGoal.bind(this);
-    this._onMoonContact = this._onMoonContact.bind(this);
+    this._onGoalContact = this._onGoalContact.bind(this);
     this._onWinPointerDown = this._onWinPointerDown.bind(this);
 
     this._startBtn.addEventListener('click', this._onStartClick);
     this._restartBtn.addEventListener('click', this._onRestartClick);
     this._postXBtn.addEventListener('click', this._onPostXClick);
+    if (this._donackToggleBtn !== null) {
+      this._donackToggleBtn.addEventListener('click', this._onDonackToggleClick);
+      this._renderDonackToggle();
+    }
     // Replay-friction fix: a tap anywhere on the result overlay flushes the
     // 2.2s staged reveal (no-op once all cues have fired).
     this._winEl.addEventListener('pointerdown', this._onWinPointerDown);
@@ -165,9 +223,20 @@ export class Screens {
     bus.on(EVT.GAME_RESET, this._onGameReset);
     bus.on(EVT.GAME_WIN, this._onGameWin);
     bus.on(EVT.GOAL, this._onGoal);
-    bus.on(EVT.MOON_CONTACT, this._onMoonContact);
+    bus.on(EVT.GOAL_CONTACT, this._onGoalContact);
 
     this._refreshTitleBest();
+  }
+
+  /**
+   * Wire the Donack controller (constructed AFTER screens in main.js boot
+   * order — integrator calls this once). Pushes the persisted OFF state so
+   * button and controller agree from frame one.
+   * @param {{ setOff: (b: boolean) => void }} donack
+   */
+  setDonack(donack) {
+    this._donack = donack || null;
+    if (this._donack !== null) this._donack.setOff(this._donackOff);
   }
 
   /* ---------------------------------------------------------------- */
@@ -198,6 +267,29 @@ export class Screens {
     if (this._xUrl === '') return;
     const w = window.open(this._xUrl, '_blank');
     if (w === null) location.href = this._xUrl;
+  }
+
+  /**
+   * 🦆 ドナック実況 ON/OFF — flip, persist LS_DONACK_KEY ('1' = off), update
+   * the pill label and tell the controller (drops everything while off).
+   */
+  _onDonackToggleClick() {
+    this._donackOff = !this._donackOff;
+    try {
+      localStorage.setItem(LS_DONACK_KEY, this._donackOff ? '1' : '0');
+    } catch (_) {
+      /* private mode — the toggle still works for this session */
+    }
+    this._renderDonackToggle();
+    if (this._donack !== null) this._donack.setOff(this._donackOff);
+  }
+
+  /** Sync the #donack-toggle label/aria with the persisted state. */
+  _renderDonackToggle() {
+    this._donackToggleBtn.textContent = this._donackOff
+      ? '🦆 ドナック実況 OFF'
+      : '🦆 ドナック実況 ON';
+    this._donackToggleBtn.setAttribute('aria-pressed', this._donackOff ? 'false' : 'true');
   }
 
   /* ---------------------------------------------------------------- */
@@ -237,6 +329,7 @@ export class Screens {
       seed: p.seed >>> 0,
       newRecordTime: p.newRecordTime === true,
       newRecordScore: p.newRecordScore === true,
+      collectFound: typeof p.collectFound === 'number' ? p.collectFound : 0,
     };
     this._xUrl = this._buildXUrl(this._goal);
   }
@@ -265,6 +358,7 @@ export class Screens {
     this._rowSizeEl.classList.add('result-reveal');
     this._rowDetailEl.classList.add('result-reveal');
     this._rankEl.classList.add('stamp');
+    this._collectWrapEl.classList.add('result-reveal');
     if (g.newRecordTime || g.newRecordScore) this._badgeEl.classList.remove('hidden');
     this._bestEl.classList.add('result-reveal');
     this._seedLineEl.classList.add('result-reveal');
@@ -273,8 +367,8 @@ export class Screens {
     });
   }
 
-  /** 'moonContact' — white flash pop (0.12 s in / FLASH_S out via CSS). */
-  _onMoonContact() {
+  /** 'goalContact' — white flash pop (0.12 s in / FLASH_S out via CSS). */
+  _onGoalContact() {
     this._flashEl.classList.remove('flash');
     void this._flashEl.offsetWidth; // reflow — restartable animation
     this._flashEl.classList.add('flash');
@@ -294,6 +388,11 @@ export class Screens {
       const seed = p !== undefined && p.seed ? p.seed >>> 0 : this._seed;
       this._winSizeEl.textContent = formatLength(p !== undefined ? p.trueRadius : 0);
       this._winSeedEl.textContent = String(seed);
+      this._buildCollectionGrid(
+        this._collection !== null && typeof this._collection.foundCount === 'number'
+          ? this._collection.foundCount
+          : 0
+      );
       this._winEl.classList.remove('hidden');
       return;
     }
@@ -307,6 +406,7 @@ export class Screens {
     this._rankEl.textContent = g.rank;
     this._winSeedEl.textContent = String(g.seed);
     this._bestEl.textContent = this._buildBestLine();
+    this._buildCollectionGrid(g.collectFound);
 
     /* ---- staged reveal ---- */
     this._winEl.classList.add('staged');
@@ -325,6 +425,9 @@ export class Screens {
     this._schedule(CUE_RANK_MS, () => {
       this._rankEl.classList.add('stamp'); // sfx thud lands here (+1.6s ctx)
     });
+    this._schedule(CUE_COLLECT_MS, () => {
+      this._collectWrapEl.classList.add('result-reveal'); // v3 album cue
+    });
     this._schedule(CUE_RECORD_MS, () => {
       if (g.newRecordTime || g.newRecordScore) {
         this._badgeEl.classList.remove('hidden');
@@ -333,6 +436,46 @@ export class Screens {
       this._seedLineEl.classList.add('result-reveal');
       this._buttonsEl.classList.add('result-reveal');
     });
+  }
+
+  /**
+   * Build the 12-cell collection grid (one-shot per win — allocation OK).
+   * Cells in frozen-id order: found = thumbnail + name, unfound = .unfound
+   * 「？」, .cell-new badge on first-ever finds of this run.
+   * @param {number} foundCount Header n (GoalEvent.collectFound).
+   */
+  _buildCollectionGrid(foundCount) {
+    this._collectNEl.textContent = String(foundCount);
+    const grid = this._collectGridEl;
+    grid.textContent = ''; // drop last run's cells
+    const c = this._collection;
+    const hasAlbum = c !== null && typeof c.isFound === 'function';
+    for (let id = 0; id < COLLECT_TOTAL; id++) {
+      const cell = document.createElement('div');
+      cell.className = 'collect-cell';
+      if (hasAlbum && c.isFound(id)) {
+        const url = typeof c.thumbnailUrl === 'function' ? c.thumbnailUrl(id) : '';
+        if (typeof url === 'string' && url !== '') {
+          const img = document.createElement('img');
+          img.src = url;
+          img.alt = '';
+          cell.appendChild(img);
+        }
+        const name = document.createElement('span');
+        const nameJa = DISPLAY_NAME_BY_CODE[EXTRA_CODE_BASE + id];
+        name.textContent = typeof nameJa === 'string' ? nameJa : '';
+        cell.appendChild(name);
+        if (typeof c.isNewThisRun === 'function' && c.isNewThisRun(id)) {
+          const badge = document.createElement('span');
+          badge.className = 'cell-new';
+          badge.textContent = 'NEW';
+          cell.appendChild(badge);
+        }
+      } else {
+        cell.classList.add('unfound');
+      }
+      grid.appendChild(cell);
+    }
   }
 
   /* ---------------------------------------------------------------- */
@@ -362,6 +505,7 @@ export class Screens {
     this._rowScoreEl.classList.remove('result-reveal');
     this._rowSizeEl.classList.remove('result-reveal');
     this._rowDetailEl.classList.remove('result-reveal');
+    this._collectWrapEl.classList.remove('result-reveal');
     this._bestEl.classList.remove('result-reveal');
     this._seedLineEl.classList.remove('result-reveal');
     this._buttonsEl.classList.remove('result-reveal');
@@ -441,20 +585,23 @@ export class Screens {
   }
 
   /**
-   * Build the X web-intent URL from a goal COPY (frozen text template,
-   * DESIGN-V2.md §Xポスト — ~170/280 weighted chars).
+   * Build the X web-intent URL from a goal COPY (v3 text template,
+   * DESIGN-V3.md §フィードバック — ~150/280 weighted chars; the #FableKatamari
+   * tag rides the existing `hashtags=` param, NOT the text, so it is never
+   * doubled).
    * @param {GoalEvent} g
    * @returns {string}
    */
   _buildXUrl(g) {
-    // Keep it minimal & robust: rank / score / rare count in `text`,
-    // hashtag via `hashtags=`, link via `url=` (separate params avoid
-    // encoding pitfalls and let X count the URL at its fixed weight).
+    // SAME battle-tested mechanism as v2: time/rank/score/collection in
+    // `text`, hashtag via `hashtags=`, link via `url=` (separate params
+    // avoid encoding pitfalls and let X count the URL at its fixed weight).
     const text =
-      'FABLE KATAMARI RANK ' + g.rank + '！' +
-      'スコア ' + g.score.toLocaleString('ja-JP') +
-      '・レア' + g.raresFound + 'コ ' +
-      '⏱' + formatTime(g.timeS);
+      '🗼FABLE KATAMARI 東京を転がした！\n' +
+      '⏱' + formatTime(g.timeS) +
+      '／RANK ' + g.rank +
+      '／⭐' + g.score.toLocaleString('ja-JP') + '\n' +
+      '🏯レア' + g.collectFound + '/' + COLLECT_TOTAL + 'コレクション';
     return X_INTENT +
       '?text=' + encodeURIComponent(text) +
       '&url=' + encodeURIComponent(SHARE_URL) +

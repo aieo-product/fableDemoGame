@@ -17,48 +17,110 @@
 export const SIM_RADIUS_MIN = 0.5;
 /** Upper edge — reaching it triggers the one-frame similarity rescale (S = RESCALE_S). */
 export const SIM_RADIUS_MAX = 2.5;
-/** Starting ball radius in real meters (5 cm — Desk tier). */
-export const START_RADIUS_M = 0.05;
-/* v2: WIN_RADIUS_M deleted — replaced by MOON_GOAL_RADIUS_M (finale owns the goal). */
+/** Starting ball radius in real meters (v3: 2 cm — アキバパーツ館 parts-bin tier). */
+export const START_RADIUS_M = 0.02;
+/* v2: WIN_RADIUS_M deleted — replaced by the goal radius (finale owns the goal).
+ * v3: GOAL_RADIUS_M arms the Skytree finale contact. */
 /** Tier-index hysteresis (+-10% of enterTrueRadius) — guards float edge cases. */
 export const TIER_HYSTERESIS = 0.10;
 /** Floating-origin rebase when |ball.pos| exceeds this many sim units (integer-snapped shift). */
 export const REBASE_DISTANCE_SIM = 1500;
 
 /* ================================================================== */
-/* v2 Moon goal / finale (game/finale.js, render/moon.js)              */
+/* v3 Goal — 東京スカイツリー finale (game/finale.js, render/goalTower.js) */
 /* ================================================================== */
 
-/** Finale CALLED state: emit 'moonCall' (toast + sky-moon pulse) at this true radius (m). */
-export const MOON_CALL_RADIUS_M = 420;
-/** Goal: finale DESCENT triggers at this true radius (m). Replaces WIN_RADIUS_M. */
-export const MOON_GOAL_RADIUS_M = 500;
-/** Real-moon radius = MOON_RADIUS_K * ball.radiusSim, FROZEN at descent start. */
-export const MOON_RADIUS_K = 2.6;
-/** Descent duration (s): MoonView lerps start pose -> landing, easeInOutCubic + 0.4s settle. */
-export const MOON_DESCENT_S = 6.0;
-/** Landing point = ballPos + dir * MOON_LAND_DIST_K * radiusSim. */
-export const MOON_LAND_DIST_K = 45;
-/** Landing dir = horizontal vel dir if |vel| >= frac * speedCap, else camera forward. */
-export const MOON_LAND_VEL_FRAC = 0.5;
-/** Min POST-normalization elevation (rad) of every tiers.js moonDir (asserted there). */
-export const MOON_DIR_MIN_ELEV = 0.15;
-/** Contact when dist(ball, moonCenter) <= ballR + moonR * MOON_CONTACT_PAD. */
-export const MOON_CONTACT_PAD = 0.85;
-/** LANDED soft magnet: vel += dirToMoon * frac * ACCEL_K * r * dt (bias only, never overrides input). */
-export const MOON_MAGNET_ACCEL_FRAC = 0.15;
-/** Magnet engages within MOON_MAGNET_RANGE_K * radiusSim of the moon center. */
-export const MOON_MAGNET_RANGE_K = 20;
+/** Finale CALLED state: emit 'goalCall' (toast + skytree beam pulse) at this true radius (m). */
+export const GOAL_CALL_RADIUS_M = 380;
+/** Goal: Skytree contact arms at this true radius (m). */
+export const GOAL_RADIUS_M = 420;
+/** Contact when dist(ball, towerBase) <= ballR + towerBaseR * GOAL_CONTACT_PAD.
+ *  Validator asserts SKYTREE_COLLIDER_K (0.6) < GOAL_CONTACT_PAD so the finale always wins. */
+export const GOAL_CONTACT_PAD = 0.85;
+/** Skytree base radius (REAL meters) — terrain.js permanent base circle collider. */
+export const SKYTREE_BASE_R_M = 90;
+/** Base collider radius = SKYTREE_BASE_R_M * SKYTREE_COLLIDER_K (54 m real); BOUNCE, never absorbs. */
+export const SKYTREE_COLLIDER_K = 0.6;
+/** While worldScale < this, the Skytree renders as the environment.js sky-dome
+ *  silhouette (uGoalSil*); the goalTower.js mesh takes over via the kept v2
+ *  moon crossfade at the first frame simDist < 0.8 * CAMERA_FAR. */
+export const SKY_SILHOUETTE_WS_MAX = 0.2;
 /** Contact white flash: 0.12s in, FLASH_S out (#flash-overlay). */
 export const FLASH_S = 0.45;
-/** MERGE: ball.pos lerps into the moon center over this (s); ball hidden at t >= 0.6s. */
-export const MOON_MERGE_S = 1.2;
-/** ASCENSION duration (s): moon rises ease-in while env.beginNightFade runs. */
-export const MOON_ASCEND_S = 5.0;
-/** Ascension target height = ascendBaseY + MOON_ASCEND_HEIGHT_K * radiusSim. */
-export const MOON_ASCEND_HEIGHT_K = 40;
+/** MERGE: ball.pos lerps into the tower glow over this (s); ball hidden at t >= 0.6s. */
+export const GOAL_MERGE_S = 1.2;
+/** ASCENSION duration (s): camera pullback over the night diorama (v2 machinery re-themed). */
+export const GOAL_ASCEND_S = 5.0;
+/** Ascension target height = ascendBaseY + GOAL_ASCEND_HEIGHT_K * radiusSim. */
+export const GOAL_ASCEND_HEIGHT_K = 40;
 /** AFTERGLOW hang time (s) before finale.state === 'done' (main emits game:win). */
 export const AFTERGLOW_S = 2.5;
+/** Min POST-normalization elevation (rad) of every tiers.js moonDir (asserted there).
+ *  v3: the sky-dome moon stays as a NIGHT COSMETIC (uMoonFade always 1) — not deprecated. */
+export const MOON_DIR_MIN_ELEV = 0.15;
+
+/* v3 integration: the @deprecated moon-era alias block (Phase-0 migration
+ * protocol) is RETIRED. MOON_DIR_MIN_ELEV above is the single permanent
+ * exemption (night-sky moon cosmetic — see docs/DESIGN-V3.md 退役計画). */
+
+/* ================================================================== */
+/* v3 Shop / terrain (world/terrain.js, render/cameraRig.js)           */
+/* ================================================================== */
+
+/** Shop walls/prisms release at this true radius (m): collide() early-outs,
+ *  terrainMesh zero-scales over 0.6s, curated y-drops elevated placements over
+ *  the same 0.6s; camera boom clamp deactivates only AFTER the fade completes.
+ *  One-shot — the single sanctioned structural handoff (exemptions ledger). */
+export const SHOP_TERRAIN_RELEASE_M = 4.0;
+/** Interior camera profile: CAM_DIST_K * this (~4.0) while interiorAt01 = 1. */
+export const INTERIOR_CAM_DIST_MUL = 0.62;
+/** Interior camera profile: CAM_HEIGHT_K * this (~4.5) — closer and more top-down. */
+export const INTERIOR_CAM_HEIGHT_MUL = 1.4;
+/** interiorAt01 crossfade time constant (s). */
+export const INTERIOR_FADE_S = 0.5;
+/** clampCameraBoom shortens the boom to nearest hit minus this * radiusSim. */
+export const CAM_WALL_MARGIN_K = 0.5;
+/** Real-meter fog-far floor (environment.js applies at query time): the 8m
+ *  shop is never fog-swallowed at r = 2cm. Pairs with LOAD_RADIUS_MIN_M. */
+export const FOG_FAR_MIN_M = 9.0;
+/** Real-meter load-radius floor (spawner ring math + curated activation):
+ *  1.25 * FOG_FAR_MIN_M so fog < load holds everywhere (tiers.js asserts the
+ *  floored pair at each tier's worst-case worldScale). */
+export const LOAD_RADIUS_MIN_M = 11.25;
+/** Shop wall thickness (REAL meters). */
+export const WALL_THICK_M = 0.12;
+/** Shop wall top height (REAL meters) — roofless above. */
+export const WALL_TOP_M = 2.2;
+/** Interior item height cap (REAL meters): ALL shop placements have y <= this. */
+export const INTERIOR_ITEM_Y_MAX = 0.7;
+
+/* ================================================================== */
+/* v3 Map bounds / edge (config/cityMap.js re-exports MAP_BOUNDS)      */
+/* ================================================================== */
+
+/** Diorama bounds rect (REAL meters); ball center hard-clamped by terrain.js.
+ *  Single source of truth — cityMap.js re-exports this object verbatim. */
+export const MAP_BOUNDS = Object.freeze({
+  x: Object.freeze([-1800, 1800]),
+  z: Object.freeze([-1800, 2000]),
+});
+/** Soft deceleration band starts this many * radiusSim inside the edge. */
+export const EDGE_SOFT_BAND_K = 4.0;
+/** Outward velocity *= this per 60Hz frame inside the soft band (continuous in radius). */
+export const EDGE_DAMP_PER_FRAME = 0.85;
+
+/* ================================================================== */
+/* v3 Curated spawner / density (world/curated.js, world/spawner.js)   */
+/* ================================================================== */
+
+/** Curated round-robin: <= this many placements examined per frame. */
+export const CURATED_UPDATE_BUDGET = 64;
+/** Hard cap on total curated placements (validator-checked in cityMap.js). */
+export const CURATED_PLACEMENT_CAP = 640;
+/** Chunk-spawner per-band placement-count multiplier vs v2 (the ONE pacing
+ *  truth: GROWTH_K=10 kept, pacing authored via density + finite-map travel;
+ *  EMPIRICAL — Phase-3 >= 3-playthrough retune is mandatory). */
+export const DENSITY_K_V3 = 0.45;
 
 /* ================================================================== */
 /* v2 Dash (physics/ballPhysics.js, input/input.js)                    */
@@ -103,24 +165,62 @@ export const COMBO_SCORE_K = 0.10;
 export const COMBO_SCORE_MAX_MUL = 3.0;
 /** Flat bonus added when AbsorbEvent.rare (after combo multiplication). */
 export const RARE_SCORE_BONUS = 5000;
-/** Flat bonus on 'moonContact'. */
-export const MOON_SCORE_BONUS = 20000;
+/** Flat bonus on 'goalContact' (Skytree finale). */
+export const GOAL_SCORE_BONUS = 20000;
+/** Flat bonus per landmark singleton absorbed (EVT.LANDMARK, runStats). */
+export const LANDMARK_SCORE_BONUS = 8000;
 /** Time bonus = round(lerp(TIME_BONUS_MAX, 0, clamp01((timeS - FULL) / (ZERO - FULL)))). */
 export const TIME_BONUS_MAX = 30000;
-export const TIME_BONUS_FULL_S = 120;
-export const TIME_BONUS_ZERO_S = 420;
-/** Rank thresholds (sim seconds): S <= 120, A <= 180, B <= 280, C <= 420, else D.
- *  EMPIRICAL (2026-06 in-browser pacing runs, seed 777, optimal driver bot
- *  rolling continuously with dash): 5cm start -> 0.25m @ ~36s -> 1.25m @ ~47s
- *  -> 6m @ ~57s -> 30m @ ~69s -> 150m @ ~86s -> 300m+ @ ~90s; full
- *  5cm->moon-call optimal ~= 95-105 sim-s. Model: S = ~1.2x optimal
- *  (optimized human), A = ~1.8x (very good), B = ~2.8x (decent first run
- *  incl. wandering), C = ~4x (slow exploration), else D. TIME_BONUS spans
- *  the S edge (full at 120s) to the C edge (zero at 420s). */
-export const RANK_S_S = 120;
-export const RANK_A_S = 180;
-export const RANK_B_S = 280;
-export const RANK_C_S = 420;
+export const TIME_BONUS_FULL_S = 240;
+export const TIME_BONUS_ZERO_S = 600;
+/** Rank thresholds (sim seconds): S <= 240, A <= 330, B <= 450, C <= 600, else D.
+ *  v3 ONE PACING TRUTH (docs/DESIGN-V3.md ティア表): GROWTH_K=10 kept; pacing
+ *  authored via chunk density (DENSITY_K_V3 0.45 of v2 per-band counts) +
+ *  finite-map travel legs. Targets: typical first clear 5:30-6:30, optimal
+ *  ~3:30-4:00 sim-s. EMPIRICAL — Phase-3 >= 3-playthrough retune mandatory.
+ *  TIME_BONUS spans the S edge (full at 240s) to the C edge (zero at 600s). */
+export const RANK_S_S = 240;
+export const RANK_A_S = 330;
+export const RANK_B_S = 450;
+export const RANK_C_S = 600;
+
+/* ================================================================== */
+/* v3 Feedback — absorb names / collection (ui/hud.js, game/collection.js) */
+/* ================================================================== */
+
+/** Per-archetype float merge window (s): a repeat absorb of the same code
+ *  rewrites the live span to `+${sum} ネジ x3` and restarts its animation. */
+export const FLOAT_MERGE_S = 0.30;
+/** Visible float-span caps (rare/collectible/landmark always allocate, evict oldest). */
+export const MAX_FLOATS_MOBILE = 3;
+export const MAX_FLOATS_DESKTOP = 6;
+/** #collect-popup card auto-out (s). */
+export const COLLECT_POPUP_S = 3.5;
+/** Collection denominator shown in UI (album mask is append-only beyond it). */
+export const COLLECT_TOTAL = 12;
+/** Pre-rendered collectible thumbnail size (px, data-URL canvases). */
+export const THUMB_SIZE_PX = 96;
+
+/* ================================================================== */
+/* v3 Donack commentator (ui/donack.js, config/donackLines.js)         */
+/* ================================================================== */
+
+/** Bubble auto-dismiss (s); landmarks/finale use the longer show. */
+export const DONACK_SHOW_S = 4.5;
+export const DONACK_SHOW_LANDMARK_S = 6.0;
+/** Min gap since last bubble (s) per priority class (P3 bypasses). */
+export const DONACK_GAP_P01_S = 8;
+export const DONACK_GAP_P2_S = 4;
+/** Per-id tip cooldown (s) — tips are the only repeatable lines. */
+export const DONACK_TIP_COOLDOWN_S = 30;
+/** Idle-stuck hint after this long with no absorb (s, 1Hz internal check). */
+export const DONACK_IDLE_HINT_S = 10;
+/** Full-dash-gauge-unused hint after this long (s). */
+export const DONACK_DASH_HINT_S = 12;
+/** Blink frame toggle rate (frame-0/frame-3 class swap, only while visible). */
+export const DONACK_BLINK_FPS = 4;
+/** scripts/verify-donack-assets.sh: sum of the 8 shipped webp files <= this. */
+export const DONACK_ASSET_BUDGET_KB = 40;
 
 /* ================================================================== */
 /* v2 Rares (world/spawner.js)                                         */
@@ -140,13 +240,19 @@ export const RARE_TINT = 0xffd84a;
 export const RARE_LIST_CAP = 32;
 
 /* ================================================================== */
-/* v2 Persistence (localStorage)                                       */
+/* v3 Persistence (localStorage)                                       */
 /* ================================================================== */
 
-/** Best records, schema {v:1, bestTime:BestRecord|null, bestScore:BestRecord|null}. */
-export const LS_BEST_KEY = 'fableKatamari.v2.best';
+/** Best records, schema {v:1, bestTime:BestRecord|null, bestScore:BestRecord|null}.
+ *  v3 key bump — v2 bests retired (pacing/ranks incomparable). */
+export const LS_BEST_KEY = 'fableKatamari.v3.best';
 /** Mute flag ('1'/'0') — read by main.js BEFORE constructing Bgm/Sfx. */
-export const LS_MUTE_KEY = 'fableKatamari.v2.muted';
+export const LS_MUTE_KEY = 'fableKatamari.v3.muted';
+/** Collection album, schema {v:1, mask:int} keyed by the FROZEN COLLECTIBLE_IDS
+ *  (append-only ids 12+; ids never reused/reordered; unknown high bits preserved). */
+export const LS_COLLECTION_KEY = 'fableKatamari.v3.collection';
+/** Donack commentary OFF flag ('1' = off) — title-screen #donack-toggle. */
+export const LS_DONACK_KEY = 'fableKatamari.v3.donackOff';
 
 /* ================================================================== */
 /* Timestep                                                            */
@@ -352,15 +458,19 @@ export const FRAME_BUDGET_MS = 17;
 /** Rolling window for the governor (s). */
 export const GOVERNOR_WINDOW_S = 3;
 /** Budget ceilings (dev-overlay warnings, not runtime behavior).
- *  v2 ledger (4-band tier-transition worst case, the honest peak):
+ *  v3 ledger (4-band tier-transition worst case, the honest peak):
  *    40 world InstancedMesh (4 live bands x 10 archetypes)
  *  +  8 stuck-on-ball families
- *  +  6 fixed (sky dome, ground, ball core, effects quads, 2x moon mesh+glow
- *      — moon is finale-only but budgeted)
+ *  +  6 fixed (sky dome, ground, ball core, effects quads, ... )
  *  +  1 backdrop silhouette ring
- *  = 56 worst case -> cap 60. If measurement exceeds 56, first lever is
- *  dropping the moon glow shell (-1), then hiding N+2 pre-warm pools. */
-export const DRAW_CALL_CAP = 60;
+ *  +  2 skytree (goalTower mesh + glow, fog:false sky-element exemption)
+ *  +  1 terrainMesh (shop walls/prisms, one merged vertex-colored mesh)
+ *  +  2 bay water quad + quay-wall strip
+ *  +  4 shared EXTRA InstancedPools (collectible-small / landmark-mid /
+ *       landmark-large / landmark-XL — size-class partition, NOT per-archetype)
+ *  = 64 worst case -> cap 72. Watch renderer.info parked between Ueno and
+ *  Asakusa at r=60m with EXTRA pools active (Phase-3 profile pass). */
+export const DRAW_CALL_CAP = 72;
 export const TRI_BUDGET = 600000;
 /** Per-archetype merged-geometry triangle cap (asserted at boot in dev). */
 export const ARCHETYPE_TRI_CAP = 350;

@@ -1,31 +1,41 @@
 /**
- * @file runStats.js — v2 run clock, score/combo/rare accounting, rank,
+ * @file runStats.js — run clock, score/combo/rare accounting, rank,
  * localStorage best records, and the single 'goal' emission
- * (docs/DESIGN-V2.md §ゲームシステム).
+ * (docs/DESIGN-V2.md §ゲームシステム + docs/DESIGN-V3.md v3 deltas).
  *
  * SIM-TIME IS THE OFFICIAL CLOCK: main.js calls addSimTime(steps * FIXED_DT)
  * once per render frame (frame step 6.5) — deterministic, naturally paused in
- * TITLE/WIN, frozen by an internal flag on 'moonContact'. Slow devices
+ * TITLE/WIN, frozen by an internal flag on 'goalContact'. Slow devices
  * simulate slower in wall time but ranks stay deterministic and fair per
  * simulated second. 'time' {timeS} is emitted whenever timeS crosses the next
- * 0.1 s SIM boundary (never performance.now) -> HUD mm:ss.t.
+ * 0.1 s SIM boundary (never performance.now) -> HUD timer.
  *
- * SCORE (on 'absorb' — BINDING subscription order at boot: spawner
- * (bookkeeping only) -> main attach-handler -> THIS -> sfx/effects/hud):
+ * SCORE (on 'absorb' — BINDING v3 subscription order at boot: chunk spawner
+ * -> curated -> main attach-handler -> THIS -> collection -> sfx/effects/hud):
  *   objScore = max(1, round(SCORE_SIZE_BASE * (sizeReal/trueRadius)^SCORE_SIZE_POW))
  *   comboMul = min(1 + COMBO_SCORE_K * (combo - 1), COMBO_SCORE_MAX_MUL)
  *   delta    = round(objScore * comboMul) + (rare ? RARE_SCORE_BONUS : 0)
- * then 'score' {score, delta, combo, rare} is emitted (reused payload).
- * v2 RETUNE: objScore is RELATIVE (object size / ball radius), not absolute
- * meters — every tier band contributes comparably, totals land in 6 digits,
- * and the flat RARE/MOON/TIME bonuses stay meaningful at goal.
+ * then 'score' {score, delta, combo, rare, archetypeCode} is emitted (reused
+ * payload; archetypeCode is the v3 pass-through from AbsorbEvent — hud renders
+ * the absorb-name floats from it). objScore is RELATIVE (object size / ball
+ * radius) — every tier band contributes comparably, totals land in 6 digits,
+ * and the flat RARE/LANDMARK/GOAL/TIME bonuses stay meaningful at goal.
  *
- * GOAL FLOW (on 'moonContact', once): freeze the clock, add MOON_SCORE_BONUS
+ * v3 LANDMARK BONUS (on 'landmark', emitted by curated AFTER the normal
+ * ABSORB chain): score += LANDMARK_SCORE_BONUS, then one extra 'score' emit
+ * (delta = the bonus, combo 1, rare false, archetypeCode -1) so the HUD panel
+ * + a plain '+8,000' float update immediately; cosmetic consumers keyed on
+ * rare/combo see neutral values.
+ *
+ * GOAL FLOW (on 'goalContact', once): freeze the clock, add GOAL_SCORE_BONUS
  * + timeBonus = round(lerp(TIME_BONUS_MAX, 0, clamp01((timeS - FULL) /
- * (ZERO - FULL)))), rank S/A/B/C/D by RANK_*_S, persist bests to localStorage
- * LS_BEST_KEY (schema {v:1, bestTime:BestRecord|null, bestScore:BestRecord|
- * null} — each sub-record replaced ATOMICALLY when its metric improves, so
- * fields within one record always come from the same run), emit 'goal' once.
+ * (ZERO - FULL)))), rank S/A/B/C/D by RANK_*_S (v3: S240/A330/B450/C600 —
+ * EMPIRICAL, Phase-3 >= 3-playthrough retune mandatory), stamp
+ * GoalEvent.collectFound from the injected collection, persist bests to
+ * localStorage LS_BEST_KEY (v3 key; schema {v:1, bestTime:BestRecord|null,
+ * bestScore:BestRecord|null} — each sub-record replaced ATOMICALLY when its
+ * metric improves, so fields within one record always come from the same
+ * run), emit 'goal' once.
  *
  * Persistence is fully try/catch-wrapped (private-mode / quota / no-DOM safe)
  * and loadBest() returns null on ANY anomaly (parse error, wrong version,
@@ -40,7 +50,8 @@ import {
   COMBO_SCORE_K,
   COMBO_SCORE_MAX_MUL,
   RARE_SCORE_BONUS,
-  MOON_SCORE_BONUS,
+  GOAL_SCORE_BONUS,
+  LANDMARK_SCORE_BONUS,
   TIME_BONUS_MAX,
   TIME_BONUS_FULL_S,
   TIME_BONUS_ZERO_S,
@@ -91,25 +102,29 @@ export class RunStats {
    *   read once at goal for the final trueRadius. Optional (headless tests
    *   fall back to the last AbsorbEvent.trueRadius).
    * @param {number} [worldSeed] uint32 world seed (stamped onto 'goal' + bests).
+   * @param {{ foundCount: number }} [collection] v3 injected Collection —
+   *   read once at goal for GoalEvent.collectFound. Optional (0 fallback).
    */
-  constructor(bus, scaleMgr, worldSeed = 0) {
+  constructor(bus, scaleMgr, worldSeed = 0, collection = null) {
     /** @type {import('../core/events.js').EventBus} */
     this._bus = bus;
     /** @type {{ trueRadiusMeters?: () => number }|null} */
     this._scaleMgr = scaleMgr || null;
     /** @type {number} uint32 world seed. */
     this._seed = worldSeed >>> 0;
+    /** @type {{ foundCount: number }|null} v3 album (GoalEvent.collectFound). */
+    this._collection = collection || null;
 
     /** @type {number} Elapsed SIM seconds (the official clock). */
     this._timeS = 0;
     /** @type {number} Last 0.1s boundary index reported via 'time'. */
     this._lastTenth = 0;
-    /** @type {boolean} Clock + score frozen (after 'moonContact'). */
+    /** @type {boolean} Clock + score frozen (after 'goalContact'). */
     this._frozen = false;
     /** @type {boolean} 'goal' emitted (once-per-run latch). */
     this._goalEmitted = false;
 
-    /** @type {number} Total score (combo + rare + goal bonuses included). */
+    /** @type {number} Total score (combo + rare + landmark + goal bonuses included). */
     this._score = 0;
     /** @type {number} Total objects absorbed this run. */
     this._absorbed = 0;
@@ -119,7 +134,18 @@ export class RunStats {
     this._lastTrueRadius = 0;
 
     bus.on(EVT.ABSORB, this._onAbsorb.bind(this));
-    bus.on(EVT.MOON_CONTACT, this._onMoonContact.bind(this));
+    bus.on(EVT.LANDMARK, this._onLandmark.bind(this));
+    bus.on(EVT.GOAL_CONTACT, this._onGoalContact.bind(this));
+  }
+
+  /**
+   * Late-bind the v3 Collection (read once at goal). The frozen ABSORB order
+   * constructs Collection AFTER RunStats, so main.js wires it here right
+   * after `new Collection(bus)` instead of through the constructor arg.
+   * @param {{ foundCount: number }} collection
+   */
+  setCollection(collection) {
+    this._collection = collection || null;
   }
 
   /* ---------------------------------------------------------------- */
@@ -198,26 +224,51 @@ export class RunStats {
     sp.delta = delta;
     sp.combo = p.combo;
     sp.rare = rare;
+    // v3 pass-through: hud renders `+${delta} ${DISPLAY_NAME_BY_CODE[code]}`.
+    sp.archetypeCode = typeof p.archetypeCode === 'number' ? p.archetypeCode : -1;
     this._bus.emit(EVT.SCORE, sp);
   }
 
   /* ---------------------------------------------------------------- */
-  /* Goal ('moonContact' handler — once per run, may allocate)         */
+  /* v3 'landmark' handler (curated emits AFTER the normal ABSORB      */
+  /* chain — the landmark's own absorb already scored above)           */
   /* ---------------------------------------------------------------- */
 
-  _onMoonContact() {
+  /**
+   * Flat LANDMARK_SCORE_BONUS + one 'score' emit so the HUD panel and a
+   * plain bonus float update immediately. Neutral combo/rare/archetypeCode
+   * (the named float for the landmark itself came from its absorb 'score').
+   * @param {import('../types.js').LandmarkEvent} _p Reused payload (unused).
+   */
+  _onLandmark(_p) {
+    if (this._frozen) return;
+    this._score += LANDMARK_SCORE_BONUS;
+    const sp = PAYLOADS.score;
+    sp.score = this._score;
+    sp.delta = LANDMARK_SCORE_BONUS;
+    sp.combo = 1;
+    sp.rare = false;
+    sp.archetypeCode = -1;
+    this._bus.emit(EVT.SCORE, sp);
+  }
+
+  /* ---------------------------------------------------------------- */
+  /* Goal ('goalContact' handler — once per run, may allocate)         */
+  /* ---------------------------------------------------------------- */
+
+  _onGoalContact() {
     if (this._goalEmitted) return;
     this._goalEmitted = true;
     this._frozen = true; // CLEAR TIME instant — clock + score freeze here
 
     const timeS = this._timeS;
 
-    /* Bonuses: flat moon bonus + linear time bonus. */
+    /* Bonuses: flat goal bonus + linear time bonus. */
     let u = (timeS - TIME_BONUS_FULL_S) / (TIME_BONUS_ZERO_S - TIME_BONUS_FULL_S);
     if (u < 0) u = 0;
     else if (u > 1) u = 1;
     const timeBonus = Math.round(TIME_BONUS_MAX * (1 - u));
-    this._score += MOON_SCORE_BONUS + timeBonus;
+    this._score += GOAL_SCORE_BONUS + timeBonus;
 
     /* Rank table (sim seconds). */
     const rank =
@@ -260,6 +311,11 @@ export class RunStats {
     g.seed = this._seed;
     g.newRecordTime = newRecordTime;
     g.newRecordScore = newRecordScore;
+    // v3: album count at goal (X intent 「レアn/12」 + result grid header).
+    g.collectFound =
+      this._collection !== null && typeof this._collection.foundCount === 'number'
+        ? this._collection.foundCount
+        : 0;
     this._bus.emit(EVT.GOAL, g);
   }
 
