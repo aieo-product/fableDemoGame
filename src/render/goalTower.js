@@ -297,6 +297,19 @@ export class SkytreeView {
   /* ---------------------------------------------------------------- */
 
   /**
+   * devTeleport hook (main.js, next to spawner.onTeleport / curated
+   * forceScan): the teleport re-anchors the world with `pos = real / ws`
+   * and origin 0 WITHOUT emitting RESCALE/REBASE, so the accumulated
+   * rebase shift here is stale in the new frame (the tower rendered tens
+   * of thousands of sim units off after a teleport). Drop the shift; the
+   * handoff latch re-evaluates from the fresh pose on the next update.
+   */
+  onTeleport() {
+    this._shiftX = 0;
+    this._shiftZ = 0;
+  }
+
+  /**
    * Tower BASE CENTER in current sim units (y = 0; ground plane).
    * @param {THREE.Vector3} out Receives the position.
    * @returns {THREE.Vector3} The same out.

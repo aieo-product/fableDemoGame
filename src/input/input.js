@@ -69,8 +69,13 @@ export class Input {
     /** Normalized joystick output in [-1,1] (y = +1 forward / screen-up). */
     this._joyX = 0;
     this._joyY = 0;
-    /** @type {number} Count of currently active touches (2nd touch = boost). */
+    /** @type {number} Count of active GAME touches (2nd touch = boost).
+     *  Touches that began on a <button> (e.g. the DASH button) are excluded
+     *  so a dash tap never rides an unintended boost along with it. */
     this._touchCount = 0;
+    /** @type {boolean} Touch UI gate (false during the finale cinematic so a
+     *  skip-tap can't spawn the joystick ring over the cinema). */
+    this._touchUiEnabled = true;
 
     // -- mouse yaw drag state ---------------------------------------------
     this._mouseDown = false;
@@ -315,9 +320,45 @@ export class Input {
   /* Touch joystick (first touch = stick anchor, second touch = boost) */
   /* ---------------------------------------------------------------- */
 
+  /**
+   * Count touches that did NOT begin on a <button> (Touch.target is the
+   * touchstart element for the touch's whole life). Zero allocation.
+   * @param {TouchEvent} e
+   * @returns {number}
+   */
+  _countGameTouches(e) {
+    let n = 0;
+    for (let i = 0; i < e.touches.length; i++) {
+      const tgt = /** @type {Element|null} */ (e.touches[i].target);
+      if (tgt !== null && typeof tgt.closest === 'function' && tgt.closest('button') !== null) {
+        continue; // dash/mute/overlay buttons never count toward boost
+      }
+      n++;
+    }
+    return n;
+  }
+
+  /**
+   * Gate the touch joystick/boost UI (main.js: false on EVT.GOAL_CONTACT so
+   * the finale skip-tap can't spawn the joystick ring over the cinematic,
+   * true again on EVT.GAME_START).
+   * @param {boolean} b
+   */
+  setTouchUiEnabled(b) {
+    this._touchUiEnabled = b === true;
+    if (!this._touchUiEnabled) {
+      this._joyId = -1;
+      this._joyX = 0;
+      this._joyY = 0;
+      this._touchCount = 0;
+      this._hideJoystick();
+    }
+  }
+
   /** @param {TouchEvent} e */
   _handleTouchStart(e) {
-    this._touchCount = e.touches.length;
+    if (!this._touchUiEnabled) return;
+    this._touchCount = this._countGameTouches(e);
     if (this._joyId !== -1) return;
     // Ignore touches that begin on UI controls (title/win buttons).
     const tgt = /** @type {Element|null} */ (e.changedTouches[0].target);
@@ -359,7 +400,7 @@ export class Input {
 
   /** @param {TouchEvent} e */
   _handleTouchEnd(e) {
-    this._touchCount = e.touches.length;
+    this._touchCount = this._touchUiEnabled ? this._countGameTouches(e) : 0;
     for (let i = 0; i < e.changedTouches.length; i++) {
       if (e.changedTouches[i].identifier === this._joyId) {
         this._joyId = -1;

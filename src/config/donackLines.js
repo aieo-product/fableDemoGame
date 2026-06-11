@@ -212,6 +212,13 @@ export const DONACK_LINES = Object.freeze({
     text: '屋形船ゲット！東京湾の夜景つき',
     priority: 2, expression: 'happy', once: true, phase: PLAY,
   }),
+  // APPENDED (Phase-3 fix): ids 3 and 9 previously SHARED the once:true
+  // 'col_generic' line, so whichever was collected second got no bubble at
+  // all. Id 9 gets its own line (append-only contract — new id, no reuse).
+  col_golden_objet: Object.freeze({
+    text: 'なにこの金ピカのオブジェ！？よくわかんないけど確保！',
+    priority: 2, expression: 'happy', once: true, phase: PLAY,
+  }),
 
   /* ---- DUAL ハチ公 (the design table's merged line "#42") ---- */
   dual_hachiko: Object.freeze({
@@ -270,9 +277,8 @@ export const LANDMARK_LINE_IDS = Object.freeze([
 
 /**
  * CollectEvent.collectibleId (frozen 0..11, COLLECTIBLE_IDS) -> line id.
- * Ids 3 (秋葉原フィギュア) and 9 (金色のオブジェ) use the generic first-collect
- * line; donack.js also falls back to 'col_generic' for any future id >= 12
- * (append-only contract).
+ * Id 3 (秋葉原フィギュア) uses the generic line; donack.js also falls back
+ * to 'col_generic' for any future id >= 12 (append-only contract).
  * @type {ReadonlyArray<string>}
  */
 export const COLLECT_LINE_IDS = Object.freeze([
@@ -285,7 +291,9 @@ export const COLLECT_LINE_IDS = Object.freeze([
   'col_daruma',          // 6 だるま
   'col_panda',           // 7 パンダのぬいぐるみ
   'col_kaminari_okoshi', // 8 雷おこし
-  'col_generic',         // 9 金色のオブジェ (no bespoke line)
+  'col_golden_objet',    // 9 金色のオブジェ (own line — was 'col_generic',
+                         //   which is once:true and shared with id 3: the
+                         //   second of the pair never got a bubble)
   'dual_hachiko',        // 10 ハチ公像 — DUAL (merged line "#42")
   'col_yakatabune',      // 11 屋形船
 ]);

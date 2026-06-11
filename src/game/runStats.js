@@ -114,6 +114,12 @@ export class RunStats {
     this._seed = worldSeed >>> 0;
     /** @type {{ foundCount: number }|null} v3 album (GoalEvent.collectFound). */
     this._collection = collection || null;
+    /** @type {boolean} Dev-start taint (?at=/?r= applied): records from such
+     *  runs are never persisted as bests and never flagged NEW RECORD —
+     *  keeps the shareable leaderboard honest while leaving the dev URLs
+     *  usable on the live site. Deliberately NOT cleared by reset(): the dev
+     *  params live in the URL and re-apply on every restart anyway. */
+    this._devTainted = false;
 
     /** @type {number} Elapsed SIM seconds (the official clock). */
     this._timeS = 0;
@@ -146,6 +152,14 @@ export class RunStats {
    */
   setCollection(collection) {
     this._collection = collection || null;
+  }
+
+  /**
+   * Mark this session as a dev start (?at=/?r= applied): best records are
+   * not persisted and NEW RECORD never shows. Sticky for the session.
+   */
+  markDevRun() {
+    this._devTainted = true;
   }
 
   /* ---------------------------------------------------------------- */
@@ -286,8 +300,10 @@ export class RunStats {
     const bestScore = prev !== null ? prev.bestScore : null;
     /** @type {BestRecord} */
     const rec = { timeS, score: this._score, rank, seed: this._seed };
-    const newRecordTime = bestTime === null || timeS < bestTime.timeS;
-    const newRecordScore = bestScore === null || this._score > bestScore.score;
+    const newRecordTime =
+      !this._devTainted && (bestTime === null || timeS < bestTime.timeS);
+    const newRecordScore =
+      !this._devTainted && (bestScore === null || this._score > bestScore.score);
     if (newRecordTime || newRecordScore) {
       const next = {
         v: 1,

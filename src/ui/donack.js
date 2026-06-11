@@ -141,6 +141,8 @@ export class Donack {
     /* --- bubble display state --- */
     /** @type {boolean} */
     this._visible = false;
+    /** @type {number} Priority of the LIVE bubble (goal_call deferral rule). */
+    this._visiblePriority = -1;
     /** @type {string} Current expression key into AVATAR_CLASSES. */
     this._expr = 'idle';
     /** @type {number} Blink frame toggle (0 -> frame-0, 1 -> frame-3). */
@@ -456,6 +458,17 @@ export class Donack {
     if (line === undefined || line.phase !== this._phase) return;
     if (!this._eligible(id, line)) return;
     if (line.priority === 3) {
+      // goal_call deferral: the Tokyo Tower absorb (262->406m) crosses
+      // GOAL_CALL_RADIUS_M in the SAME fixed step that shows the 'lm_tower'
+      // trivia (P3, 6s) — letting goal_call interrupt would blank the
+      // game's penultimate beat after ~0 frames. goal_call stays perfectly
+      // relevant for the whole finale approach, so QUEUE it behind a live
+      // P3 bubble instead of interrupting (P3 gap is 0 — it flushes the
+      // moment the trivia dismisses).
+      if (id === 'goal_call' && this._visible && this._visiblePriority === 3) {
+        this._enqueue(id, line);
+        return;
+      }
       // P3: gap 0, always shows, interrupts the current bubble.
       this._show(id, line);
       return;
@@ -484,6 +497,7 @@ export class Donack {
    * @returns {boolean}
    */
   _gapOk(priority) {
+    if (priority >= 3) return true; // P3 gap is 0 (queued goal_call flush)
     const gap = priority === 2 ? DONACK_GAP_P2_S : DONACK_GAP_P01_S;
     return this._now() - this._lastBubbleEndAt >= gap;
   }
@@ -531,6 +545,7 @@ export class Donack {
     if (this._pendingId === id) this._pendingId = null;
 
     this._expr = line.expression;
+    this._visiblePriority = line.priority;
     this._frame = 0;
     this._showTicks = 0;
     const showS = line.priority === 3 ? DONACK_SHOW_LANDMARK_S : DONACK_SHOW_S;
@@ -574,6 +589,7 @@ export class Donack {
   _hideNow() {
     this._stopBlink();
     this._visible = false;
+    this._visiblePriority = -1;
     if (this._root !== null) {
       this._root.classList.remove('show');
       this._root.setAttribute('aria-hidden', 'true');

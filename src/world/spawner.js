@@ -37,7 +37,7 @@
  *    the authored district rects in REAL METERS (native coords ARE real
  *    meters / worldScale_band, so the bridge is one multiply). Chunk
  *    contents remain a pure function of (seed, cx, cz, band).
- *  - v3 DENSITY: per-band placement counts are scaled by DENSITY_K_V3
+ *  - v3 DENSITY: per-band placement counts are scaled by densityKForBand(band)
  *    (0.45 — the ONE pacing truth; wantK only truncates the placement list,
  *    the per-placement draw sequence is untouched).
  *  - v3 LOAD FLOOR: effective load radius = max(loadRadiusSim,
@@ -71,7 +71,7 @@ import { FLAG_RARE, FLAG_CURATED } from './objects.js';
 import { bandAllowedAt } from '../config/cityMap.js';
 import {
   ALIVE_TOTAL_BUDGET,
-  DENSITY_K_V3,
+  densityKForBand,
   DESPAWN_BUDGET_PER_FRAME,
   DESPAWN_FADE_S,
   FIXED_DT,
@@ -795,11 +795,13 @@ export class Spawner {
     let wantK;
     if (s === 0) {
       radius = Math.max(tierCfg.loadRadiusSim, loadFloorNative);
-      /* v3 DENSITY: the ONE pacing truth — per-band counts at 0.45x v2. */
-      wantK = Math.max(1, Math.round(tierCfg.objectsPerChunk * DENSITY_K_V3));
+      /* v3 DENSITY (Phase-3 retune): per-BAND counts — 0.45x v2 for bands
+         0-3, 0.2x for bands 4-6 (paired with the absorb.js growthKForObjR
+         normalization; see tuning.js DENSITY_K_BY_BAND). */
+      wantK = Math.max(1, Math.round(tierCfg.objectsPerChunk * densityKForBand(band)));
     } else {
       radius = Math.max(SCENERY_LOAD_RADIUS_SIM, loadFloorNative);
-      wantK = Math.max(1, Math.round(SCENERY_OBJECTS_PER_CHUNK * DENSITY_K_V3));
+      wantK = Math.max(1, Math.round(SCENERY_OBJECTS_PER_CHUNK * densityKForBand(band)));
       if (s === 2) {
         /* Pre-warm ring capped in CURRENT units so positions stay bounded. */
         const toNative = pow5(this._scaleExp - band);

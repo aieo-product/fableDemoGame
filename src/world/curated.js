@@ -303,6 +303,19 @@ export class CuratedSpawner {
   }
 
   /**
+   * Frozen landmark id for a store slot, or -1 (mirror of collectibleIdFor;
+   * same validity window). absorb.js queries this to EXEMPT landmark slots
+   * from the growthKForObjR pacing normalization (authored-ladder jumps).
+   * @param {number} storeIdx
+   * @returns {number} 0..10 or -1.
+   */
+  landmarkIdFor(storeIdx) {
+    if (storeIdx < 0 || storeIdx >= STORE_CAPACITY) return -1;
+    const pi = this._placementOfSlot[storeIdx];
+    return pi >= 0 ? this._lm[pi] : -1;
+  }
+
+  /**
    * Invoke cb(storeIdx, x, y, z, radiusSim) for every ALIVE collectible
    * (effects gold sparkle provider). Zero allocation; <= 12 iterations.
    * @param {(idx: number, x: number, y: number, z: number, r: number) => void} cb
@@ -349,7 +362,29 @@ export class CuratedSpawner {
     }
     this._originX = 0;
     this._originZ = 0;
+    // Mirror terrain.reset(): re-arm the SHOP_TERRAIN_RELEASE_M latch so a
+    // big->small devTeleport restores the pre-release shop (the gated shell
+    // stays inactive, elevated items rematerialize back on the shelves).
+    // update() re-latches from the live ballRadiusSim * worldScale on the
+    // next tick — a small->big teleport still releases correctly.
+    this._released = false;
+    this._dropT = 0;
     this._forceScanPending = true;
+  }
+
+  /**
+   * Synchronous start-area preload (boot / resetWorld — mirrors
+   * spawner.preloadStartArea): one full-placement pass ignoring the 64/frame
+   * budget so the title-screen orbit shows the authored shop interior and
+   * GAME_START never begins with a 7-frame staggered materialization.
+   * Reuses the _forceScanPending machinery (update consumes the flag).
+   * @param {THREE.Vector3} ballPos Ball center, CURRENT sim units.
+   * @param {number} tierIndex Current tier (ScaleManager).
+   * @param {number} ballRadiusSim Ball simRadius.
+   */
+  preload(ballPos, tierIndex, ballRadiusSim) {
+    this._forceScanPending = true;
+    this.update(ballPos, tierIndex, ballRadiusSim, 0);
   }
 
   /**
@@ -468,13 +503,27 @@ export class CuratedSpawner {
     }
     this._consumed[pi >> 5] |= 1 << (pi & 31);
     if (this._lm[pi] >= 0) {
-      if (this._lmN < LM_QUEUE_CAP) this._lmQ[this._lmN++] = pi;
-      else this._emitLandmark(pi); // overflow fallback (still after COLLECT for this object)
+      if (this._lmN < LM_QUEUE_CAP) {
+        this._lmQ[this._lmN++] = pi;
+      } else if (DEV) {
+        // Only 11 landmarks exist — >16 queued in one frame is a protocol
+        // bug, never a load condition. Emitting inline here would violate
+        // the binding 'LANDMARK strictly after the whole ABSORB chain' order,
+        // so assert in DEV and drop (unreachable) in prod.
+        throw new Error(`[curated] landmark queue overflow (${this._lmN}) — protocol bug`);
+      }
     }
     if (this._deferN < DEFER_CAP) {
       this._deferQ[this._deferN++] = pi;
     } else {
-      this._cleanupAbsorbed(pi); // overflow fallback — same logic, just not deferred
+      // Overflow (>256 curated absorbs in ONE render frame): drain the
+      // OLDEST deferred entry — its own ABSORB dispatch already completed
+      // (only the current emit is mid-dispatch), so cleaning it inline
+      // preserves the deferral contract for the placement currently
+      // mid-dispatch (which takes the freed queue tail).
+      this._cleanupAbsorbed(this._deferQ[0]);
+      this._deferQ.copyWithin(0, 1, this._deferN);
+      this._deferQ[this._deferN - 1] = pi;
     }
   }
 

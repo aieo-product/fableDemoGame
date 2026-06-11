@@ -232,11 +232,17 @@ export const LANDMARKS = Object.freeze([
   // crowd is authored as curated 'person' placements in DISTRICT_CLUSTERS.
   { landmarkId: 5, nameJa: 'スクランブル交差点', x: -1180, z: 990, dioramaR: 18, collisionScale: 0.1, sizeReal: 50, archetypeCode: CODE_SCRAMBLE, naturalBand: 4, colorHex: 0x8a8f99 },
   { landmarkId: 6, nameJa: '東京ドーム', x: -550, z: -120, dioramaR: 55, collisionScale: 0.9, sizeReal: 56, archetypeCode: CODE_DOME, naturalBand: 5, colorHex: 0xe8e6df },
-  // 東京駅丸の内駅舎 (modeled L180m -> dioramaR 65, cs .55).
-  { landmarkId: 7, nameJa: '東京駅丸の内駅舎', x: -120, z: 480, dioramaR: 65, collisionScale: 0.55, sizeReal: 335, archetypeCode: CODE_TOKYO_STATION, naturalBand: 5, colorHex: 0xa0522d },
-  { landmarkId: 8, nameJa: '国会議事堂', x: -650, z: 650, dioramaR: 75, collisionScale: 0.7, sizeReal: 206, archetypeCode: CODE_DIET, naturalBand: 5, colorHex: 0xcfc8b8 },
+  // 東京駅丸の内駅舎 — Phase-3 ladder respace: dioramaR 65 -> 88 so the
+  // absorb threshold (135.4m) sits ABOVE the Tokyo Dome landing (~131m).
+  // Previously L6->L7->L8->L9 chained with zero filler (Dome 84.6m ->
+  // goal 420m in 7 landmark absorbs + ~4s travel, skipping T5/T6 entirely).
+  { landmarkId: 7, nameJa: '東京駅丸の内駅舎', x: -120, z: 480, dioramaR: 88, collisionScale: 0.55, sizeReal: 335, archetypeCode: CODE_TOKYO_STATION, naturalBand: 5, colorHex: 0xa0522d },
+  // 国会議事堂 — respaced 75 -> 140 (thresh 215.4m > Station landing ~210m).
+  { landmarkId: 8, nameJa: '国会議事堂', x: -650, z: 650, dioramaR: 140, collisionScale: 0.7, sizeReal: 206, archetypeCode: CODE_DIET, naturalBand: 5, colorHex: 0xcfc8b8 },
   // レインボーブリッジ: 3 spans share landmarkId 9 (placements below).
-  { landmarkId: 9, nameJa: 'レインボーブリッジ', x: 440, z: 1430, dioramaR: 90, collisionScale: 0.5, sizeReal: 798, archetypeCode: CODE_BRIDGE_SPAN, naturalBand: 5, colorHex: 0xdfe3e8 },
+  // Respaced 90 -> 150 (thresh 230.8m); from the Diet landing (~334m) the
+  // bridge->tower run IS the intended finale ramp, so chaining there is fine.
+  { landmarkId: 9, nameJa: 'レインボーブリッジ', x: 440, z: 1430, dioramaR: 150, collisionScale: 0.5, sizeReal: 798, archetypeCode: CODE_BRIDGE_SPAN, naturalBand: 5, colorHex: 0xdfe3e8 },
   // 東京タワー — PENULTIMATE (1:1, absorbed normally @ ~262m; its GROWTH_K=10
   // jump to ~406m IS the ramp into the finale band — BINDING resolution).
   { landmarkId: 10, nameJa: '東京タワー', x: -480, z: 1050, dioramaR: 170, collisionScale: 0.45, sizeReal: 333, archetypeCode: CODE_TOKYO_TOWER, naturalBand: 5, colorHex: 0xe85d3d },
@@ -363,27 +369,31 @@ const INTERIOR_CLUSTERS = [
   ['game_soft', 0.065, 2.95, 5, 0.2, 0.045, 0.055, 0.7, 0.40, { ...SHELF_X, z0: 2.8, z1: 3.1 }],
 ];
 
-/** Akiba street dressing (~71) — 中央通り strip x[4.6,18] z[-180,180]. */
+/** Akiba street dressing (~71) — 中央通り strip x[4.6,18] z[-180,180].
+ *  Phase-3 fix: the gutter LINES are authored with rect clamps (square
+ *  x/z jitter previously scattered ~50% of the dressing OUTSIDE the 13.4m
+ *  strip, incl. vending machines in the empty backlot west of the shop —
+ *  thinning the authored shop-exit growth chain). */
 const STREET_CLUSTERS = [
-  ['vending_machine', 16.5, -30, 6, 25, 0.50, 0.65, 0, 1.0, null],
-  ['vending_machine', 16.5, 40, 6, 30, 0.50, 0.65, 0, 1.0, null],
-  ['bicycle', 7, -55, 6, 20, 0.50, 0.60, 0, 0.95, null],
-  ['bicycle', 7, 25, 6, 18, 0.50, 0.60, 0, 0.95, null],
-  ['signboard', 12, -90, 4, 30, 0.40, 0.55, 0, 0.9, null],
-  ['signboard', 12, 70, 4, 30, 0.40, 0.55, 0, 0.9, null],
-  ['nobori_banner', 6.5, -20, 4, 12, 0.40, 0.50, 0, 0.8, null],
-  ['nobori_banner', 6.5, 60, 4, 15, 0.40, 0.50, 0, 0.8, null],
+  ['vending_machine', 16.5, -30, 6, 25, 0.50, 0.65, 0, 1.0, { x0: 15.5, x1: 17.8, z0: -55, z1: -5 }],
+  ['vending_machine', 16.5, 40, 6, 30, 0.50, 0.65, 0, 1.0, { x0: 15.5, x1: 17.8, z0: 10, z1: 70 }],
+  ['bicycle', 7, -55, 6, 20, 0.50, 0.60, 0, 0.95, { x0: 5.6, x1: 8.5, z0: -75, z1: -35 }],
+  ['bicycle', 7, 25, 6, 18, 0.50, 0.60, 0, 0.95, { x0: 5.6, x1: 8.5, z0: 7, z1: 43 }],
+  ['signboard', 12, -90, 4, 30, 0.40, 0.55, 0, 0.9, { x0: 10, x1: 14, z0: -120, z1: -60 }],
+  ['signboard', 12, 70, 4, 30, 0.40, 0.55, 0, 0.9, { x0: 10, x1: 14, z0: 40, z1: 100 }],
+  ['nobori_banner', 6.5, -20, 4, 12, 0.40, 0.50, 0, 0.8, { x0: 5.4, x1: 7.6, z0: -32, z1: -8 }],
+  ['nobori_banner', 6.5, 60, 4, 15, 0.40, 0.50, 0, 0.8, { x0: 5.4, x1: 7.6, z0: 45, z1: 75 }],
   // 通行人 crowds thickening near the shop.
-  ['person', 8, -12, 6, 8, 0.32, 0.38, 0, 0.6, null],
-  ['person', 11, 14, 5, 8, 0.32, 0.38, 0, 0.6, null],
-  ['person', 10, -70, 4, 25, 0.32, 0.38, 0, 0.6, null],
-  ['cat', 6, 8, 2, 4, 0.12, 0.16, 0, 0.25, null],
-  ['cat', 15, -45, 2, 6, 0.12, 0.16, 0, 0.25, null],
-  ['pigeon', 9, -6, 4, 5, 0.06, 0.08, 0, 0.13, null],
-  ['pigeon', 13, 30, 4, 6, 0.06, 0.08, 0, 0.13, null],
-  ['trash_can', 16.5, -15, 2, 8, 0.28, 0.33, 0, 0.55, null],
-  ['trash_can', 16.5, 90, 2, 10, 0.28, 0.33, 0, 0.55, null],
-  ['utility_pole', 17.2, -120, 4, 60, 3.2, 3.6, 0, 6, null],
+  ['person', 8, -12, 6, 8, 0.32, 0.38, 0, 0.6, { x0: 5.5, x1: 10.5, z0: -20, z1: -4 }],
+  ['person', 11, 14, 5, 8, 0.32, 0.38, 0, 0.6, { x0: 8.5, x1: 13.5, z0: 6, z1: 22 }],
+  ['person', 10, -70, 4, 25, 0.32, 0.38, 0, 0.6, { x0: 7, x1: 13, z0: -95, z1: -45 }],
+  ['cat', 6, 8, 2, 4, 0.12, 0.16, 0, 0.25, { x0: 5, x1: 8, z0: 4, z1: 12 }],
+  ['cat', 15, -45, 2, 6, 0.12, 0.16, 0, 0.25, { x0: 13, x1: 17, z0: -51, z1: -39 }],
+  ['pigeon', 9, -6, 4, 5, 0.06, 0.08, 0, 0.13, { x0: 6, x1: 12, z0: -11, z1: -1 }],
+  ['pigeon', 13, 30, 4, 6, 0.06, 0.08, 0, 0.13, { x0: 10, x1: 16, z0: 24, z1: 36 }],
+  ['trash_can', 16.5, -15, 2, 8, 0.28, 0.33, 0, 0.55, { x0: 15.8, x1: 17.5, z0: -23, z1: -7 }],
+  ['trash_can', 16.5, 90, 2, 10, 0.28, 0.33, 0, 0.55, { x0: 15.8, x1: 17.5, z0: 80, z1: 100 }],
+  ['utility_pole', 17.2, -120, 4, 60, 3.2, 3.6, 0, 6, { x0: 16.9, x1: 17.6, z0: -180, z1: -60 }],
   ['yatai_stall', 10, -130, 1, 0, 1.1, 1.3, 0, 2.1, null],
   ['yatai_stall', 12, 110, 1, 0, 1.1, 1.3, 0, 2.1, null],
 ];
@@ -395,16 +405,28 @@ const STREET_CLUSTERS = [
  * prints the table).
  */
 const GUTTER_CLUSTERS = [
-  ['eraser', 17.2, -8, 3, 5, 0.030, 0.040, 0, 0.07, null],
-  ['eraser', 17.2, 18, 2, 6, 0.030, 0.040, 0, 0.07, null],
-  ['button_battery', 17.0, -25, 3, 8, 0.025, 0.035, 0, 0.06, null],
-  ['game_soft', 17.3, 35, 2, 8, 0.040, 0.050, 0, 0.08, null],
-  ['game_soft', 17.3, -45, 2, 8, 0.040, 0.050, 0, 0.08, null],
-  ['magazine_stack', 17.0, -60, 2, 10, 0.060, 0.080, 0, 0.13, null],
-  ['magazine_stack', 17.0, 55, 2, 10, 0.060, 0.080, 0, 0.13, null],
-  ['toolbox', 17.4, -85, 2, 12, 0.050, 0.060, 0, 0.10, null],
-  ['cardboard_box', 17.2, 80, 2, 10, 0.060, 0.080, 0, 0.13, null],
-  ['eraser', 17.1, -110, 2, 12, 0.030, 0.040, 0, 0.07, null],
+  ['eraser', 17.2, -8, 3, 5, 0.030, 0.040, 0, 0.07, { x0: 16.6, x1: 17.8, z0: -13, z1: -3 }],
+  ['eraser', 17.2, 18, 2, 6, 0.030, 0.040, 0, 0.07, { x0: 16.6, x1: 17.8, z0: 12, z1: 24 }],
+  ['button_battery', 17.0, -25, 3, 8, 0.025, 0.035, 0, 0.06, { x0: 16.6, x1: 17.8, z0: -33, z1: -17 }],
+  ['game_soft', 17.3, 35, 2, 8, 0.040, 0.050, 0, 0.08, { x0: 16.6, x1: 17.8, z0: 27, z1: 43 }],
+  ['game_soft', 17.3, -45, 2, 8, 0.040, 0.050, 0, 0.08, { x0: 16.6, x1: 17.8, z0: -53, z1: -37 }],
+  ['magazine_stack', 17.0, -60, 2, 10, 0.060, 0.080, 0, 0.13, { x0: 16.6, x1: 17.8, z0: -70, z1: -50 }],
+  ['magazine_stack', 17.0, 55, 2, 10, 0.060, 0.080, 0, 0.13, { x0: 16.6, x1: 17.8, z0: 45, z1: 65 }],
+  ['toolbox', 17.4, -85, 2, 12, 0.050, 0.060, 0, 0.10, { x0: 16.6, x1: 17.8, z0: -97, z1: -73 }],
+  ['cardboard_box', 17.2, 80, 2, 10, 0.060, 0.080, 0, 0.13, { x0: 16.6, x1: 17.8, z0: 70, z1: 90 }],
+  ['eraser', 17.1, -110, 2, 12, 0.030, 0.040, 0, 0.07, { x0: 16.6, x1: 17.8, z0: -122, z1: -98 }],
+  // ---- Phase-3 exit-lane carpet (shop-exit whiplash fix): a straight
+  // eastward exit previously OUTRAN its own growth chain (r stayed ~0.42m to
+  // the map edge — the only 0.1-0.4m supply was the single gutter line).
+  // These rows put a continuous 0.025-0.30m litter carpet ON the lane the
+  // player is funneled down (x[5,18], z[-40,40]) so the 0.43->0.55m
+  // transition happens within ~20m of the gate without backtracking.
+  ['paperclip', 11, 0, 8, 6, 0.025, 0.040, 0, 0.07, { x0: 5.2, x1: 17.6, z0: -10, z1: 10 }],
+  ['game_soft', 11, -20, 7, 11, 0.045, 0.055, 0, 0.09, { x0: 5.2, x1: 17.6, z0: -30, z1: -8 }],
+  ['mouse', 11, 18, 7, 12, 0.050, 0.065, 0, 0.10, { x0: 5.2, x1: 17.6, z0: 6, z1: 30 }],
+  ['magazine_stack', 11, -29, 6, 11, 0.070, 0.100, 0, 0.16, { x0: 5.5, x1: 17.5, z0: -40, z1: -18 }],
+  ['cardboard_box', 11, 27, 6, 13, 0.100, 0.160, 0, 0.25, { x0: 5.5, x1: 17.5, z0: 14, z1: 40 }],
+  ['trash_can', 12, 0, 4, 16, 0.220, 0.300, 0, 0.47, { x0: 6, x1: 17, z0: -16, z1: 16 }],
 ];
 
 /** District dressing (~55, incl. the scramble crowd x16). */

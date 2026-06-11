@@ -138,7 +138,9 @@ export class Sfx {
     // --- first-gesture AudioContext bootstrap ---------------------------
     this._onGesture = () => {
       this._ensureCtx();
-      if (this._ctx !== null && this._ctx.state === 'suspended') {
+      // `!== 'running'` also covers iOS Safari's non-standard 'interrupted'
+      // state (phone call / Siri) — resume() from it needs a gesture (this is one).
+      if (this._ctx !== null && this._ctx.state !== 'running') {
         this._ctx.resume();
       }
     };

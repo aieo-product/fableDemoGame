@@ -229,10 +229,13 @@ export class Bgm {
   /* Bus / DOM handlers                                                 */
   /* ---------------------------------------------------------------- */
 
-  /** Any user gesture: lazily create + resume our context. */
+  /** Any user gesture: lazily create + resume our context. The guard is
+   *  `state !== 'running'` (not `=== 'suspended'`) so the non-standard iOS
+   *  'interrupted' state (phone call / Siri / media takeover) also resumes —
+   *  resume() from 'interrupted' requires a user gesture, which this is. */
   _onGesture() {
     this._ensureCtx();
-    if (this._ctx !== null && this._ctx.state === 'suspended') {
+    if (this._ctx !== null && this._ctx.state !== 'running') {
       this._ctx.resume();
     }
   }
@@ -248,7 +251,10 @@ export class Bgm {
       this._stopTick();
       if (ctx !== null && ctx.state === 'running') ctx.suspend();
     } else {
-      if (ctx !== null && ctx.state === 'suspended') ctx.resume();
+      // `!== 'running'` also covers iOS Safari's non-standard 'interrupted'
+      // state (phone call / Siri); the nextNoteTime re-anchor below stays
+      // unconditional so a later gesture-resume never bursts backlogged steps.
+      if (ctx !== null && ctx.state !== 'running') ctx.resume();
       if (ctx !== null && this._playing && !this._muted) {
         this._nextNoteTime = ctx.currentTime + LOOKAHEAD_S;
         this._startTick();

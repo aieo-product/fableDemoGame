@@ -117,10 +117,18 @@ export const EDGE_DAMP_PER_FRAME = 0.85;
 export const CURATED_UPDATE_BUDGET = 64;
 /** Hard cap on total curated placements (validator-checked in cityMap.js). */
 export const CURATED_PLACEMENT_CAP = 640;
-/** Chunk-spawner per-band placement-count multiplier vs v2 (the ONE pacing
- *  truth: GROWTH_K=10 kept, pacing authored via density + finite-map travel;
- *  EMPIRICAL — Phase-3 >= 3-playthrough retune is mandatory). */
+/** Chunk-spawner per-band placement-count multiplier vs v2 (base value —
+ *  bands 0..3; see DENSITY_K_BY_BAND for the Phase-3 per-band retune). */
 export const DENSITY_K_V3 = 0.45;
+/** Phase-3 retune (empirical, pacing model + driven runs): per-BAND density
+ *  multipliers. Bands 2-3 keep 0.45 (the Akiba ramp needs supply); bands 4-6
+ *  drop to 0.2 — paired with the growthKForObjR normalization below this is
+ *  what keeps the 12m->420m half of the run inside the 5-8 min target. */
+export const DENSITY_K_BY_BAND = Object.freeze([0.45, 0.45, 0.3, 0.3, 0.2, 0.2, 0.15]);
+/** @param {number} band Chunk band 0..6. @returns {number} Density multiplier. */
+export function densityKForBand(band) {
+  return band >= 0 && band < DENSITY_K_BY_BAND.length ? DENSITY_K_BY_BAND[band] : DENSITY_K_V3;
+}
 
 /* ================================================================== */
 /* v2 Dash (physics/ballPhysics.js, input/input.js)                    */
@@ -171,18 +179,22 @@ export const GOAL_SCORE_BONUS = 20000;
 export const LANDMARK_SCORE_BONUS = 8000;
 /** Time bonus = round(lerp(TIME_BONUS_MAX, 0, clamp01((timeS - FULL) / (ZERO - FULL)))). */
 export const TIME_BONUS_MAX = 30000;
-export const TIME_BONUS_FULL_S = 240;
-export const TIME_BONUS_ZERO_S = 600;
-/** Rank thresholds (sim seconds): S <= 240, A <= 330, B <= 450, C <= 600, else D.
+export const TIME_BONUS_FULL_S = 290;
+export const TIME_BONUS_ZERO_S = 720;
+/** Rank thresholds (sim seconds): S <= 290, A <= 400, B <= 540, C <= 720, else D.
  *  v3 ONE PACING TRUTH (docs/DESIGN-V3.md ティア表): GROWTH_K=10 kept; pacing
- *  authored via chunk density (DENSITY_K_V3 0.45 of v2 per-band counts) +
- *  finite-map travel legs. Targets: typical first clear 5:30-6:30, optimal
- *  ~3:30-4:00 sim-s. EMPIRICAL — Phase-3 >= 3-playthrough retune mandatory.
- *  TIME_BONUS spans the S edge (full at 240s) to the C edge (zero at 600s). */
-export const RANK_S_S = 240;
-export const RANK_A_S = 330;
-export const RANK_B_S = 450;
-export const RANK_C_S = 600;
+ *  authored via chunk density (DENSITY_K_BY_BAND) + the growthKForObjR
+ *  normalization + finite-map travel legs.
+ *  EMPIRICAL (Phase-3 driven-run retune, 2026-06-11): a frame-perfect greedy
+ *  driven full run (agent-browser, seed 12345) reached goal contact at
+ *  4:03 sim (243 s) — the practical optimal. S = ~1.2x optimal = 290 s;
+ *  A = brisk clear (~1.65x), B/C = relaxed first-clear band (the 5-8 min
+ *  first-clear target lands in A/B). TIME_BONUS spans the S edge (full at
+ *  290 s) to the C edge (zero at 720 s). */
+export const RANK_S_S = 290;
+export const RANK_A_S = 400;
+export const RANK_B_S = 540;
+export const RANK_C_S = 720;
 
 /* ================================================================== */
 /* v3 Feedback — absorb names / collection (ui/hud.js, game/collection.js) */
@@ -208,9 +220,13 @@ export const THUMB_SIZE_PX = 96;
 /** Bubble auto-dismiss (s); landmarks/finale use the longer show. */
 export const DONACK_SHOW_S = 4.5;
 export const DONACK_SHOW_LANDMARK_S = 6.0;
-/** Min gap since last bubble (s) per priority class (P3 bypasses). */
-export const DONACK_GAP_P01_S = 8;
-export const DONACK_GAP_P2_S = 4;
+/** Min gap since last bubble DISMISSED (s) per priority class (P3 bypasses).
+ *  Phase-3 cadence retune (driven-run measurement, 2026-06-11): at 8/4 an
+ *  absorb-dense run averaged a 12 s show-to-show gap (felt like spam); with
+ *  16/10 the show-to-show floor is DONACK_SHOW_S + gap = ~20.5 s for P0/P1
+ *  and ~14.5 s for P2, putting the mid-game average at/above 20 s. */
+export const DONACK_GAP_P01_S = 16;
+export const DONACK_GAP_P2_S = 10;
 /** Per-id tip cooldown (s) — tips are the only repeatable lines. */
 export const DONACK_TIP_COOLDOWN_S = 30;
 /** Idle-stuck hint after this long with no absorb (s, 1Hz internal check). */
@@ -313,6 +329,32 @@ export const ABSORB_RATIO = 0.65;
  * Retune against a measured tier-0 playthrough, not arithmetic alone.
  */
 export const GROWTH_K = 10;
+/**
+ * v3 Phase-3 growth normalization (CRITICAL pacing fix — the 4m->117m/3s
+ * cascade): GROWTH_K=10 with ABSORB_RATIO 0.65 makes every near-threshold
+ * absorb a x1.554 radius jump, and the capture rate scales ~R^2, so growth
+ * was super-exponential wherever same-band supply was contiguous. The fix
+ * tapers the effective volume multiplier by OBJECT REAL RADIUS — a
+ * CONTINUOUS function of size (never tier-gated; seamlessness-law
+ * compliant): K = 10 for objects <= 0.1 m (the whole shop interior keeps
+ * its authored ~60s budget), easing down to a floor of 2 for objects
+ * >= ~3.6 m. Curated LANDMARK/COLLECTIBLE slots are EXEMPT in absorb.js
+ * (the authored ladder keeps its designed x1.554 jumps, incl. the BINDING
+ * Tokyo Tower 262->406 finale ramp).
+ */
+export const GROWTH_K_FLOOR = 2;
+export const GROWTH_NORM_REF_M = 0.1;
+export const GROWTH_NORM_POW = 0.65;
+/**
+ * Effective growth multiplier for one absorbed object.
+ * @param {number} objRealM Object bounding radius in REAL meters.
+ * @returns {number} K in [GROWTH_K_FLOOR, GROWTH_K].
+ */
+export function growthKForObjR(objRealM) {
+  if (objRealM <= GROWTH_NORM_REF_M) return GROWTH_K;
+  const k = GROWTH_K * Math.pow(GROWTH_NORM_REF_M / objRealM, GROWTH_NORM_POW);
+  return k < GROWTH_K_FLOOR ? GROWTH_K_FLOOR : k;
+}
 /**
  * Pickup forgiveness: for objects whose radius <= PICKUP_FORGIVE_MAX_RATIO *
  * ballRadius the absorb overlap test is widened by PICKUP_FORGIVE_K *

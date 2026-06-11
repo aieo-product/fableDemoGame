@@ -297,7 +297,9 @@ assert(shows.filter((s) => s === 'col_generic').length === 1, 'generic once per 
 
 /* ---- line-table sanity -------------------------------------------------- */
 const ids = Object.keys(DONACK_LINES);
-assert(ids.length === 43, `line table size 43, got ${ids.length}`);
+// 44 = the original 43 + appended 'col_golden_objet' (collectible id 9 fix:
+// ids 3/9 previously shared the once:true col_generic line).
+assert(ids.length === 44, `line table size 44, got ${ids.length}`);
 for (const id of ids) {
   const l = DONACK_LINES[id];
   assert(typeof l.text === 'string' && l.text.length > 0, `${id} text`);

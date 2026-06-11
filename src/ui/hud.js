@@ -7,8 +7,8 @@
  * #dash-button (--gauge 0-360deg AND --gauge01 0-1 written at 10Hz, snap on
  * EVT.DASH, .flash on EVT.DASH_READY — frozen Phase-0 contract), mute button,
  * #goal-arrow screen-edge guide (EVT.GOAL_GUIDE, 🗼, exclusion zone top 64px /
- * bottom 100px), #hud-toast (queue-of-1, 3 s; max-width capped to 58vw while
- * the collect popup is visible), #collect-popup card (EVT.COLLECT — thumbnail
+ * bottom 110px + live safe-area insets), #hud-toast (queue-of-1, 3 s; own
+ * band row — the popup row sits below it), #collect-popup card (EVT.COLLECT — thumbnail
  * + name + NEW + 「コレクション n/12」, auto-out COLLECT_POPUP_S), landmark
  * center toast (EVT.LANDMARK).
  *
@@ -85,9 +85,12 @@ const FLOAT_OFF_Y = [0, 18, 38, 8, 52, 28, 64, 46];
 const GAUGE_FLASH_MS = 520;
 /** EXTRA archetype code floor (landmarks/collectibles — priority floats). */
 const EXTRA_CODE_BASE = 70;
-/** #goal-arrow exclusion zones (px) — top bar strip / thumb strip. */
+/** #goal-arrow exclusion zones (px) — top bar strip / thumb strip. Safe-area
+ *  insets (--s-t/--s-b/--s-l/--s-r) are ADDED at clamp time (read in the
+ *  constructor + on breakpoint/resize) so the arrow clears the notch bar and
+ *  the 76px dash button + margin on notched phones. */
 const ARROW_EXCLUDE_TOP_PX = 64;
-const ARROW_EXCLUDE_BOTTOM_PX = 100;
+const ARROW_EXCLUDE_BOTTOM_PX = 110;
 /** Half the 56px arrow square (center-anchored margins in index.html). */
 const ARROW_HALF_PX = 28;
 /** Timer display cap (minutes). */
@@ -145,6 +148,18 @@ export class Hud {
     this._onBreakpointChange = this._onBreakpointChange.bind(this);
     if (this._mqDesktop !== null && typeof this._mqDesktop.addEventListener === 'function') {
       this._mqDesktop.addEventListener('change', this._onBreakpointChange);
+    }
+
+    /* --- safe-area insets (goal-arrow exclusion zones) --- */
+    this._safeT = 0;
+    this._safeB = 0;
+    this._safeL = 0;
+    this._safeR = 0;
+    this._readSafeInsets = this._readSafeInsets.bind(this);
+    this._readSafeInsets();
+    if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+      // resize covers orientation changes (the insets rotate with the notch).
+      window.addEventListener('resize', this._readSafeInsets);
     }
 
     /* --- pooled floating '+N name' spans (created once — zero churn later) --- */
@@ -538,10 +553,12 @@ export class Hud {
     const h = window.innerHeight;
     let x = clamp01(p.x01) * w;
     let y = clamp01(p.y01) * h;
-    if (x < ARROW_HALF_PX) x = ARROW_HALF_PX;
-    else if (x > w - ARROW_HALF_PX) x = w - ARROW_HALF_PX;
-    const yMin = ARROW_EXCLUDE_TOP_PX + ARROW_HALF_PX;
-    const yMax = h - ARROW_EXCLUDE_BOTTOM_PX - ARROW_HALF_PX;
+    const xMin = this._safeL + ARROW_HALF_PX;
+    const xMax = w - this._safeR - ARROW_HALF_PX;
+    if (x < xMin) x = xMin;
+    else if (x > xMax) x = xMax;
+    const yMin = ARROW_EXCLUDE_TOP_PX + this._safeT + ARROW_HALF_PX;
+    const yMax = h - ARROW_EXCLUDE_BOTTOM_PX - this._safeB - ARROW_HALF_PX;
     if (y < yMin) y = yMin;
     else if (y > yMax) y = yMax;
     this._arrowEl.style.left = x.toFixed(0) + 'px';
@@ -590,7 +607,9 @@ export class Hud {
       (p.isNew ? 'NEW!　' : '') + 'コレクション ' + p.found + '/' + p.total;
     this._popupEl.classList.add('show');
     this._popupEl.setAttribute('aria-hidden', 'false');
-    this._toastEl.style.maxWidth = '58vw'; // cap while the popup is visible
+    // (The popup lives on its own band row below the toast — the old 58vw
+    // toast width cap is retired; geometrically it never cleared a 198px
+    // right column on <=412px screens anyway.)
     if (this._popupTimer !== 0) clearTimeout(this._popupTimer);
     this._popupTimer = setTimeout(this._hidePopup, COLLECT_POPUP_S * 1000);
   }
@@ -600,6 +619,18 @@ export class Hud {
     this._isDesktop = this._mqDesktop !== null ? this._mqDesktop.matches : true;
     this._lastTimerText = '';
     this._writeTimer(this._lastTimeS);
+    this._readSafeInsets();
+  }
+
+  /** Read the --s-t/--s-b/--s-l/--s-r safe-area insets (constructor, resize,
+   *  breakpoint flips — never per frame). */
+  _readSafeInsets() {
+    if (typeof getComputedStyle !== 'function' || typeof document === 'undefined') return;
+    const cs = getComputedStyle(document.documentElement);
+    this._safeT = parseFloat(cs.getPropertyValue('--s-t')) || 0;
+    this._safeB = parseFloat(cs.getPropertyValue('--s-b')) || 0;
+    this._safeL = parseFloat(cs.getPropertyValue('--s-l')) || 0;
+    this._safeR = parseFloat(cs.getPropertyValue('--s-r')) || 0;
   }
 
   /* ---------------------------------------------------------------- */
@@ -723,7 +754,7 @@ export class Hud {
     this._toastEl.classList.remove('show');
   }
 
-  /** Hides the collect popup + restores the toast width cap (prebound). */
+  /** Hides the collect popup (prebound). */
   _hidePopup() {
     if (this._popupTimer !== 0) {
       clearTimeout(this._popupTimer);
@@ -731,7 +762,6 @@ export class Hud {
     }
     this._popupEl.classList.remove('show');
     this._popupEl.setAttribute('aria-hidden', 'true');
-    this._toastEl.style.maxWidth = '';
   }
 
   /** Ends the dash flash so the next one can restart cleanly (prebound). */

@@ -460,6 +460,9 @@ function resetWorld() {
   simOriginX = 0; // real->sim bridge follows the fresh origin/scale
   simOriginZ = 0;
   spawner.preloadStartArea(ballPhys.state.pos, scaleMgr.tierIndex, ballPhys.state.radiusSim);
+  // Curated preload mirrors the chunk preload: the title orbit shows the
+  // authored shop interior and play never starts mid-materialization.
+  curated.preload(ballPhys.state.pos, scaleMgr.tierIndex, ballPhys.state.radiusSim);
 }
 
 /* ------------------------------------------------------------------ */
@@ -485,7 +488,12 @@ function onGameStart() {
   state = GameState.PLAYING;
   accumulator = 0;
   lastTime = performance.now(); // no huge first-frame dt
+  input.setTouchUiEnabled(true); // re-enable after a finale lockout
 }
+/* Finale cinematic: a skip-tap must not spawn the joystick ring over the
+   cinema or keep feeding steering intent (intent is zeroed anyway, but the
+   128px ring at z-index 15 would sit on top of the shot). */
+bus.on(EVT.GOAL_CONTACT, () => input.setTouchUiEnabled(false));
 
 /** Win -> Title (full world reset). */
 function onGameReset() {
@@ -524,8 +532,17 @@ function onGameWin() {
  * @returns {boolean} True if the teleport ran.
  */
 function devTeleport(name, rOverrideM = 0) {
+  // Finale guard: post-contact the finale owns the run (ball.pos writes,
+  // camera, frozen streaming). Teleporting would re-arm the Skytree base
+  // collider against the MERGE writes and permanently stall streaming
+  // (step 3 stays gated on finale.inputLocked). Refuse — GAME_RESET first.
+  if (finale.inputLocked) {
+    console.warn('[devTeleport] refused: finale owns the run (reset first)');
+    return false;
+  }
   const d = DEV_STARTS[name];
   if (d === undefined) return false;
+  runStats.markDevRun(); // dev starts never persist bests / show NEW RECORD
   const rM = rOverrideM > 0 ? rOverrideM : d.r;
   let ws = START_RADIUS_M / SIM_RADIUS_MIN; // boot worldScale (0.04)
   while (rM / ws >= SIM_RADIUS_MAX) ws *= 5; // minimal k: r/ws in [0.5, 2.5)
@@ -542,11 +559,15 @@ function devTeleport(name, rOverrideM = 0) {
   terrain.reset();
   spawner.onTeleport(); // resyncs the chunk scale exponent (scaleMgr injected)
   curated.forceScan(); // deactivate stale actives + full pass on next update()
+  skytree.onTeleport(); // drop the stale rebase shift (no REBASE event fires here)
   scaleMgr.maybeTierUp(ballPhys.state, store, hashes, instances, cameraRig, env);
   scaleMgr.maybeRebase(ballPhys.state, store, hashes, instances, cameraRig, env, spawner); // one forced pass
   env.setTierPaletteImmediate(scaleMgr.tierIndex);
   backdrop.setProfileImmediate(scaleMgr.tierIndex);
   spawner.preloadStartArea(ballPhys.state.pos, scaleMgr.tierIndex, ballPhys.state.radiusSim);
+  // forceScan() above only SCHEDULED the full pass — run it now with the
+  // fresh pose so a teleport from the title screen materializes immediately.
+  curated.preload(ballPhys.state.pos, scaleMgr.tierIndex, ballPhys.state.radiusSim);
   return true;
 }
 if (import.meta.env && import.meta.env.DEV) {
@@ -571,6 +592,7 @@ try {
 }
 if (devAtName === null || !devTeleport(devAtName, startRadiusM !== null ? startRadiusM : 0)) {
   if (startRadiusM !== null) {
+    runStats.markDevRun(); // ?r= starts never persist bests / show NEW RECORD
     ballPhys.reset(startRadiusSim());
     let devTier = 0;
     while (devTier < TIERS.length - 1 && startRadiusM >= TIERS[devTier + 1].enterTrueRadius) {
@@ -580,6 +602,7 @@ if (devAtName === null || !devTeleport(devAtName, startRadiusM !== null ? startR
     backdrop.setProfileImmediate(devTier); // skip the profile crossfade too
   }
   spawner.preloadStartArea(ballPhys.state.pos, scaleMgr.tierIndex, ballPhys.state.radiusSim);
+  curated.preload(ballPhys.state.pos, scaleMgr.tierIndex, ballPhys.state.radiusSim);
 }
 
 /* ------------------------------------------------------------------ */

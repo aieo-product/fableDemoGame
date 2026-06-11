@@ -32,9 +32,13 @@
        ring from the inline var; without conic-gradient the @supports
        fallback below swaps in a plain bar driven by --gauge01 (hud.js
        writes BOTH custom properties — frozen Phase-0 contract). */
+    /* inherits MUST be true: the var is written on #dash-button but painted
+       by #dash-button::before — a registered non-inheriting property would
+       resolve to initial-value 0deg on the pseudo-element (empty ring
+       forever in every @property-supporting browser). */
     @property --gauge {
       syntax: '<angle>';
-      inherits: false;
+      inherits: true;
       initial-value: 0deg;
     }
 
@@ -50,6 +54,11 @@
     html, body {
       width: 100%; height: 100%;
       overflow: hidden;
+      /* iOS Safari auto text inflation would unpredictably scale the small
+         HUD fonts in landscape (and break the proven 358px top-bar fit);
+         applies even with user-scalable=no. */
+      -webkit-text-size-adjust: 100%;
+      text-size-adjust: 100%;
       background: #0b0c14;
       color: #eef0f8;
       font-family: 'Avenir Next', 'Hiragino Kaku Gothic ProN', 'Segoe UI', system-ui, sans-serif;
@@ -148,6 +157,7 @@
       flex: none;
       width: 36px; height: 36px;
       align-self: center;
+      position: relative; /* anchors the ::after hit-area extender */
       pointer-events: auto;
       font-size: 17px; line-height: 1;
       color: #eef0f8;
@@ -156,6 +166,15 @@
       border-radius: 50%;
       cursor: pointer;
       transition: transform 0.12s ease, border-color 0.12s ease;
+    }
+    /* 44px-min tap target (Apple HIG / WCAG 2.5.5) without changing the
+       36px visual: a button's pseudo-element participates in hit-testing,
+       so inset:-6px makes the effective target 48x48. */
+    #mute-button::after {
+      content: '';
+      position: absolute;
+      inset: -6px;
+      border-radius: 50%;
     }
     #mute-button:hover { transform: scale(1.08); border-color: rgba(255, 255, 255, 0.4); }
 
@@ -180,7 +199,7 @@
     #tier-label {
       position: absolute;
       left: 6px; top: -12px;
-      font-size: 9px; letter-spacing: 0.2em;
+      font-size: 10px; letter-spacing: 0.2em;
       color: #aab3d0; text-transform: uppercase;
       white-space: nowrap;
     }
@@ -207,7 +226,8 @@
       text-overflow: ellipsis;
       transition: opacity 0.3s ease, transform 0.3s cubic-bezier(0.2, 1.4, 0.4, 1);
       z-index: 12;
-      /* When #collect-popup is visible hud.js caps this to 58vw (one line in hud.js). */
+      /* The collect popup lives on its OWN row below (top 118px) — no width
+         cap needed while it shows (the old 58vw JS cap is retired). */
     }
     #hud-toast.show {
       opacity: 1;
@@ -220,7 +240,11 @@
     #donack-root {
       position: fixed;
       left: calc(8px + var(--s-l));
-      top: calc(118px + var(--s-t));
+      /* Third exclusive mid-band row (toast 74 / popup 118 / Donack 206):
+         every EVT.COLLECT fires the popup AND a Donack line simultaneously,
+         and at <=430px a left bubble (avatar 56 + bubble up to 337px) ran
+         deep under the 198px right popup column. Rows can never collide. */
+      top: calc(206px + var(--s-t));
       display: flex;
       align-items: flex-start;
       gap: 8px;
@@ -274,12 +298,14 @@
     .dk-speaking-0 { background-image: url('/assets/donack/speaking-0.webp'); }
     .dk-speaking-3 { background-image: url('/assets/donack/speaking-3.webp'); }
 
-    /* ---- 5) #collect-popup — mid-right band (opposite side from the
-            toast: no overlap by construction). ---- */
+    /* ---- 5) #collect-popup — mid-right band, SECOND row (below the toast
+            row): a centered toast can never clear a 198px right column on a
+            <=412px screen (58vw at 390px still overlapped 124px), so the
+            popup gets its own row instead of shrinking the toast. ---- */
     #collect-popup {
       position: fixed;
       right: calc(8px + var(--s-r));
-      top: calc(74px + var(--s-t));
+      top: calc(118px + var(--s-t));
       width: 198px;
       display: flex;
       align-items: center;
@@ -467,8 +493,13 @@
     .overlay {
       position: fixed; inset: 0;
       display: flex; flex-direction: column;
-      align-items: center; justify-content: center;
-      overflow-y: auto; /* short viewports: content must stay reachable */
+      align-items: center;
+      /* Overflow-safe centering: justify-content:center clips overflowing
+         column content ABOVE the scrollport with no way to scroll up. The
+         margin:auto pair below absorbs free space when short (= centered)
+         and collapses to 0 when tall (= fully scrollable). */
+      justify-content: flex-start;
+      overflow-y: auto;
       gap: 16px;
       padding: calc(12px + var(--s-t)) calc(12px + var(--s-r)) calc(12px + var(--s-b)) calc(12px + var(--s-l));
       background:
@@ -477,6 +508,8 @@
       z-index: 20;
       text-align: center;
     }
+    .overlay > :first-child { margin-top: auto; }
+    .overlay > :last-child { margin-bottom: auto; }
     .game-title {
       font-size: clamp(40px, 9vw, 96px);
       font-weight: 900;
@@ -517,7 +550,8 @@
        persists LS_DONACK_KEY, and keeps the label text in sync). */
     #donack-toggle {
       font-size: 14px;
-      padding: 9px 22px;
+      min-height: 44px; /* tap-target floor (was ~38px) */
+      padding: 11px 22px;
       letter-spacing: 0.08em;
     }
     .key-hints {
@@ -652,23 +686,26 @@
       align-items: center; justify-content: center;
       gap: 1px;
       overflow: hidden;
-      font-size: 8px; color: #b9c2e2;
+      font-size: 9px; color: #b9c2e2; /* ja-glyph readability floor */
     }
     .collect-cell img { width: 38px; height: 38px; }
     .collect-cell.unfound::before { content: '？'; font-size: 18px; font-weight: 800; color: #3c4260; }
     .collect-cell .cell-new {
       position: absolute;
       top: 2px; right: 2px;
-      font-size: 7px; font-weight: 900;
+      font-size: 8px; font-weight: 900; /* readability floor */
       color: #101225;
       background: linear-gradient(180deg, #ffe27a, #ff9d5c);
       border-radius: 4px;
-      padding: 1px 3px;
+      padding: 1px 4px;
     }
     @media (max-width: 360px) {
       #collection-grid { grid-template-columns: repeat(4, 48px); }
       .collect-cell { width: 48px; height: 48px; }
       .collect-cell img { width: 32px; height: 32px; }
+      /* 9px ja names are still noise inside a 48px cell — the thumbnail
+         carries the cell; keep only the NEW badge. */
+      .collect-cell span:not(.cell-new) { display: none; }
     }
 
     /* staged reveal machinery: screens.js adds .staged to #win-overlay, then
@@ -724,11 +761,14 @@
       #progress-bar { top: calc(46px + var(--s-t)); }
       /* EXPLICIT landscape toast anchor (was the spec gap): center, 60vw. */
       #hud-toast { top: calc(50px + var(--s-t)); max-width: 60vw; }
-      #donack-root { left: calc(8px + var(--s-l)); top: calc(58px + var(--s-t)); }
+      /* Donack/popup drop BELOW the toast band (y ~50..82) on their own
+         sides; the bubble is capped so it can never reach the popup column. */
+      #donack-root { left: calc(8px + var(--s-l)); top: calc(96px + var(--s-t)); }
       #donack-avatar { width: 48px; height: 48px; }
+      #donack-bubble { max-width: min(55vw, 300px); }
       #score-float-layer { bottom: 38vh; }
       #dash-button { width: 68px; height: 68px; bottom: calc(16px + var(--s-b)); }
-      #collect-popup { width: 180px; }
+      #collect-popup { width: 180px; top: calc(90px + var(--s-t)); }
     }
 
     /* ================================================================
@@ -778,6 +818,9 @@
         width: 44px; height: 44px;
         font-size: 20px;
       }
+      /* Below the 44px fixed mute button (bottom edge 148px) — the shared
+         mobile top (118px) slid the card's corner under the button. */
+      #collect-popup { top: calc(156px + var(--s-t)); }
       @supports (backdrop-filter: blur(6px)) or (-webkit-backdrop-filter: blur(6px)) {
         .pill, #mute-button { backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); }
       }

@@ -9,7 +9,9 @@
  * collisionScale fudge; absorbability uses the RAW bounding radius — both
  * CONTINUOUS in ball radius, never tier-gated):
  *   objRadius <= ABSORB_RATIO * ballRadius  -> ABSORB:
- *     newR = cbrt(R^3 + GROWTH_K * r^3); sluggish *= SLUGGISH_FACTOR;
+ *     newR = cbrt(R^3 + K * r^3) with K = growthKForObjR(objRealRadius)
+ *     (curated landmark/collectible slots keep K = GROWTH_K — authored
+ *     ladder exemption); sluggish *= SLUGGISH_FACTOR;
  *     hash.remove -> emit 'absorb' (handlers may read store fields
  *     synchronously during the emit; render/ball steals instanceSlot for the
  *     attach animation) -> store.free.
@@ -41,6 +43,7 @@ import {
   FIXED_DT,
   ABSORB_RATIO,
   GROWTH_K,
+  growthKForObjR,
   PICKUP_FORGIVE_K,
   PICKUP_FORGIVE_MAX_RATIO,
   RADIUS_SLEW_K,
@@ -227,7 +230,20 @@ export class Absorb {
   _absorbOne(i, hash, store, ball) {
     const r = store.radius[i];
     const R = ball.radiusSim;
-    ball.radiusSim = Math.cbrt(R * R * R + GROWTH_K * r * r * r);
+    const ws = this._worldScale();
+    // v3 Phase-3 pacing: growth multiplier tapers with OBJECT REAL RADIUS
+    // (continuous — seamlessness-law compliant). Curated landmark/collectible
+    // slots are EXEMPT: the authored ladder keeps its designed x1.554 jumps
+    // (incl. the BINDING Tokyo Tower 262->406 finale ramp). The ids are read
+    // BEFORE store.free and reused for the event payload below.
+    const collectibleId = this._curated !== null ? this._curated.collectibleIdFor(i) : -1;
+    const landmarkId =
+      this._curated !== null && typeof this._curated.landmarkIdFor === 'function'
+        ? this._curated.landmarkIdFor(i)
+        : -1;
+    const k =
+      collectibleId >= 0 || landmarkId >= 0 ? GROWTH_K : growthKForObjR(r * ws);
+    ball.radiusSim = Math.cbrt(R * R * R + k * r * r * r);
     ball.sluggish *= SLUGGISH_FACTOR;
     if (ball.sluggish < SLUGGISH_MIN) ball.sluggish = SLUGGISH_MIN;
 
@@ -242,7 +258,6 @@ export class Absorb {
 
     hash.remove(i);
 
-    const ws = this._worldScale();
     const p = PAYLOADS.absorb;
     p.objIndex = i;
     p.archetypeId = ARCHETYPE_ID_BY_CODE[store.archetype[i]] || '';
@@ -256,7 +271,7 @@ export class Absorb {
     // (collection.js matches on collectibleId >= 0; hud renders
     // DISPLAY_NAME_BY_CODE[archetypeCode] floats).
     p.archetypeCode = store.archetype[i];
-    p.collectibleId = this._curated !== null ? this._curated.collectibleIdFor(i) : -1;
+    p.collectibleId = collectibleId;
     // Emit BEFORE freeing: render/ball reads px/py/pz/radius/instanceSlot
     // synchronously to start the attach animation. Handlers must not retain.
     this._bus.emit(EVT.ABSORB, p);
