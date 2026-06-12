@@ -17,6 +17,11 @@
  *                 _despawnIndex / leftover cleanup ALL skip flagged slots and
  *                 its _aliveCount counts only chunk-owned objects. Curated
  *                 collectibles additionally carry FLAG_RARE (gold tint).
+ *   FLAG_OSM    (32) — v4: slot owned by world/osmSpawner.js (OSM real-Tokyo
+ *                 buildings, docs/DESIGN-V4.md). The chunk spawner's skip-bit
+ *                 test widens to (FLAG_CURATED|FLAG_OSM); OSM render slots
+ *                 live in render/osmPools.js (exclusive ownership, invisible
+ *                 to the chunk POOL_BY_CODE path, like EXTRA codes).
  *
  * Archetype encoding: store.archetype holds a uint16 CODE
  *   code = tierIndex * ARCH_PER_TIER + indexWithinTier   (0..69, v3 stride 10)
@@ -25,9 +30,14 @@
  * curated codes 70..93 (frozen by docs/DESIGN-V3.md Phase-0 appendix:
  * 70..81 collectibles where code = 70 + COLLECTIBLE_ID, 82..91 landmark
  * singletons, 92 shop shell, 93 Skytree display-name reservation — code 93
- * must NEVER be spawned into the store).
+ * must NEVER be spawned into the store), PLUS the 16 OSM voxel-building
+ * codes 94..109 (v4, frozen by docs/DESIGN-V4.md Phase-0 appendix §B:
+ * code = OSM_CODE_BASE + typeIndex from the binary tile record's type bits
+ * 0-4). OSM codes are spawned ONLY by osmSpawner from decoded tile data and,
+ * because render/ball.knockOff skips everything >= EXTRA_CODE_BASE (70),
+ * absorbed OSM buildings are PERMANENTLY STUCK — no reinject path exists.
  * Use archetypeCode() / ARCHETYPE_ID_BY_CODE / ARCHETYPE_CODE_BY_ID below —
- * spawner/curated write codes, absorb/hud read ids/names back.
+ * spawner/curated/osmSpawner write codes, absorb/hud read ids/names back.
  *
  * tierOf is CURATED-MUTABLE (docs/DESIGN-V3.md dynamic re-banding): the chunk
  * spawner stamps it once at spawn; CuratedSpawner re-stamps its OWN flagged
@@ -63,6 +73,13 @@ export const FLAG_RARE = 8;
  * re-enter the chunk path; EXTRA codes >= EXTRA_CODE_BASE never knock off).
  */
 export const FLAG_CURATED = 16;
+/**
+ * v4: slot owned by the OsmSpawner (world/osmSpawner.js — real-Tokyo OSM
+ * buildings). VALUE FROZEN at 32 by docs/DESIGN-V4.md Phase 0. The chunk
+ * spawner's skip-bit test is (FLAG_CURATED|FLAG_OSM); knockOff never
+ * reinjects OSM codes (>= EXTRA_CODE_BASE skip — permanently stuck).
+ */
+export const FLAG_OSM = 32;
 
 /* ================================================================== */
 /* Archetype code <-> id mapping (derived from the frozen tier table)  */
@@ -115,9 +132,47 @@ export const EXTRA_ARCHETYPE_IDS = [
 ];
 
 /**
- * Flat archetype id table (94 entries, v3):
+ * First OSM voxel-building code (v4, FROZEN by docs/DESIGN-V4.md Phase-0
+ * appendix §B). Codes 94..109 = OSM_CODE_BASE + typeIndex (the binary tile
+ * record's type bits 0-4); 16 archetypes, order frozen below. Like EXTRA
+ * codes they are >= EXTRA_CODE_BASE, so render/ball.knockOff's existing skip
+ * makes every absorbed OSM building permanently stuck (no reinject path).
+ */
+export const OSM_CODE_BASE = 94;
+
+/**
+ * The 16 OSM voxel-building archetype ids, FROZEN in code order 94..109
+ * (docs/DESIGN-V4.md Phase-0 appendix §B — append-only, never reorder; the
+ * build pipeline's type->code step and the binary tile format's type bits
+ * index into exactly this order). config/catalog.js implements these ids in
+ * OSM_CATALOG (unitBox:true, axis-aligned normals, <=72 tris) and
+ * cross-asserts there in dev mode.
+ * @type {string[]}
+ */
+export const OSM_ARCHETYPE_IDS = [
+  'osm_house', // 94
+  'osm_shop_low', // 95
+  'osm_zakkyo', // 96
+  'osm_office_mid', // 97
+  'osm_office_tower', // 98
+  'osm_apartment_tower', // 99
+  'osm_hotel', // 100
+  'osm_school', // 101
+  'osm_temple', // 102 (flat-roofed v1 — axis-aligned-normals law)
+  'osm_shrine', // 103 (flat-roofed v1)
+  'osm_station', // 104
+  'osm_warehouse', // 105
+  'osm_parking', // 106
+  'osm_merged_block', // 107 (MERGED flag fold — bit 5 of the type byte)
+  'osm_tower_generic', // 108
+  'osm_stepped_roof', // 109
+];
+
+/**
+ * Flat archetype id table (110 entries, v4):
  * codes 0..69: ARCHETYPE_ID_BY_CODE[tier*ARCH_PER_TIER + i] ===
- * TIERS[tier].archetypeIds[i]; codes 70..93: EXTRA_ARCHETYPE_IDS[code - 70].
+ * TIERS[tier].archetypeIds[i]; codes 70..93: EXTRA_ARCHETYPE_IDS[code - 70];
+ * codes 94..109: OSM_ARCHETYPE_IDS[code - OSM_CODE_BASE].
  * @type {string[]}
  */
 export const ARCHETYPE_ID_BY_CODE = [];
@@ -140,6 +195,11 @@ for (let e = 0; e < EXTRA_ARCHETYPE_IDS.length; e++) {
   const code = EXTRA_CODE_BASE + e;
   ARCHETYPE_ID_BY_CODE[code] = EXTRA_ARCHETYPE_IDS[e];
   ARCHETYPE_CODE_BY_ID[EXTRA_ARCHETYPE_IDS[e]] = code;
+}
+for (let o = 0; o < OSM_ARCHETYPE_IDS.length; o++) {
+  const code = OSM_CODE_BASE + o;
+  ARCHETYPE_ID_BY_CODE[code] = OSM_ARCHETYPE_IDS[o];
+  ARCHETYPE_CODE_BY_ID[OSM_ARCHETYPE_IDS[o]] = code;
 }
 
 /**
@@ -166,8 +226,9 @@ export function archetypeTierOfCode(code) {
 }
 
 /* Boot DEV-assert: the v3 stride migration (6 -> 7 tiers, 60 -> 70 chunk
-   codes) + the 24 frozen EXTRA codes must produce exactly 94 entries —
-   cross-checked again from ball.js (chunk section) against this very table. */
+   codes) + the 24 frozen EXTRA codes + the 16 frozen v4 OSM codes must
+   produce exactly 110 entries — cross-checked again from ball.js (chunk
+   section) against this very table. */
 if (import.meta.env && import.meta.env.DEV) {
   if (EXTRA_CODE_BASE !== 70) {
     throw new Error(
@@ -181,20 +242,35 @@ if (import.meta.env && import.meta.env.DEV) {
         `found ${EXTRA_ARCHETYPE_IDS.length}`
     );
   }
-  if (ARCHETYPE_ID_BY_CODE.length !== 94) {
+  if (OSM_CODE_BASE !== 94 || OSM_CODE_BASE !== EXTRA_CODE_BASE + EXTRA_ARCHETYPE_IDS.length) {
     throw new Error(
-      `[objects.js invariant] ARCHETYPE_ID_BY_CODE must have exactly 94 entries ` +
-        `(70 chunk + 24 EXTRA), found ${ARCHETYPE_ID_BY_CODE.length}`
+      `[objects.js invariant] OSM_CODE_BASE must be 94 (= EXTRA_CODE_BASE 70 + 24 EXTRA codes), ` +
+        `found ${OSM_CODE_BASE}`
+    );
+  }
+  if (OSM_ARCHETYPE_IDS.length !== 16) {
+    throw new Error(
+      `[objects.js invariant] OSM_ARCHETYPE_IDS must have exactly 16 entries (codes 94..109), ` +
+        `found ${OSM_ARCHETYPE_IDS.length}`
+    );
+  }
+  if (FLAG_OSM !== 32) {
+    throw new Error(`[objects.js invariant] FLAG_OSM frozen at 32, found ${FLAG_OSM}`);
+  }
+  if (ARCHETYPE_ID_BY_CODE.length !== 110) {
+    throw new Error(
+      `[objects.js invariant] ARCHETYPE_ID_BY_CODE must have exactly 110 entries ` +
+        `(70 chunk + 24 EXTRA + 16 OSM), found ${ARCHETYPE_ID_BY_CODE.length}`
     );
   }
   const uniq = new Set();
-  for (let c = 0; c < 94; c++) {
+  for (let c = 0; c < 110; c++) {
     const id = ARCHETYPE_ID_BY_CODE[c];
     if (typeof id !== 'string' || id.length === 0) {
       throw new Error(`[objects.js invariant] hole in ARCHETYPE_ID_BY_CODE at code ${c}`);
     }
     if (uniq.has(id)) {
-      throw new Error(`[objects.js invariant] duplicate archetype id '${id}' (EXTRA id collides with chunk id?)`);
+      throw new Error(`[objects.js invariant] duplicate archetype id '${id}' (EXTRA/OSM id collides with chunk id?)`);
     }
     uniq.add(id);
     if (ARCHETYPE_CODE_BY_ID[id] !== c) {

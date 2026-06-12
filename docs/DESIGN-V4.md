@@ -278,3 +278,86 @@ INTEGRATION (lead + W), order P -> C (boots with new codes, A/B approval gate) -
 - ODbL is a RELEASE GATE, not a docs nicety: linked in-app credit (osm.org/copyright), license link + extraction timestamp in README/manifest, and the derivative-database offer (public data/osm-raw/ + scripts/osm/) must all exist before deploy.
 - Absorbed OSM buildings skip the world-slot fly-on animation (EXTRA-pool precedent); at T3-T5 buildings dominate absorbs. If the pop feels flat, the documented post-ship polish lever is a 0.15 s BatchedMesh slot animation pre-attach.
 - Opening-minute regression remains the highest-trust invariant: shop/strip/gutter data byte-identical, OSM excluded from x[0,25]xz[-190,190], and the integration checklist still mandates the full ?at=shop T0/T1 validator + visual run before deploy.
+---
+
+## Phase-0 付録（確定・FROZEN — 2026-06-11 Phase-0 実装時点）
+
+Phase 0 はここに書かれた契約を**凍結**した。以降の変更は lead（Phase-0 owner）経由のみ。実装済み: `src/types.js`（OSM typedefs + Archetype.unitBox/heroTriCap）, `src/core/events.js`（EVT.OSM_READY + v4 ABSORB 順序）, `src/config/tuning.js`（v4 定数一式）, `index.html`（ODbL クレジット + #osm-progress）, `public/_headers`（/assets/tokyo/* immutable）, `package.json`（osm:fetch/build/verify + predeploy）, `src/main.js`（OSM 呼び出しサイトの no-op スタブ骨格 — v3 はスタブのまま起動・プレイ可能）。
+
+### A. バイナリタイルフォーマット v1（FROZEN — 再掲、これが正本）
+
+リトルエンディアン。`public/assets/tokyo/` に `tokyo-v4-core.bin`（detail タイル, 100 game m グリッド）/ `tokyo-v4-outer.bin`（tower 400 m + ground 200 m グリッド）/ `tokyo-v4-manifest.json`。
+
+```
+HEADER (16 B):  magic 'FKT4' u32 | version u16 (=1) | sectionCount u16 | flags u32 | reserved u32
+SECTION (16 B): type u8 (1=detail, 2=tower, 3=road, 4=poly) | pad u8 | tileX i16 | tileZ i16
+                | count u16 | byteOffset u32 | byteLen u32
+DETAIL (10 B):  cx u16, cz u16 (tile-local, 0.05 m) | w u8, d u8 (0.25 m, max 63.75)
+                | h u8 (0.5 m, max 127.5) | yaw u8 (pi/128)
+                | type u8 (bits 0-4 = code-94; bit 5 = MERGED; bits 6-7 RESERVED —
+                  COMPOSITE/FOLLOW は v1 から削除済み) | tint u8
+TOWER (12 B):   cx u16, cz u16 | w u8, d u8 | h u16 (0.25 m) | yaw u8 | type u8 | tint u8 | pad u8
+ROAD (8+4(n-1) B): classAndCount u8 (class:3, n:5, n<=31, 長いウェイは事前分割)
+                | width u8 (0.25 m) | pad u16 | firstX u16, firstZ u16 (0.1 m tile-local)
+                | (n-1) x (dx i16, dz i16 @ 0.1 m)
+POLY (6+4n+2t B): kind u8 (water/park + layer bits) | pad u8 | n u16 | t u16
+                | verts (ROAD と同形式) | tri indices u16  — n, t は両方 u16（隅田川/上野公園対策;
+                  verify が max-n ヒストグラムで u16 天井の安全を証明する）
+```
+
+量子化（ボクセル法 — FROZEN）: center 0.05 m / w,d 0.25 m / h 0.5 m (tower 0.25 m) / yaw pi/128。タイル内レコードは**バンドソート済み**（per-band 連続レンジ; OsmTile.bandStart）。manifest スキーマ: `{version, shardGzBytes{core,outer}, perBandCounts, bandHistogram, tileIndexSummary, extractionDate, attribution:"© OpenStreetMap contributors", license:"ODbL", licenseUrl:"https://opendatacommons.org/licenses/odbl/"}`（runtime 形は `src/types.js` OsmManifest）。
+
+### B. Phase-0 凍結値（実装座標）
+
+- `world/objects.js`（Stream C が実装、**値はここで凍結**）: `FLAG_OSM = 32`、`OSM_CODE_BASE = 94`、コード 94..109 = 16 アーキタイプ（順序固定）: osm_house, osm_shop_low, osm_zakkyo, osm_office_mid, osm_office_tower, osm_apartment_tower, osm_hotel, osm_school, osm_temple, osm_shrine, osm_station, osm_warehouse, osm_parking, osm_merged_block, osm_tower_generic, osm_stepped_roof。`ARCHETYPE_ID_BY_CODE.length === 110`（boot assert）。knockOff は既存の `>= EXTRA_CODE_BASE(70)` スキップで OSM を恒久スタックにする（再注入経路なし）。
+- HERO_ARCHETYPE_IDS（12, FROZEN）: person, cat, pigeon, car, taxi, bus, vending_machine, signboard, bicycle, truck, konbini, zakkyo_building。HERO_TRI_CAP 600（他は 350）。
+- バンド表（境界 1.6 — 8x8x6.5 m 家屋 r_eff 1.72 が band 3）/ KEEP_K 初期値 [-,-,0.35,0.6,1.0,1.0] / OSM_ALIVE_CAP {192,1536,768,128} / OSM_ADMISSION_HEADROOM 128 / プール 2048+1024（feasibility assert 1728<=2048, 896<=1024）— すべて `src/config/tuning.js` に凍結済み。geo.mjs の ANCHOR/スケール K/カバレッジ定義/EXPECTED_COUNTS プロトコルは本文どおり凍結（tuning.js はランタイムミラー、validateCityMap がクロスチェック）。
+- クラスシグネチャは §インターフェース のとおり凍結。`src/main.js` のスタブが正準の呼び出しサイト（コンストラクタ引数・呼び出し位置までコメントで固定）。
+
+### C. デッドラインラッチ・プロトコル（ONE-WAY、main.js 実装済み）
+
+1. タイトル画面で `osmWorld.load('/assets/tokyo/')` を起動（取得+デコードはタイトル作業 — サムネ事前レンダと同じ免除台帳項目）。
+2. 正常系: デコード完了 → `EVT.OSM_READY {buildings}` → main が `cityMap.setOsmCoverageActive(true)` を **セッションに一度だけ**呼ぶ（`decideOsmCoverage` ラッチ）。
+3. 失敗系: `TIER_UP` で tierIndex >= 2 に入った時点で `!osmWorld.ready && !osmWorld.failed` なら main が `osmWorld.abortAndFail()`（AbortController で fetch 取消、`failed=true` 恒久、遅延データ破棄）→ `setOsmCoverageActive(false)`。バンド 3/4 はカバレッジ内でも手続き生成のまま恒久確定。
+4. ラッチは**セッション単位**: `resetWorld()` では再armしない。`?osmdelay=ms`（osmWorld DEV）でレースをテスト可能。失敗パスは同一シードでも通常ランと異なる（容認済み決定論カベアット — 免除台帳）。tier 2 到達まで実測 ~80 s の猶予。
+
+### D. ドローコール台帳 v4（honest, 二重計上なし — cap 72 据え置き)
+
+```
+v3 worst                                   64  (40 world + 8 stuck + 6 fixed + 1 backdrop
+                                               + 2 skytree + 1 terrain + 2 bay water/quay [KEPT]
+                                               + 4 EXTRA pools)
++ OSM building batches (detail/large)       2
++ OSM ground batch (roads/rail/parks)       1
++ OSM river/water mesh (env water material) 1
+= v4 worst                                 68  -> DRAW_CALL_CAP 72
+超過時の事前承認レバー（順序固定）: (1) river を ground バッチへ水色クラスとして統合 (-1);
+(2) osm-large をバンド 4/5 ウィンドウ外で非表示 (-1)。
+```
+
+トライアングル: OSM alive worst ~110k + ground ~40k + hero pass +~110k modeled、band-3/4 手続きプール分は**移行**（加算ではない）→ TRI_BUDGET 600k 内。Phase-3 プロファイルで renderer.info 実測（秋葉原 r=4 / 丸の内 r=40 駐機）。
+
+### E. JS バンドル予算（Phase-0 スパイク実測）
+
+| ビルド | gz |
+|---|---|
+| v3 ベースライン | 205.42 KB |
+| + Phase-0 骨格（no-op スタブ） | 205.65 KB |
+| + 現実構造スタブ（OsmWorld decode/fetch + OsmSpawner + osmPools + OsmGround + rim + 16 voxel builders, ~600 行） | 209.52 KB |
+
+実装は スタブの ~3-5x 密度 → 推定フル v4 デルタ +15-25 KB（設計の +20-30 KB 期待と整合）。**JS_GZ_BUDGET_KB = 240 で凍結**（tuning.js）。
+
+### F. ODbL コンプライアンス・チェックリスト（リリースゲート — 全項目必須）
+
+- [x] **アプリ内リンク付きクレジット**: タイトル画面 + リザルト画面に `© OpenStreetMap contributors` → https://www.openstreetmap.org/copyright （index.html 実装済み; リザルト側は staged-reveal セレクタ外 = スクリーンショット構図に常時写る）
+- [ ] **ライセンスリンク + 抽出日時**: README v4 セクション + tokyo-v4-manifest.json の `extractionDate`/`licenseUrl` (https://opendatacommons.org/licenses/odbl/) — Stream P + INTEGRATOR
+- [ ] **派生データベースの提供**: 公開リポジトリの `data/osm-raw/`（タグ削減済み生レスポンス）+ `scripts/osm/`（再現可能パイプライン）が ODbL derivative-database offer を構成 — Stream P
+- [ ] **predeploy ゲート**: `npm run osm:verify`（gz 予算 1536 KB / EXPECTED_COUNTS ±20% / 重複ゼロ / カバレッジ外ゼロ / 除外帯違反ゼロ / バイト同一性 / ナビゲビリティ >=95% @ brackets 1,3）が deploy 前に green — package.json `predeploy` 配線済み
+- [ ] **Google Maps 系データ不使用の確認**（規約上の派生データセット禁止により不採用 — 設計判断、混入監査は code review で）
+
+### G. 免除台帳への v4 追加（本文より再掲・確定）
+
+1. **タイトル画面ブートデコード**（OsmWorld の ~5-10 ms 一括デコード）— サムネ事前レンダと同類のタイトル作業免除。
+2. **OSM 静的データのシード非依存**（curated と同じ扱い; `?seed=` はチャンクフィラーのみ変える）。
+3. **失敗パス決定論カベアット**（デッドライン/フェッチ失敗時はバンド 3/4 がカバレッジ内で手続き生成に戻る — 同一シード再現はデータ到達に条件付き; one-way・文書化・`?osmdelay` でテスト可能）。
+4. **吸収 OSM 建物のフライオンアニメ省略**（EXTRA プール前例; absorb-pop エフェクトで隠蔽 — ポストシップ磨きレバー: 0.15 s BatchedMesh slot アニメ）。

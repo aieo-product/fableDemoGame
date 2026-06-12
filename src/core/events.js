@@ -30,18 +30,24 @@
  *   'goalContact' {}                              (finale once = run end -> runStats freeze+GOAL, bgm duck, sfx fanfare, hud hide, screens flash; #donack-root survives — outside #hud)
  *   'landmark'    {landmarkId, nameJa, sizeReal}  (curated, AFTER the normal ABSORB chain -> hud toast, effects gold ring, sfx fanfare sting, Donack trivia, runStats bonus)
  *   'collect'     {collectibleId, nameJa, isNew, found, total} (collection -> #collect-popup, Donack, sfx gliss)
+ *   ---- v4 (Real Tokyo — docs/DESIGN-V4.md §インターフェース) ----
+ *   'osmReady'    {buildings}                     (osmWorld, once after both shards decode -> main: cityMap.setOsmCoverageActive(true) + arms osmSpawner; debug overlay)
  *
- * v3 CONTRACT NOTES (binding — docs/DESIGN-V3.md):
- *  - FROZEN ABSORB subscription order at boot:
- *      chunk spawner -> curated -> main attach (render/ball; sets
- *      store.instanceSlot = -1 when it steals the world instance) ->
+ * v3 CONTRACT NOTES (binding — docs/DESIGN-V3.md; v4 EXTENDS the order):
+ *  - FROZEN ABSORB subscription order at boot (v4, docs/DESIGN-V4.md):
+ *      chunk spawner -> curated -> osmSpawner -> main attach (render/ball;
+ *      sets store.instanceSlot = -1 when it steals the world instance) ->
  *      runStats -> collection -> sfx/effects/hud.
  *    The chunk spawner's handler is bookkeeping ONLY and skips
- *    FLAG_CURATED slots; curated keeps FLAG_RARE/identity valid THROUGH its
- *    ABSORB handler and defers slot bookkeeping to its next update() tick;
- *    because main's attach-handler runs AFTER curated, curated's ABSORB
- *    handler MUST NOT read instanceSlot — only its consumed bitmask
- *    (slot-steal convention).
+ *    FLAG_CURATED|FLAG_OSM slots; curated keeps FLAG_RARE/identity valid
+ *    THROUGH its ABSORB handler and defers slot bookkeeping to its next
+ *    update() tick; osmSpawner follows the SAME deferred convention (sets
+ *    its consumed bit, defers slot bookkeeping one tick); because main's
+ *    attach-handler runs AFTER curated/osmSpawner, neither curated's nor
+ *    osmSpawner's ABSORB handler may read instanceSlot — only their
+ *    consumed bitmasks (slot-steal convention). OSM render slots live in
+ *    osmPools (render/osmPools.js), invisible to main's chunk-code
+ *    POOL_BY_CODE — exclusive ownership like EXTRA codes.
  *  - DUAL-TAG rule: an object carrying BOTH collectibleId and landmarkId
  *    (ハチ公像) emits EVT.COLLECT FIRST, then EVT.LANDMARK, in the same
  *    frame. sfx plays the landmark fanfare ONLY (one boolean suppresses the
@@ -81,6 +87,8 @@ export const EVT = Object.freeze({
   GOAL_CONTACT: 'goalContact',
   LANDMARK: 'landmark',
   COLLECT: 'collect',
+  // ---- v4 (Real Tokyo) ----
+  OSM_READY: 'osmReady',
 });
 
 /**
@@ -159,6 +167,9 @@ export const PAYLOADS = {
   muteRequest: {},
   /** @type {import('../types.js').MuteChangedEvent} */
   muteChanged: { muted: false },
+  // ---- v4 (Real Tokyo) ----
+  /** @type {import('../types.js').OsmReadyEvent} */
+  osmReady: { buildings: 0 },
 };
 
 /**

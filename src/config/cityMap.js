@@ -26,6 +26,26 @@
  *  - validateCityMap()  every authored-data assert from the spec; DEV builds
  *                run it at module load; headless tests call it directly.
  *
+ * v4 "Real Tokyo" (docs/DESIGN-V4.md 地理マッピング — Stream W):
+ *  - GENERATED GEOGRAPHY: every landmark / collectible / district position
+ *    below derives from the scripts/osm/geo.mjs reconciliation (real OSM
+ *    lat/lon -> 1:5 game mapping). HAND ARITHMETIC IS BANNED — the
+ *    OSM_GEN table is generated output (stamped below), district shifts are
+ *    computed in code as (generated - v3) deltas, and validateCityMap() v4
+ *    cross-checks inter-landmark REAL distances + the coverage rects against
+ *    the same formulas geo.mjs uses (identical IEEE math by construction).
+ *  - OSM_COVERAGE / OSM_EXCLUSIONS exports (geo.mjs-generated geometry,
+ *    re-derived here from the frozen anchor/bboxes — never hand-redefined).
+ *  - setOsmCoverageActive(active): ONE-SHOT per-session latch (main calls it
+ *    exactly once — on EVT.OSM_READY or at the tier-2 deadline). When active,
+ *    bandAllowedAt() masks bands 3 AND 4 OFF inside the coverage geometry
+ *    (OSM owns them there); bands 5/6 procedural fill continues map-wide;
+ *    band-2 chunk clutter continues everywhere.
+ *  - Shop interior, exit lane, gutter carpet, 中央通り strip placements and
+ *    the 秋葉原 zone rect are BYTE-IDENTICAL to v3 (opening-minute
+ *    no-regress gate). The curated strip x[0,25] x z[-190,190] is an OSM
+ *    exclusion zone baked at convert.
+ *
  * FROZEN EXTRA archetype codes (docs/DESIGN-V3.md Phase-0 追補):
  *   collectibles: code = 70 + collectibleId (70..81; 80 = ハチ公像 DUAL)
  *   landmarks:    82 西郷さん像, 83 雷門, 84 ラジオ会館風ビル, 85 渋谷109,
@@ -44,6 +64,10 @@ import {
   GROWTH_K,
   INTERIOR_ITEM_Y_MAX,
   MAP_BOUNDS as MAP_BOUNDS_TUNING,
+  OSM_ANCHOR_LAT,
+  OSM_ANCHOR_LON,
+  OSM_DETAIL_RADIUS_REAL_M,
+  OSM_HORIZ_K,
   PICKUP_FORGIVE_K,
   SKYTREE_COLLIDER_K,
   START_RADIUS_M,
@@ -57,6 +81,181 @@ import {
 /** @typedef {import('../types.js').ZoneRect} ZoneRect */
 
 /* ================================================================== */
+/* v4 GENERATED geography (scripts/osm/geo.mjs is the single source of */
+/* geographic truth; this block re-derives/re-exports — never redefines)*/
+/* ================================================================== */
+
+/* Projection mirrors (IDENTICAL formulas to geo.mjs — the validator's
+ * coverage-rect cross-check proves bit-equality at module load). */
+const M_PER_DEG_LAT = 110941;
+const M_PER_DEG_LON = 111320 * Math.cos((OSM_ANCHOR_LAT * Math.PI) / 180);
+/** real lat/lon -> game meters (+X east, +Z south; origin = anchor = ball start). */
+function geoToGameX(lon) {
+  return (lon - OSM_ANCHOR_LON) * M_PER_DEG_LON * OSM_HORIZ_K;
+}
+function geoToGameZ(lat) {
+  return (OSM_ANCHOR_LAT - lat) * M_PER_DEG_LAT * OSM_HORIZ_K;
+}
+
+/** Frozen patch bboxes {s,w,n,e} (geo.mjs SHIBUYA_BBOX / ASAKUSA_BBOX). */
+const SHIBUYA_BBOX = Object.freeze({ s: 35.652, w: 139.692, n: 35.666, e: 139.709 });
+const ASAKUSA_BBOX = Object.freeze({ s: 35.705, w: 139.789, n: 35.717, e: 139.803 });
+/** bbox -> game rect (geo.mjs bboxToGameRect — identical math). */
+function bboxToGameRect(bb) {
+  return Object.freeze({
+    x0: geoToGameX(bb.w), x1: geoToGameX(bb.e),
+    z0: geoToGameZ(bb.n), z1: geoToGameZ(bb.s),
+  });
+}
+
+/** GENERATED CROSS-CHECK CONSTANTS (pasted from `node scripts/osm/geo.mjs`,
+ *  2026-06-12, full double precision) — validateCityMap() asserts the rects
+ *  computed above are EXACTLY equal, so a drifted formula on either side can
+ *  never silently move the coverage geometry. */
+const SHIBUYA_RECT_XCHECK = Object.freeze({
+  x0: -1397.6243827813041, x1: -1090.2555017039085,
+  z0: 725.5541400001221, z1: 1036.1889400000289,
+});
+const ASAKUSA_RECT_XCHECK = Object.freeze({
+  x0: 356.1862916015433, x1: 609.3136054302286,
+  z0: -406.0440599999208, z1: -139.7856599999107,
+});
+
+/**
+ * v4 OSM coverage geometry (geo.mjs-generated; docs/DESIGN-V4.md 地理マッピング):
+ * detail disc r = 500 game m (2,500 real m around the anchor) + the Shibuya
+ * and Asakusa patch rects. The pipeline clips/excludes against the SAME
+ * geometry; bandAllowedAt() masks bands 3/4 inside it once the one-shot
+ * coverage latch is active.
+ */
+export const OSM_COVERAGE = Object.freeze({
+  detailRadiusGameM: OSM_DETAIL_RADIUS_REAL_M * OSM_HORIZ_K, // 500
+  shibuyaRect: bboxToGameRect(SHIBUYA_BBOX),
+  asakusaRect: bboxToGameRect(ASAKUSA_BBOX),
+});
+
+/** @param {number} x @param {number} z @param {{x0:number,x1:number,z0:number,z1:number}} r */
+function inRect(x, z, r) {
+  return x >= r.x0 && x <= r.x1 && z >= r.z0 && z <= r.z1;
+}
+
+/**
+ * The coverage law (geo.mjs inCoverage, identical): detail disc OR one of the
+ * two patch rects. GAME METERS (= the v3 real-meter convention).
+ * @param {number} x @param {number} z @returns {boolean}
+ */
+export function inOsmCoverage(x, z) {
+  const r = OSM_COVERAGE.detailRadiusGameM;
+  if (x * x + z * z <= r * r) return true;
+  return inRect(x, z, OSM_COVERAGE.shibuyaRect) || inRect(x, z, OSM_COVERAGE.asakusaRect);
+}
+
+/**
+ * GENERATED landmark reconciliation values (geo.mjs reconcileLandmarks() over
+ * the committed data/osm-raw/landmarks.json — DO NOT HAND-EDIT; regenerate
+ * with `node scripts/osm/geo.mjs`. Stamped 2026-06-12, extractionDate
+ * 2026-06-11). x/z are game meters rounded to 0.1 (geo.mjs rounding).
+ * validateCityMap() v4 asserts the inter-landmark REAL distances + the
+ * bridge span against the frozen ground-truth windows so a stale or
+ * mis-pasted table can never ship.
+ */
+export const OSM_GEN = Object.freeze({
+  hachiko: Object.freeze({ x: -1241.6, z: 879.5 }),
+  saigo: Object.freeze({ x: 88.1, z: -291.9 }),
+  kaminarimon: Object.freeze({ x: 489.9, z: -274.5 }),
+  radio_kaikan: Object.freeze({ x: 47.9, z: 18.1 }),
+  shibuya109: Object.freeze({ x: -1275.4, z: 867.6 }),
+  scramble: Object.freeze({ x: -1242.7, z: 870.7 }),
+  dome: Object.freeze({ x: -313.4, z: -151.2 }),
+  tokyo_station: Object.freeze({ x: -20.3, z: 386.6 }),
+  diet: Object.freeze({ x: -441.6, z: 506.2 }),
+  rainbow_bridge: Object.freeze({
+    x: -111, z: 1378.6, // midpoint of the true span
+    endA: Object.freeze({ x: -189, z: 1347.7 }),
+    endB: Object.freeze({ x: -32.9, z: 1409.5 }),
+    spanGameM: 167.9, spanRealM: 840,
+  }),
+  tokyo_tower: Object.freeze({ x: -431.4, z: 890.5 }),
+  skytree: Object.freeze({ x: 748.8, z: -251.7 }),
+});
+
+/** Inter-landmark REAL-distance ground truth (real meters, [min,max] —
+ *  mirrors geo.mjs DISTANCE_GROUND_TRUTH, frozen). Asserted in validate. */
+const DISTANCE_GROUND_TRUTH = Object.freeze([
+  Object.freeze({ a: 'hachiko', b: 'shibuya109', minM: 60, maxM: 200 }),
+  Object.freeze({ a: 'hachiko', b: 'scramble', minM: 10, maxM: 150 }),
+  Object.freeze({ a: 'tokyo_station', b: 'radio_kaikan', minM: 1500, maxM: 2500 }),
+  Object.freeze({ a: 'kaminarimon', b: 'skytree', minM: 900, maxM: 1700 }),
+  Object.freeze({ a: 'tokyo_tower', b: 'diet', minM: 1500, maxM: 2500 }),
+  Object.freeze({ a: 'dome', b: 'radio_kaikan', minM: 1400, maxM: 2400 }),
+]);
+/** Rainbow Bridge true-span window (real m — geo.mjs BRIDGE_SPAN_REAL_M). */
+const BRIDGE_SPAN_REAL_M = Object.freeze({ min: 650, max: 950 });
+
+/** 上野動物園 表門 reference coordinate (real lat/lon, design ~(42,-387)) —
+ *  the パンダのぬいぐるみ collectible maps through the SAME projection. */
+const UENO_ZOO_GATE = Object.freeze({
+  x: geoToGameX(139.77162),
+  z: geoToGameZ(35.71614),
+});
+
+/* v3 -> v4 DISTRICT SHIFT DELTAS (computed, never hand-typed): each remote
+ * district's zone rect, dressing clusters and collectibles ride the SAME
+ * delta = (reconciled landmark) - (v3 authored landmark position), so every
+ * district keeps its authored internal layout at its TRUE geo position. */
+/** @param {{x:number,z:number}} gen @param {number} v3x @param {number} v3z */
+function delta(gen, v3x, v3z) {
+  return Object.freeze({ x: gen.x - v3x, z: gen.z - v3z });
+}
+const D_UENO = delta(OSM_GEN.saigo, -80, -420); //        西郷さん像 anchor
+const D_ASAKUSA = delta(OSM_GEN.kaminarimon, 350, -600); // 雷門 anchor
+const D_MARUNOUCHI = delta(OSM_GEN.tokyo_station, -120, 480);
+const D_NAGATACHO = delta(OSM_GEN.diet, -650, 650);
+const D_SHIBUYA = delta(OSM_GEN.shibuya109, -1150, 950);
+const D_SCRAMBLE = delta(OSM_GEN.scramble, -1180, 990);
+const D_SUIDOBASHI = delta(OSM_GEN.dome, -550, -120);
+const D_WANGAN = delta(OSM_GEN.rainbow_bridge, 440, 1430); // 橋 midpoint anchor
+
+/* ================================================================== */
+/* v4 OSM coverage latch (chunk-spawner band masks 3/4)                */
+/* ================================================================== */
+
+/** Active = OSM owns bands 3/4 inside coverage (bandAllowedAt masks them). */
+let osmCoverageActive = false;
+/** ONE-SHOT guard — per session, never re-armed by resetWorld. */
+let osmCoverageDecided = false;
+
+/**
+ * ONE-SHOT per-session latch (frozen interface — main.js calls this EXACTLY
+ * ONCE, on EVT.OSM_READY (true) or at the tier-2 deadline (false), always
+ * before band 3 ever matters (~80 s slack). After the single flip the masks
+ * are static again, preserving chunk determinism on the normal path (the
+ * failure path is the documented determinism caveat).
+ * @param {boolean} active
+ */
+export function setOsmCoverageActive(active) {
+  if (osmCoverageDecided) {
+    if (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.DEV) {
+      throw new Error('[cityMap] setOsmCoverageActive called twice — one-shot per session');
+    }
+    return; // prod: latched, ignore
+  }
+  osmCoverageDecided = true;
+  osmCoverageActive = !!active;
+}
+
+/**
+ * v4 OSM EXCLUSION zones (geo.mjs buildExclusions, re-derived from the SAME
+ * inputs: shop interior +2 m, the frozen curated 中央通り strip, dioramaR*1.2
+ * circles at the reconciled positions of the 6 deduped landmarks, and the
+ * Skytree base circle r=110). The pipeline bakes these (verify asserts zero
+ * violations); exported for the validator + headless cross-checks.
+ * Built after LANDMARKS below (dioramaR source) — see the assignment there.
+ * @type {Array<{kind:string,label:string}>}
+ */
+export let OSM_EXCLUSIONS = null; // assigned once below (module load)
+
+/* ================================================================== */
 /* Bounds / fixed positions                                            */
 /* ================================================================== */
 
@@ -64,8 +263,13 @@ import {
 export const MAP_BOUNDS = MAP_BOUNDS_TUNING;
 
 /** 東京スカイツリー (GOAL) fixed position — finale contact + permanent terrain
- *  base collider + environment silhouette azimuth all derive from this. */
-export const SKYTREE_POS = Object.freeze({ x: 900, z: -520 });
+ *  base collider + environment silhouette azimuth all derive from this.
+ *  v4: GENERATED (rounded reconciled position — DESIGN-V4 frozen (749,-252));
+ *  terrain.js imports this with ZERO code change. */
+export const SKYTREE_POS = Object.freeze({
+  x: Math.round(OSM_GEN.skytree.x), // 749
+  z: Math.round(OSM_GEN.skytree.z), // -252
+});
 
 /** Dev teleport starts (?at=name&r=meters; main.js devTeleport). FROZEN. */
 export const DEV_STARTS = Object.freeze({
@@ -146,33 +350,42 @@ function bandMask(...bands) {
 /** T6 (スカイライン) chunk band is allowed MAP-WIDE (added to every zone). */
 const MASK_T6 = bandMask(6);
 
+/** Shift a v3 zone rect by a generated district delta (same size — v4 rule). */
+function zoneShift(x0, x1, z0, z1, d, mask) {
+  return Object.freeze({ x0: x0 + d.x, x1: x1 + d.x, z0: z0 + d.z, z1: z1 + d.z, bandMask: mask });
+}
+const D_NONE = Object.freeze({ x: 0, z: 0 });
+
 /**
  * Zone-mask rects, FIRST MATCH WINS, evaluated in order. ~10 axis-aligned
  * rects in REAL METERS (docs/DESIGN-V3.md §C district masks). Everything
  * else inside MAP_BOUNDS falls back to GENERAL_FILL_MASK. Bands 0/1 are
  * allowed NOWHERE — T0/T1 content is 100% curated (shop interior + gutter).
+ * v4: remote district rects are RE-CENTERED on the reconciled landmark
+ * positions (same sizes, computed deltas — hand arithmetic banned); the
+ * 中央通り strip and 秋葉原 blocks stay byte-identical (opening minute).
  * @type {ZoneRect[]}
  */
 export const ZONES = Object.freeze([
   // 中央通り strip — curated dressing only (gutter line / vending rows); no
-  // chunk filler so the exit street stays authored. T6 still allowed.
-  Object.freeze({ x0: 4.6, x1: 18, z0: -180, z1: 180, bandMask: MASK_T6 }),
-  // 秋葉原 blocks.
-  Object.freeze({ x0: 18, x1: 260, z0: -260, z1: 260, bandMask: bandMask(2, 3) | MASK_T6 }),
-  // 上野公園.
-  Object.freeze({ x0: -300, x1: 200, z0: -650, z1: -250, bandMask: bandMask(3, 4) | MASK_T6 }),
-  // 浅草.
-  Object.freeze({ x0: 200, x1: 600, z0: -750, z1: -450, bandMask: bandMask(3, 4) | MASK_T6 }),
-  // 丸の内/銀座.
-  Object.freeze({ x0: -350, x1: 150, z0: 300, z1: 750, bandMask: bandMask(4, 5) | MASK_T6 }),
-  // 永田町/霞が関.
-  Object.freeze({ x0: -850, x1: -450, z0: 500, z1: 850, bandMask: bandMask(4, 5) | MASK_T6 }),
-  // 渋谷.
-  Object.freeze({ x0: -1400, x1: -950, z0: 800, z1: 1200, bandMask: bandMask(3, 4, 5) | MASK_T6 }),
-  // 水道橋.
-  Object.freeze({ x0: -750, x1: -350, z0: -300, z1: 50, bandMask: bandMask(4, 5) | MASK_T6 }),
-  // 湾岸.
-  Object.freeze({ x0: 100, x1: 900, z0: 1100, z1: 1600, bandMask: bandMask(5, 6) }),
+  // chunk filler so the exit street stays authored. T6 still allowed. FROZEN.
+  zoneShift(4.6, 18, -180, 180, D_NONE, MASK_T6),
+  // 秋葉原 blocks — origin-anchored (the shop IS the anchor). FROZEN.
+  zoneShift(18, 260, -260, 260, D_NONE, bandMask(2, 3) | MASK_T6),
+  // 上野公園 (西郷さん像 anchor).
+  zoneShift(-300, 200, -650, -250, D_UENO, bandMask(3, 4) | MASK_T6),
+  // 浅草 (雷門 anchor).
+  zoneShift(200, 600, -750, -450, D_ASAKUSA, bandMask(3, 4) | MASK_T6),
+  // 丸の内/銀座 (東京駅 anchor).
+  zoneShift(-350, 150, 300, 750, D_MARUNOUCHI, bandMask(4, 5) | MASK_T6),
+  // 永田町/霞が関 (国会議事堂 anchor).
+  zoneShift(-850, -450, 500, 850, D_NAGATACHO, bandMask(4, 5) | MASK_T6),
+  // 渋谷 (渋谷109 anchor).
+  zoneShift(-1400, -950, 800, 1200, D_SHIBUYA, bandMask(3, 4, 5) | MASK_T6),
+  // 水道橋 (東京ドーム anchor).
+  zoneShift(-750, -350, -300, 50, D_SUIDOBASHI, bandMask(4, 5) | MASK_T6),
+  // 湾岸 (レインボーブリッジ midpoint anchor).
+  zoneShift(100, 900, 1100, 1600, D_WANGAN, bandMask(5, 6)),
 ]);
 
 /** General fill for everywhere else inside bounds. */
@@ -184,6 +397,9 @@ const GENERAL_FILL_MASK = bandMask(4, 5) | MASK_T6;
  * deterministic draws — chunk contents stay a pure function of
  * (seed, cx, cz, band)). Mask 0 inside the shop interior rect and outside
  * MAP_BOUNDS.
+ * v4: once the ONE-SHOT coverage latch is ACTIVE, bands 3 and 4 are masked
+ * OFF inside the OSM coverage geometry (OSM owns them there — static after
+ * the single per-session flip, before band 3 ever matters).
  * @param {number} xReal Real-meter X (origin = ball start).
  * @param {number} zReal Real-meter Z.
  * @param {number} band  Chunk band 0..6.
@@ -198,6 +414,10 @@ export function bandAllowedAt(xReal, zReal, band) {
   }
   const sh = SHOP.interior;
   if (xReal >= sh.x0 && xReal <= sh.x1 && zReal >= sh.z0 && zReal <= sh.z1) return false;
+  // v4: OSM owns bands 3/4 inside coverage (one-shot latch; see header).
+  if (osmCoverageActive && (band === 3 || band === 4) && inOsmCoverage(xReal, zReal)) {
+    return false;
+  }
   const bit = 1 << band;
   for (let i = 0; i < ZONES.length; i++) {
     const z = ZONES[i];
@@ -216,44 +436,79 @@ export function bandAllowedAt(xReal, zReal, band) {
 const GOLD = 0xffd84a;
 
 /**
- * Geo-faithful at ~1:5 compression; absorb threshold = dioramaR / 0.65.
+ * Geo-faithful at 1:5 compression; absorb threshold = dioramaR / 0.65.
  * landmarkId order = threshold ladder order (frozen Phase-0 appendix).
  * ハチ公像 (id 0) is DUAL landmark+collectible — its single placement is
  * emitted from COLLECTIBLES below (code 80) carrying BOTH ids.
+ * v4: x/z are the geo.mjs-GENERATED reconciled positions (OSM_GEN above);
+ * dioramaR / collisionScale / sizeReal / threshold ladder UNCHANGED from v3
+ * (growth ladder untouched — binding).
  * @type {LandmarkDef[]}
  */
 export const LANDMARKS = Object.freeze([
-  { landmarkId: 0, nameJa: 'ハチ公像', x: -1150, z: 962, dioramaR: 1.2, collisionScale: 1.0, sizeReal: 1.6, archetypeCode: 70 + 10, naturalBand: 2, colorHex: 0x7a6a4f },
-  { landmarkId: 1, nameJa: '西郷さん像', x: -80, z: -420, dioramaR: 4.0, collisionScale: 1.0, sizeReal: 3.7, archetypeCode: CODE_SAIGO, naturalBand: 3, colorHex: 0x6e7b5a },
-  { landmarkId: 2, nameJa: '雷門', x: 350, z: -600, dioramaR: 7.0, collisionScale: 0.8, sizeReal: 11.7, archetypeCode: CODE_KAMINARIMON, naturalBand: 3, colorHex: 0xc0392b },
-  { landmarkId: 3, nameJa: 'ラジオ会館風ビル', x: 120, z: 60, dioramaR: 24, collisionScale: 0.9, sizeReal: 46, archetypeCode: CODE_RADIO_KAIKAN, naturalBand: 4, colorHex: 0xd8d3c0 },
-  { landmarkId: 4, nameJa: '渋谷109', x: -1150, z: 950, dioramaR: 28, collisionScale: 0.9, sizeReal: 60, archetypeCode: CODE_SHIBUYA109, naturalBand: 4, colorHex: 0xc7ccd4 },
+  { landmarkId: 0, nameJa: 'ハチ公像', x: OSM_GEN.hachiko.x, z: OSM_GEN.hachiko.z, dioramaR: 1.2, collisionScale: 1.0, sizeReal: 1.6, archetypeCode: 70 + 10, naturalBand: 2, colorHex: 0x7a6a4f },
+  { landmarkId: 1, nameJa: '西郷さん像', x: OSM_GEN.saigo.x, z: OSM_GEN.saigo.z, dioramaR: 4.0, collisionScale: 1.0, sizeReal: 3.7, archetypeCode: CODE_SAIGO, naturalBand: 3, colorHex: 0x6e7b5a },
+  { landmarkId: 2, nameJa: '雷門', x: OSM_GEN.kaminarimon.x, z: OSM_GEN.kaminarimon.z, dioramaR: 7.0, collisionScale: 0.8, sizeReal: 11.7, archetypeCode: CODE_KAMINARIMON, naturalBand: 3, colorHex: 0xc0392b },
+  // ラジオ会館: the REAL one (~180 m real east of the fictional shop) — its
+  // real OSM footprint is deduped out by the exclusion circle below.
+  { landmarkId: 3, nameJa: 'ラジオ会館風ビル', x: OSM_GEN.radio_kaikan.x, z: OSM_GEN.radio_kaikan.z, dioramaR: 24, collisionScale: 0.9, sizeReal: 46, archetypeCode: CODE_RADIO_KAIKAN, naturalBand: 4, colorHex: 0xd8d3c0 },
+  { landmarkId: 4, nameJa: '渋谷109', x: OSM_GEN.shibuya109.x, z: OSM_GEN.shibuya109.z, dioramaR: 28, collisionScale: 0.9, sizeReal: 60, archetypeCode: CODE_SHIBUYA109, naturalBand: 4, colorHex: 0xc7ccd4 },
   // スクランブル交差点: flat decal r18 (yK flattens the rest pose); the x16
   // crowd is authored as curated 'person' placements in DISTRICT_CLUSTERS.
-  { landmarkId: 5, nameJa: 'スクランブル交差点', x: -1180, z: 990, dioramaR: 18, collisionScale: 0.1, sizeReal: 50, archetypeCode: CODE_SCRAMBLE, naturalBand: 4, colorHex: 0x8a8f99 },
-  { landmarkId: 6, nameJa: '東京ドーム', x: -550, z: -120, dioramaR: 55, collisionScale: 0.9, sizeReal: 56, archetypeCode: CODE_DOME, naturalBand: 5, colorHex: 0xe8e6df },
+  { landmarkId: 5, nameJa: 'スクランブル交差点', x: OSM_GEN.scramble.x, z: OSM_GEN.scramble.z, dioramaR: 18, collisionScale: 0.1, sizeReal: 50, archetypeCode: CODE_SCRAMBLE, naturalBand: 4, colorHex: 0x8a8f99 },
+  { landmarkId: 6, nameJa: '東京ドーム', x: OSM_GEN.dome.x, z: OSM_GEN.dome.z, dioramaR: 55, collisionScale: 0.9, sizeReal: 56, archetypeCode: CODE_DOME, naturalBand: 5, colorHex: 0xe8e6df },
   // 東京駅丸の内駅舎 — Phase-3 ladder respace: dioramaR 65 -> 88 so the
   // absorb threshold (135.4m) sits ABOVE the Tokyo Dome landing (~131m).
-  // Previously L6->L7->L8->L9 chained with zero filler (Dome 84.6m ->
-  // goal 420m in 7 landmark absorbs + ~4s travel, skipping T5/T6 entirely).
-  { landmarkId: 7, nameJa: '東京駅丸の内駅舎', x: -120, z: 480, dioramaR: 88, collisionScale: 0.55, sizeReal: 335, archetypeCode: CODE_TOKYO_STATION, naturalBand: 5, colorHex: 0xa0522d },
+  { landmarkId: 7, nameJa: '東京駅丸の内駅舎', x: OSM_GEN.tokyo_station.x, z: OSM_GEN.tokyo_station.z, dioramaR: 88, collisionScale: 0.55, sizeReal: 335, archetypeCode: CODE_TOKYO_STATION, naturalBand: 5, colorHex: 0xa0522d },
   // 国会議事堂 — respaced 75 -> 140 (thresh 215.4m > Station landing ~210m).
-  { landmarkId: 8, nameJa: '国会議事堂', x: -650, z: 650, dioramaR: 140, collisionScale: 0.7, sizeReal: 206, archetypeCode: CODE_DIET, naturalBand: 5, colorHex: 0xcfc8b8 },
-  // レインボーブリッジ: 3 spans share landmarkId 9 (placements below).
-  // Respaced 90 -> 150 (thresh 230.8m); from the Diet landing (~334m) the
-  // bridge->tower run IS the intended finale ramp, so chaining there is fine.
-  { landmarkId: 9, nameJa: 'レインボーブリッジ', x: 440, z: 1430, dioramaR: 150, collisionScale: 0.5, sizeReal: 798, archetypeCode: CODE_BRIDGE_SPAN, naturalBand: 5, colorHex: 0xdfe3e8 },
+  // 3,350 m real from the anchor = OUTSIDE detail coverage by design.
+  { landmarkId: 8, nameJa: '国会議事堂', x: OSM_GEN.diet.x, z: OSM_GEN.diet.z, dioramaR: 140, collisionScale: 0.7, sizeReal: 206, archetypeCode: CODE_DIET, naturalBand: 5, colorHex: 0xcfc8b8 },
+  // レインボーブリッジ: 3 deck segments share landmarkId 9 (placements below,
+  // GENERATED from the true bridge-way span — midpoint here). Respaced 90 ->
+  // 150 (thresh 230.8m); the bridge->tower run IS the intended finale ramp.
+  { landmarkId: 9, nameJa: 'レインボーブリッジ', x: OSM_GEN.rainbow_bridge.x, z: OSM_GEN.rainbow_bridge.z, dioramaR: 150, collisionScale: 0.5, sizeReal: 798, archetypeCode: CODE_BRIDGE_SPAN, naturalBand: 5, colorHex: 0xdfe3e8 },
   // 東京タワー — PENULTIMATE (1:1, absorbed normally @ ~262m; its GROWTH_K=10
   // jump to ~406m IS the ramp into the finale band — BINDING resolution).
-  { landmarkId: 10, nameJa: '東京タワー', x: -480, z: 1050, dioramaR: 170, collisionScale: 0.45, sizeReal: 333, archetypeCode: CODE_TOKYO_TOWER, naturalBand: 5, colorHex: 0xe85d3d },
+  { landmarkId: 10, nameJa: '東京タワー', x: OSM_GEN.tokyo_tower.x, z: OSM_GEN.tokyo_tower.z, dioramaR: 170, collisionScale: 0.45, sizeReal: 333, archetypeCode: CODE_TOKYO_TOWER, naturalBand: 5, colorHex: 0xe85d3d },
 ]);
 
-/** Extra landmark placements beyond the def table: bridge spans 2 & 3. */
-const BRIDGE_SPANS = Object.freeze([
-  { x: 300, z: 1380 },
-  { x: 440, z: 1430 },
-  { x: 580, z: 1480 },
-]);
+/** v4 GENERATED bridge deck segments: 3 points at t = 1/6, 1/2, 5/6 along the
+ *  TRUE span (endA -> endB from the actual OSM bridge ways — ~168 game m,
+ *  direction SSW). All three share landmarkId 9. */
+const BRIDGE_SPANS = Object.freeze([1 / 6, 1 / 2, 5 / 6].map((t) =>
+  Object.freeze({
+    x: OSM_GEN.rainbow_bridge.endA.x + t * (OSM_GEN.rainbow_bridge.endB.x - OSM_GEN.rainbow_bridge.endA.x),
+    z: OSM_GEN.rainbow_bridge.endA.z + t * (OSM_GEN.rainbow_bridge.endB.z - OSM_GEN.rainbow_bridge.endA.z),
+  })
+));
+
+/* OSM_EXCLUSIONS (declared with the coverage block above; built HERE where
+ * LANDMARKS' dioramaR values exist — geo.mjs buildExclusions, same inputs). */
+{
+  /** Landmark key -> landmarkId (the dioramaR source is LANDMARKS itself —
+   *  no duplicated radii; geo.mjs EXCLUSION_LANDMARK_KEYS order). */
+  const idByKey = {
+    radio_kaikan: 3, shibuya109: 4, tokyo_station: 7,
+    diet: 8, dome: 6, kaminarimon: 2,
+  };
+  const dioramaRByKey = {};
+  for (const key of Object.keys(idByKey)) {
+    dioramaRByKey[key] = LANDMARKS[idByKey[key]].dioramaR;
+  }
+  const sh = SHOP.interior;
+  const out = [
+    Object.freeze({ kind: 'rect', x0: sh.x0 - 2, x1: sh.x1 + 2, z0: sh.z0 - 2, z1: sh.z1 + 2, label: 'shop interior +2m' }),
+    Object.freeze({ kind: 'rect', x0: 0, x1: 25, z0: -190, z1: 190, label: '中央通り curated strip' }),
+  ];
+  for (const key of ['radio_kaikan', 'shibuya109', 'tokyo_station', 'diet', 'dome', 'kaminarimon']) {
+    out.push(Object.freeze({
+      kind: 'circle', x: OSM_GEN[key].x, z: OSM_GEN[key].z,
+      r: dioramaRByKey[key] * 1.2, label: `landmark ${key} dioramaR*1.2`,
+    }));
+  }
+  out.push(Object.freeze({ kind: 'circle', x: OSM_GEN.skytree.x, z: OSM_GEN.skytree.z, r: 110, label: 'skytree base' }));
+  OSM_EXCLUSIONS = Object.freeze(out);
+}
 
 /* ================================================================== */
 /* Collectibles (FROZEN EXPLICIT ids 0..11 — append-only, never reused) */
@@ -282,6 +537,10 @@ export const COLLECTIBLE_IDS = Object.freeze({
 /**
  * 12 collectible defs (archetypeCode = 70 + id, frozen mapping). y = surface
  * rest height (shop shelf/table items); landmarkId -1 except ハチ公像.
+ * v4: district collectibles (ids 5..11) are RECOMPUTED via geo.mjs values —
+ * shop interior (0..3) and the 秋葉原 exit-lane ゲーミングPC (4) are FROZEN
+ * (opening minute byte-identical). パンダ sits at the GENERATED 上野動物園
+ * 表門 mapping; ハチ公像 at its reconciled position.
  * @type {CollectibleDef[]}
  */
 export const COLLECTIBLES = Object.freeze([
@@ -290,14 +549,14 @@ export const COLLECTIBLES = Object.freeze([
   { id: 2, nameJa: 'レトロゲーム機', x: 0.45, y: 0, z: 3.0, radiusReal: 0.07, archetypeCode: 72, landmarkId: -1, naturalBand: 1, rIntent: 0.15 },
   { id: 3, nameJa: '秋葉原フィギュア', x: 0.06, y: 0.7, z: -2.9, radiusReal: 0.05, archetypeCode: 73, landmarkId: -1, naturalBand: 1, rIntent: 0.4 },
   { id: 4, nameJa: 'ゲーミングPC', x: 9, y: 0, z: -38, radiusReal: 0.25, archetypeCode: 74, landmarkId: -1, naturalBand: 2, rIntent: 0.4 },
-  { id: 5, nameJa: '特上大トロ', x: -100, y: 0, z: 460, radiusReal: 0.3, archetypeCode: 75, landmarkId: -1, naturalBand: 2, rIntent: 0.5 },
-  { id: 6, nameJa: 'だるま', x: -120, y: 0, z: -380, radiusReal: 0.5, archetypeCode: 76, landmarkId: -1, naturalBand: 2, rIntent: 0.8 },
-  { id: 7, nameJa: 'パンダのぬいぐるみ', x: -260, y: 0, z: -470, radiusReal: 0.6, archetypeCode: 77, landmarkId: -1, naturalBand: 2, rIntent: 1.0 },
-  { id: 8, nameJa: '雷おこし', x: 360, y: 0, z: -585, radiusReal: 0.4, archetypeCode: 78, landmarkId: -1, naturalBand: 2, rIntent: 0.7 },
-  { id: 9, nameJa: '金色のオブジェ', x: 430, y: 0, z: -560, radiusReal: 3.0, archetypeCode: 79, landmarkId: -1, naturalBand: 3, rIntent: 5 },
+  { id: 5, nameJa: '特上大トロ', x: -100 + D_MARUNOUCHI.x, y: 0, z: 460 + D_MARUNOUCHI.z, radiusReal: 0.3, archetypeCode: 75, landmarkId: -1, naturalBand: 2, rIntent: 0.5 },
+  { id: 6, nameJa: 'だるま', x: -120 + D_UENO.x, y: 0, z: -380 + D_UENO.z, radiusReal: 0.5, archetypeCode: 76, landmarkId: -1, naturalBand: 2, rIntent: 0.8 },
+  { id: 7, nameJa: 'パンダのぬいぐるみ', x: UENO_ZOO_GATE.x, y: 0, z: UENO_ZOO_GATE.z, radiusReal: 0.6, archetypeCode: 77, landmarkId: -1, naturalBand: 2, rIntent: 1.0 },
+  { id: 8, nameJa: '雷おこし', x: 360 + D_ASAKUSA.x, y: 0, z: -585 + D_ASAKUSA.z, radiusReal: 0.4, archetypeCode: 78, landmarkId: -1, naturalBand: 2, rIntent: 0.7 },
+  { id: 9, nameJa: '金色のオブジェ', x: 430 + D_ASAKUSA.x, y: 0, z: -560 + D_ASAKUSA.z, radiusReal: 3.0, archetypeCode: 79, landmarkId: -1, naturalBand: 3, rIntent: 5 },
   // DUAL landmark+collectible: emits EVT.COLLECT FIRST then EVT.LANDMARK.
-  { id: 10, nameJa: 'ハチ公像', x: -1150, y: 0, z: 962, radiusReal: 1.2, archetypeCode: 80, landmarkId: 0, naturalBand: 2, rIntent: 1.85 },
-  { id: 11, nameJa: '屋形船', x: 380, y: 0, z: 1340, radiusReal: 8.0, archetypeCode: 81, landmarkId: -1, naturalBand: 4, rIntent: 12.5 },
+  { id: 10, nameJa: 'ハチ公像', x: OSM_GEN.hachiko.x, y: 0, z: OSM_GEN.hachiko.z, radiusReal: 1.2, archetypeCode: 80, landmarkId: 0, naturalBand: 2, rIntent: 1.85 },
+  { id: 11, nameJa: '屋形船', x: 380 + D_WANGAN.x, y: 0, z: 1340 + D_WANGAN.z, radiusReal: 8.0, archetypeCode: 81, landmarkId: -1, naturalBand: 4, rIntent: 12.5 },
 ]);
 
 /* ================================================================== */
@@ -429,23 +688,25 @@ const GUTTER_CLUSTERS = [
   ['trash_can', 12, 0, 4, 16, 0.220, 0.300, 0, 0.47, { x0: 6, x1: 17, z0: -16, z1: 16 }],
 ];
 
-/** District dressing (~55, incl. the scramble crowd x16). */
+/** District dressing (~55, incl. the scramble crowd x16). v4: each row rides
+ *  its district's GENERATED shift delta (computed above — same authored
+ *  layout at the reconciled geo positions; hand arithmetic banned). */
 const DISTRICT_CLUSTERS = [
-  ['street_tree', -150, -380, 4, 60, 2.0, 2.4, 0, 3.8, null], // 上野公園
-  ['person', -240, -455, 4, 12, 0.32, 0.38, 0, 0.6, null], // 動物園前
-  ['kiosk', -130, -395, 2, 15, 1.6, 1.9, 0, 3.0, null], // 上野みやげ屋
-  ['machiya', 320, -560, 3, 30, 2.8, 3.4, 0, 5.3, null], // 浅草
-  ['kiosk', 355, -575, 2, 12, 1.6, 1.9, 0, 3.0, null], // 仲見世
-  ['torii', 340, -630, 1, 0, 1.5, 1.7, 0, 2.7, null], // 浅草
-  ['taxi', -110, 470, 4, 30, 0.95, 1.05, 0, 1.7, null], // 丸の内
-  ['car', -90, 440, 4, 35, 0.90, 1.00, 0, 1.6, null],
-  ['bus', -140, 500, 2, 25, 1.40, 1.60, 0, 2.5, null],
+  ['street_tree', -150 + D_UENO.x, -380 + D_UENO.z, 4, 60, 2.0, 2.4, 0, 3.8, null], // 上野公園
+  ['person', -240 + D_UENO.x, -455 + D_UENO.z, 4, 12, 0.32, 0.38, 0, 0.6, null], // 動物園前
+  ['kiosk', -130 + D_UENO.x, -395 + D_UENO.z, 2, 15, 1.6, 1.9, 0, 3.0, null], // 上野みやげ屋
+  ['machiya', 320 + D_ASAKUSA.x, -560 + D_ASAKUSA.z, 3, 30, 2.8, 3.4, 0, 5.3, null], // 浅草
+  ['kiosk', 355 + D_ASAKUSA.x, -575 + D_ASAKUSA.z, 2, 12, 1.6, 1.9, 0, 3.0, null], // 仲見世
+  ['torii', 340 + D_ASAKUSA.x, -630 + D_ASAKUSA.z, 1, 0, 1.5, 1.7, 0, 2.7, null], // 浅草
+  ['taxi', -110 + D_MARUNOUCHI.x, 470 + D_MARUNOUCHI.z, 4, 30, 0.95, 1.05, 0, 1.7, null], // 丸の内
+  ['car', -90 + D_MARUNOUCHI.x, 440 + D_MARUNOUCHI.z, 4, 35, 0.90, 1.00, 0, 1.6, null],
+  ['bus', -140 + D_MARUNOUCHI.x, 500 + D_MARUNOUCHI.z, 2, 25, 1.40, 1.60, 0, 2.5, null],
   // スクランブル交差点 crowd x16 (T2-size 通行人; decal is the landmark).
-  ['person', -1163, 975, 16, 16, 0.32, 0.38, 0, 0.6, null],
-  ['signboard', -1135, 940, 3, 18, 0.45, 0.55, 0, 0.9, null], // 渋谷
-  ['street_tree', -600, 620, 3, 40, 2.0, 2.4, 0, 3.8, null], // 永田町
-  ['truck', -520, -100, 3, 35, 1.10, 1.30, 0, 2.1, null], // 水道橋
-  ['person', -100, 455, 4, 15, 0.32, 0.38, 0, 0.6, null], // 東京駅前 (寿司屋台まわり)
+  ['person', -1163 + D_SCRAMBLE.x, 975 + D_SCRAMBLE.z, 16, 16, 0.32, 0.38, 0, 0.6, null],
+  ['signboard', -1135 + D_SHIBUYA.x, 940 + D_SHIBUYA.z, 3, 18, 0.45, 0.55, 0, 0.9, null], // 渋谷
+  ['street_tree', -600 + D_NAGATACHO.x, 620 + D_NAGATACHO.z, 3, 40, 2.0, 2.4, 0, 3.8, null], // 永田町
+  ['truck', -520 + D_SUIDOBASHI.x, -100 + D_SUIDOBASHI.z, 3, 35, 1.10, 1.30, 0, 2.1, null], // 水道橋
+  ['person', -100 + D_MARUNOUCHI.x, 455 + D_MARUNOUCHI.z, 4, 15, 0.32, 0.38, 0, 0.6, null], // 東京駅前 (寿司屋台まわり)
 ];
 
 /* ------------------------------------------------------------------ */
@@ -828,6 +1089,102 @@ export function validateCityMap() {
     }
     for (let i = 0; i < 12; i++) assert(colCount[i] === 1, `collectible ${i} placement count != 1`);
     assert(shell === 1, 'exactly one shop-shell placement');
+  }
+
+  /* ================================================================ */
+  /* v4 OSM geography asserts (docs/DESIGN-V4.md — Stream W)           */
+  /* ================================================================ */
+
+  /* ---- coverage rects EXACTLY equal the geo.mjs-generated values ----
+     (identical projection formulas -> identical IEEE doubles; the pasted
+     cross-check constants prove neither side drifted). */
+  {
+    const pairs = [
+      ['shibuya', OSM_COVERAGE.shibuyaRect, SHIBUYA_RECT_XCHECK],
+      ['asakusa', OSM_COVERAGE.asakusaRect, ASAKUSA_RECT_XCHECK],
+    ];
+    for (const [name, got, want] of pairs) {
+      for (const k of ['x0', 'x1', 'z0', 'z1']) {
+        assert(got[k] === want[k],
+          `OSM coverage ${name}.${k} drifted: ${got[k]} !== geo.mjs ${want[k]}`);
+      }
+      assert(
+        got.x0 >= MAP_BOUNDS.x[0] && got.x1 <= MAP_BOUNDS.x[1] &&
+        got.z0 >= MAP_BOUNDS.z[0] && got.z1 <= MAP_BOUNDS.z[1],
+        `OSM coverage ${name} rect outside MAP_BOUNDS`
+      );
+    }
+    assert(OSM_COVERAGE.detailRadiusGameM === 500, 'detail disc must be 500 game m');
+    assert(inOsmCoverage(0, 0) && inOsmCoverage(30, 0), 'origin/street must be inside coverage');
+    assert(!inOsmCoverage(OSM_GEN.diet.x, OSM_GEN.diet.z),
+      '国会議事堂 is OUTSIDE detail coverage by design');
+  }
+
+  /* ---- reconciled landmark positions: bounds + REAL-distance truth ----
+     (real distance = game distance / OSM_HORIZ_K — structurally catches any
+     hand-typed/stale OSM_GEN row). */
+  {
+    for (const [key, e] of Object.entries(OSM_GEN)) {
+      assert(
+        e.x >= MAP_BOUNDS.x[0] && e.x <= MAP_BOUNDS.x[1] &&
+        e.z >= MAP_BOUNDS.z[0] && e.z <= MAP_BOUNDS.z[1],
+        `OSM_GEN.${key} outside MAP_BOUNDS at (${e.x}, ${e.z})`
+      );
+    }
+    const rows = [];
+    for (const gt of DISTANCE_GROUND_TRUTH) {
+      const a = OSM_GEN[gt.a];
+      const b = OSM_GEN[gt.b];
+      const realM = Math.hypot(a.x - b.x, a.z - b.z) / OSM_HORIZ_K;
+      rows.push(`  ${gt.a}<->${gt.b}: ${realM.toFixed(0)} m real (want ${gt.minM}..${gt.maxM})`);
+      assert(realM >= gt.minM && realM <= gt.maxM,
+        `landmark distance ${gt.a}<->${gt.b} = ${realM.toFixed(0)} m real outside [${gt.minM}, ${gt.maxM}]`);
+    }
+    log('v4 inter-landmark distance cross-checks:\n' + rows.join('\n'));
+    // Rainbow Bridge: TRUE span window (the draft's 2.1 km hand-typing error
+    // is structurally impossible now).
+    const rb = OSM_GEN.rainbow_bridge;
+    const spanGame = Math.hypot(rb.endB.x - rb.endA.x, rb.endB.z - rb.endA.z);
+    const spanReal = spanGame / OSM_HORIZ_K;
+    assert(spanReal >= BRIDGE_SPAN_REAL_M.min && spanReal <= BRIDGE_SPAN_REAL_M.max,
+      `bridge span ${spanReal.toFixed(0)} m real outside [${BRIDGE_SPAN_REAL_M.min}, ${BRIDGE_SPAN_REAL_M.max}]`);
+    assert(Math.abs(spanGame - rb.spanGameM) < 1, 'bridge endA/endB vs spanGameM desync');
+    // SKYTREE_POS = rounded reconciled goal (DESIGN-V4 frozen (749, -252)).
+    assert(SKYTREE_POS.x === 749 && SKYTREE_POS.z === -252,
+      `SKYTREE_POS (${SKYTREE_POS.x}, ${SKYTREE_POS.z}) != frozen generated (749, -252)`);
+  }
+
+  /* ---- OSM exclusions: built once, every circle covers dioramaR*1.2 ---- */
+  {
+    assert(Array.isArray(OSM_EXCLUSIONS) && OSM_EXCLUSIONS.length === 9,
+      'OSM_EXCLUSIONS must be shop + strip + 6 landmark circles + skytree');
+    const idByKey = {
+      radio_kaikan: 3, shibuya109: 4, tokyo_station: 7,
+      diet: 8, dome: 6, kaminarimon: 2,
+    };
+    for (const ex of OSM_EXCLUSIONS) {
+      if (ex.kind !== 'circle' || ex.label === 'skytree base') continue;
+      const key = ex.label.split(' ')[1];
+      const ld = LANDMARKS[idByKey[key]];
+      assert(ld !== undefined, `exclusion label ${ex.label} resolves no landmark`);
+      assert(ex.x === ld.x && ex.z === ld.z, `exclusion ${key} not centered on its landmark`);
+      assert(Math.abs(ex.r - ld.dioramaR * 1.2) < 1e-9,
+        `exclusion ${key} r ${ex.r} != dioramaR*1.2 ${ld.dioramaR * 1.2}`);
+    }
+    const sky = OSM_EXCLUSIONS[OSM_EXCLUSIONS.length - 1];
+    assert(sky.label === 'skytree base' && sky.r === 110, 'skytree exclusion r=110 game m');
+  }
+
+  /* ---- v4 travel-leg reprint (landmark moves change the legs — review
+     artifact; Phase-3 runs decide any dioramaR nudges) ---- */
+  {
+    const leg = (a, b) => Math.hypot(a.x - b.x, a.z - b.z);
+    const rows = [
+      `  議事堂 -> タワー: ${leg(OSM_GEN.diet, OSM_GEN.tokyo_tower).toFixed(0)} game m (~390 expected)`,
+      `  タワー -> スカイツリー: ${leg(OSM_GEN.tokyo_tower, OSM_GEN.skytree).toFixed(0)} game m (~1,640 — trivial at r>=406)`,
+      `  雷門 -> スカイツリー: ${leg(OSM_GEN.kaminarimon, OSM_GEN.skytree).toFixed(0)} game m`,
+    ];
+    log('v4 travel legs:\n' + rows.join('\n'));
   }
 
   log(`OK — ${PLACEMENTS.length} curated placements (cap ${CURATED_PLACEMENT_CAP})`);

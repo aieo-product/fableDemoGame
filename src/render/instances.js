@@ -24,6 +24,16 @@
  *
  * Zero-allocation: all state lives in preallocated typed arrays; matrices are
  * composed scalar-wise straight into instanceMatrix.array.
+ *
+ * v4 (docs/DESIGN-V4.md レンダリング統合): setTransform gains an OPTIONAL
+ * non-uniform scale overload `setTransform(slot, pos, quat, s, sy = s,
+ * sz = s)` — existing 4-arg callers are byte-identical in behavior (uniform).
+ * Fade animators store and multiply the full scale TRIPLE; rescaleAll(S)
+ * multiplies all three axes (a similarity stays a similarity). NOTE for
+ * non-uniform users: radius/size semantics must come from the ObjectStore,
+ * NEVER be derived from matrix scale magnitude (Stream R audit item), and
+ * non-uniformly scaled geometry must keep axis-aligned normals (InstancedMesh
+ * applies no inverse-transpose) — see render/extraPools.js header.
  */
 
 import * as THREE from 'three';
@@ -102,7 +112,9 @@ export class InstancedPool {
     /** @type {Float32Array} */ this._qy = new Float32Array(capacity);
     /** @type {Float32Array} */ this._qz = new Float32Array(capacity);
     /** @type {Float32Array} */ this._qw = new Float32Array(capacity);
-    /** @type {Float32Array} Base (un-faded) uniform scale. */ this._scale = new Float32Array(capacity);
+    /** @type {Float32Array} Base (un-faded) scale X (uniform callers: the one scale). */ this._scale = new Float32Array(capacity);
+    /** @type {Float32Array} Base scale Y (v4 non-uniform; == _scale for uniform callers). */ this._scaleY = new Float32Array(capacity);
+    /** @type {Float32Array} Base scale Z (v4 non-uniform; == _scale for uniform callers). */ this._scaleZ = new Float32Array(capacity);
     /** @type {Float32Array} Current fade factor written into the matrix (0..1). */ this._curF = new Float32Array(capacity);
     /** @type {Uint8Array} 1 = allocated. */ this._alive = new Uint8Array(capacity);
 
@@ -145,6 +157,8 @@ export class InstancedPool {
     this._qz[slot] = 0;
     this._qw[slot] = 1;
     this._scale[slot] = 0;
+    this._scaleY[slot] = 0;
+    this._scaleZ[slot] = 0;
     this._curF[slot] = 1;
     this._fadeMode[slot] = FADE_NONE;
     if (slot + 1 > this._highWater) {
@@ -180,12 +194,16 @@ export class InstancedPool {
   /**
    * Set a slot's TRS (stored, then composed straight into instanceMatrix at
    * the current fade factor). pos/quat are copied — caller keeps ownership.
+   * v4: optional non-uniform scale (sy, sz) — defaults keep the uniform
+   * behavior byte-identical for every existing 4-arg caller.
    * @param {number} slot
    * @param {THREE.Vector3} pos
    * @param {THREE.Quaternion} quat
-   * @param {number} scale Uniform base scale (= bounding radius for unit-radius geometry).
+   * @param {number} scale Base scale X (uniform callers: = bounding radius for unit-radius geometry).
+   * @param {number} [sy=scale] Base scale Y (v4 non-uniform overload).
+   * @param {number} [sz=scale] Base scale Z (v4 non-uniform overload).
    */
-  setTransform(slot, pos, quat, scale) {
+  setTransform(slot, pos, quat, scale, sy = scale, sz = scale) {
     this._px[slot] = pos.x;
     this._py[slot] = pos.y;
     this._pz[slot] = pos.z;
@@ -194,6 +212,8 @@ export class InstancedPool {
     this._qz[slot] = quat.z;
     this._qw[slot] = quat.w;
     this._scale[slot] = scale;
+    this._scaleY[slot] = sy;
+    this._scaleZ[slot] = sz;
     this._writeMatrix(slot, this._factorOf(slot));
   }
 
@@ -301,9 +321,11 @@ export class InstancedPool {
   }
 
   /**
-   * The one-frame similarity rescale: position *= S, base scale *= S for every
-   * live slot, matrices recomposed in place at the current fade factor.
-   * Quaternions and fade state are scale-free. Full-range upload on flush().
+   * The one-frame similarity rescale: position *= S, base scale TRIPLE *= S
+   * for every live slot, matrices recomposed in place at the current fade
+   * factor. Quaternions and fade state are scale-free. A uniform similarity
+   * composed with a non-uniform base scale stays pixel-identical (the triple
+   * scales together). Full-range upload on flush().
    * @param {number} S RESCALE_S (0.2).
    */
   rescaleAll(S) {
@@ -313,6 +335,8 @@ export class InstancedPool {
       this._py[slot] *= S;
       this._pz[slot] *= S;
       this._scale[slot] *= S;
+      this._scaleY[slot] *= S;
+      this._scaleZ[slot] *= S;
       this._writeMatrix(slot, this._curF[slot]);
     }
   }
@@ -433,14 +457,17 @@ export class InstancedPool {
   }
 
   /**
-   * Compose TRS (uniform scale = base * factor) straight into
-   * instanceMatrix.array — zero allocation, column-major like Matrix4.compose.
+   * Compose TRS (scale triple * fade factor) straight into
+   * instanceMatrix.array — zero allocation, column-major like Matrix4.compose
+   * (column k scaled by axis k, exactly what compose(pos, quat, scale) does).
    * @param {number} slot
    * @param {number} factor Fade factor 0..1.
    */
   _writeMatrix(slot, factor) {
     this._curF[slot] = factor;
-    const s = this._scale[slot] * factor;
+    const sx = this._scale[slot] * factor;
+    const sy = this._scaleY[slot] * factor;
+    const sz = this._scaleZ[slot] * factor;
     const x = this._qx[slot], y = this._qy[slot], z = this._qz[slot], w = this._qw[slot];
     const x2 = x + x, y2 = y + y, z2 = z + z;
     const xx = x * x2, xy = x * y2, xz = x * z2;
@@ -448,17 +475,17 @@ export class InstancedPool {
     const wx = w * x2, wy = w * y2, wz = w * z2;
     const te = this.mesh.instanceMatrix.array;
     const o = slot * 16;
-    te[o] = (1 - (yy + zz)) * s;
-    te[o + 1] = (xy + wz) * s;
-    te[o + 2] = (xz - wy) * s;
+    te[o] = (1 - (yy + zz)) * sx;
+    te[o + 1] = (xy + wz) * sx;
+    te[o + 2] = (xz - wy) * sx;
     te[o + 3] = 0;
-    te[o + 4] = (xy - wz) * s;
-    te[o + 5] = (1 - (xx + zz)) * s;
-    te[o + 6] = (yz + wx) * s;
+    te[o + 4] = (xy - wz) * sy;
+    te[o + 5] = (1 - (xx + zz)) * sy;
+    te[o + 6] = (yz + wx) * sy;
     te[o + 7] = 0;
-    te[o + 8] = (xz + wy) * s;
-    te[o + 9] = (yz - wx) * s;
-    te[o + 10] = (1 - (xx + yy)) * s;
+    te[o + 8] = (xz + wy) * sz;
+    te[o + 9] = (yz - wx) * sz;
+    te[o + 10] = (1 - (xx + yy)) * sz;
     te[o + 11] = 0;
     te[o + 12] = this._px[slot];
     te[o + 13] = this._py[slot];

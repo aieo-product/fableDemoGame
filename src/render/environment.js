@@ -49,6 +49,12 @@
  * exact. (The water sits at +0.3 m: the v1 ground plane is opaque at y = 0
  * and would occlude a submerged quad; the quay wall hides the seam.)
  *
+ * v4 (Stream R): the bay quads + quay strip are KEPT UNCHANGED (the sea is
+ * not derivable from the OSM water fetch — coastline assembly is out of v4
+ * scope). Two additive exports for render/osmGround.js: getWaterMaterial()
+ * (the OSM river mesh shares the bay Lambert — one program, no freed slot)
+ * and the fogFarSim getter (floored sim-space fog far for ground streaming).
+ *
  * v3 FOG FLOOR (FOG_FAR_MIN_M, applied at query time): fog.far =
  * max(FOG_FAR_K * rv, FOG_FAR_MIN_M / worldScale) so the 8 m shop is never
  * fog-swallowed at r = 2 cm. worldScale is tracked locally: boot value
@@ -755,6 +761,32 @@ export class Environment {
         su.uGoalSilTanH.value = 0; // degenerate: standing on the axis
       }
     }
+  }
+
+  /**
+   * v4 (Stream R) — the floored fog-far distance in SIM units, exactly as
+   * applied to scene fog this frame: max(FOG_FAR_K * rv, FOG_FAR_MIN_M / ws).
+   * Consumed by main.js step 6 as osmGround.update(dt, ballPos, env.fogFarSim)
+   * (the call site feature-detects this getter and falls back to
+   * FOG_FAR_K * radiusSim until it lands). Valid after the first update();
+   * the constructor's setTierPaletteImmediate leaves fog at its boot value,
+   * but update() runs before the first render so consumers never see it.
+   * @returns {number} Fog far, sim units.
+   */
+  get fogFarSim() {
+    return this.fog.far;
+  }
+
+  /**
+   * v4 (Stream R) — THE shared water material: the OSM river/pond/moat mesh
+   * (render/osmGround.js) renders on the SAME MeshLambertMaterial as the
+   * authored Tokyo Bay quads (one program; fog-on; the bay stays owned by
+   * environment.js — OSM water is ADDITIVE, docs/DESIGN-V4.md レンダリング統合).
+   * Lifetime: owned and disposed HERE; borrowers must not dispose it.
+   * @returns {THREE.Material}
+   */
+  getWaterMaterial() {
+    return /** @type {THREE.Material} */ (this._bayWater.material);
   }
 
   /**

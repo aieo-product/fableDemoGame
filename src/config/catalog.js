@@ -1,5 +1,5 @@
 /**
- * @file catalog.js — v3 箱庭東京: all 94 archetypes.
+ * @file catalog.js — v4 リアル東京: all 110 archetypes.
  *
  * 70 CHUNK archetypes (ARCH_PER_TIER 10 x 7 tiers, ids FROZEN by
  * config/tiers.js; slots [8]/[9] of every tier are CHUNK LANDMARKS —
@@ -7,7 +7,10 @@
  * upright, archRoll-eligible only at chunk placement j === 0) PLUS 24 EXTRA
  * curated archetypes (codes 70..93 FROZEN by docs/DESIGN-V3.md Phase-0
  * appendix: 12 collectibles, 10 landmark singletons + ハチ公 dual, shop
- * shell, Skytree display-name slot). EXTRA entries are spawned ONLY by
+ * shell, Skytree display-name slot) PLUS 16 OSM voxel-building archetypes
+ * (v4, codes 94..109 FROZEN by docs/DESIGN-V4.md Phase-0 appendix §B —
+ * spawned ONLY by world/osmSpawner.js from decoded tile data, unitBox
+ * convention, see below). EXTRA entries are spawned ONLY by
  * world/curated.js from cityMap placements (spawnWeight 0 — never
  * random-rolled); code 93 (東京スカイツリー) is a display-name reservation
  * and must NEVER be spawned into the store.
@@ -19,22 +22,41 @@
  * For chunk entries naturalBand === tier; for EXTRA entries tier IS the
  * naturalBand (types.js Archetype contract).
  *
- * EXPORTS (Phase-0 frozen shapes): CATALOG (94 ids), DISPLAY_NAME_BY_CODE
- * (string[94], code-indexed), EXTRA_CATALOG (code 70..93 -> archetype),
+ * v4 ADDITIONS (docs/DESIGN-V4.md モデル品質パス — Stream C):
+ *   - HERO PASS: the 12 frozen HERO_ARCHETYPE_IDS get upgraded silhouettes
+ *     with per-id tri cap HERO_TRI_CAP (600) instead of ARCHETYPE_TRI_CAP
+ *     (350), marked by `heroTriCap` on the entry (geometryFactory asserts).
+ *   - OSM voxel archetypes: `unitBox: true` entries use the UNIT-BOX
+ *     convention (geometry spans EXACTLY [-1,1] on all 3 axes; render scale
+ *     = (w/2, h/2, d/2) NON-UNIFORM, store radius stays r_eff). BINDING
+ *     NORMALS LAW (boot-asserted in geometryFactory): every unitBox
+ *     geometry's normals are axis-aligned (+-X/Y/Z) — BatchedMesh applies no
+ *     inverse-transpose, so non-uniform scale would mislight sloped faces.
+ *     Consequence: ALL 16 OSM archetypes are flat/stepped boxes in v1
+ *     (temple/shrine ship flat-roofed with vermilion/wood banding). <=72
+ *     tris each (OSM_UNITBOX_TRI_CAP, asserted in geometryFactory).
+ *   - Baked vertex AO: geometryFactory applies bakeSimpleAO(geo, k) to every
+ *     entry at boot; k = entry.aoK ?? AO_BAKE_DEFAULT (tuning.js; global
+ *     kill switch = 0).
+ *
+ * EXPORTS (Phase-0 frozen shapes): CATALOG (110 ids), DISPLAY_NAME_BY_CODE
+ * (string[110], code-indexed), EXTRA_CATALOG (code 70..93 -> archetype),
  * EXTRA_SIZE_CLASS_BY_CODE + EXTRA_POOL_CAPS (the 4 shared EXTRA render
  * pools: collectible-small/landmark-mid/landmark-large/landmark-xl — flat
- * +4 draws in the 64/72 ledger).
+ * +4 draws in the 64/72 ledger), OSM_CATALOG (code 94..109 -> archetype),
+ * HERO_ARCHETYPE_IDS (12, frozen).
  *
  * Each archetype's buildGeometry(rng) returns ONE merged, vertex-colored
  * BufferGeometry composed of a handful of low-segment primitives
- * (<= ARCHETYPE_TRI_CAP = 350 triangles). Built ONCE at boot by
- * render/geometryFactory.js — allocation here is fine, per-frame code never
- * touches this module.
+ * (<= ARCHETYPE_TRI_CAP = 350 triangles; heroes <= HERO_TRI_CAP = 600; OSM
+ * voxels <= 72). Built ONCE at boot by render/geometryFactory.js —
+ * allocation here is fine, per-frame code never touches this module.
  *
  * GEOMETRY CONVENTION (binding for spawner / curated / instances / absorb):
  *   - Every returned geometry is normalized to a UNIT BOUNDING SPHERE
  *     (radius 1.0) centered at the geometry origin. Instance scale =
- *     the placed object's radiusSim, directly.
+ *     the placed object's radiusSim, directly. EXCEPTION: unitBox entries
+ *     (OSM, v4) skip sphere normalization and span [-1,1]^3 instead.
  *   - yOffset positions the object center at restY = radius * (1 + yOffset),
  *     so yOffset = 0 means "sphere sitting on the ground" and flat objects
  *     (coin-likes, decals) use strongly negative offsets. Values were
@@ -54,7 +76,13 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { TIERS, ARCH_PER_TIER } from './tiers.js';
-import { EXTRA_ARCHETYPE_IDS, EXTRA_CODE_BASE } from '../world/objects.js';
+import { HERO_TRI_CAP } from './tuning.js';
+import {
+  EXTRA_ARCHETYPE_IDS,
+  EXTRA_CODE_BASE,
+  OSM_ARCHETYPE_IDS,
+  OSM_CODE_BASE,
+} from '../world/objects.js';
 
 /** @typedef {import('../types.js').Archetype} Archetype */
 
@@ -241,12 +269,54 @@ function finish(parts) {
   return merged;
 }
 
+/**
+ * v4 UNIT-BOX merge for OSM voxel archetypes: merge axis-aligned box parts
+ * WITHOUT sphere normalization — builders author directly in the binding
+ * [-1, 1]^3 unit-box space (render scale = (w/2, h/2, d/2), non-uniform).
+ * geometryFactory boot-asserts the span and the axis-aligned-normals law.
+ * Disposes the input parts.
+ * @param {THREE.BufferGeometry[]} parts Axis-aligned, vertex-colored boxes.
+ * @returns {THREE.BufferGeometry}
+ */
+function finishUnitBox(parts) {
+  const merged = mergeGeometries(parts, false);
+  if (merged === null) {
+    throw new Error('[catalog] finishUnitBox: mergeGeometries failed (mismatched attributes)');
+  }
+  for (let i = 0; i < parts.length; i++) parts[i].dispose();
+  merged.computeBoundingSphere();
+  merged.computeBoundingBox();
+  return merged;
+}
+
 /* ================================================================== */
 /* The catalog                                                         */
 /* ================================================================== */
 
 /** @type {Record<string, Archetype>} */
 export const CATALOG = {};
+
+/**
+ * v4 HERO PASS (docs/DESIGN-V4.md Phase-0 appendix §B — 12 ids, FROZEN).
+ * These entries carry `heroTriCap: HERO_TRI_CAP` (600) and upgraded
+ * silhouettes; every other archetype keeps ARCHETYPE_TRI_CAP (350).
+ * geometryFactory boot-asserts the per-id cap in dev.
+ * @type {readonly string[]}
+ */
+export const HERO_ARCHETYPE_IDS = Object.freeze([
+  'person',
+  'cat',
+  'pigeon',
+  'car',
+  'taxi',
+  'bus',
+  'vending_machine',
+  'signboard',
+  'bicycle',
+  'truck',
+  'konbini',
+  'zakkyo_building',
+]);
 
 /** @param {Archetype} a */
 function add(a) {
@@ -757,19 +827,32 @@ add({
   radiusNominal: 0.9,
   radiusJitter: 0.15,
   spawnWeight: 1.2,
-  palette: [0xff5340, 0x3f8cff, 0x49c45f, 0xffc83d, 0xffffff],
+  // v4 PALETTE REGRADE (separable change — old: [0xff5340, 0x3f8cff,
+  // 0x49c45f, 0xffc83d, 0xffffff]): >=2 value steps between adjacent tints.
+  palette: [0xd83a28, 0xf2f2ee, 0x2a5fc0, 0xffd84d, 0x2e7a46],
   yOffset: -0.49,
   upright: true,
   collisionScale: 0.7,
+  heroTriCap: HERO_TRI_CAP, // v4 HERO: tube frame + 12-seg torus wheels
   buildGeometry(rng) {
     return finish([
-      torus(0.5, 0.06, 4, 10, 0x23262e, { x: 0.78, y: 0.5 }), // front wheel
-      torus(0.5, 0.06, 4, 10, 0x23262e, { x: -0.78, y: 0.5 }), // rear wheel
-      box(0.95, 0.08, 0.06, 0xffffff, { rz: 0.45, x: -0.1, y: 0.72 }), // down tube (tinted)
-      box(0.8, 0.08, 0.06, 0xffffff, { y: 0.98, x: 0.05 }), // top tube
-      cyl(0.04, 0.04, 0.55, 6, 0x6a7078, { rx: HALF_PI, x: 0.78, y: 1.12 }), // handlebar
-      box(0.28, 0.08, 0.14, 0x2e3138, { x: -0.5, y: 1.08 }), // saddle
-      box(0.5, 0.3, 0.4, 0xc9a06a, { x: -0.85, y: 1.2 }), // rear basket carton
+      torus(0.5, 0.055, 5, 12, 0x23262e, { x: 0.78, y: 0.5 }), // front tire (12-seg)
+      torus(0.5, 0.055, 5, 12, 0x23262e, { x: -0.78, y: 0.5 }), // rear tire (12-seg)
+      cyl(0.09, 0.09, 0.06, 8, 0xb8bec8, { rx: HALF_PI, x: 0.78, y: 0.5 }), // front hub
+      cyl(0.09, 0.09, 0.06, 8, 0xb8bec8, { rx: HALF_PI, x: -0.78, y: 0.5 }), // rear hub
+      cyl(0.035, 0.035, 1.0, 6, 0xffffff, { rz: 1.05, x: 0.3, y: 0.78, open: true }), // down tube (tinted)
+      cyl(0.035, 0.035, 0.85, 6, 0xffffff, { rz: HALF_PI, x: 0.08, y: 1.0, open: true }), // top tube
+      cyl(0.035, 0.035, 0.62, 6, 0xffffff, { rz: -0.35, x: -0.42, y: 0.76, open: true }), // seat tube
+      cyl(0.03, 0.03, 0.75, 6, 0x6a7078, { rz: -0.5, x: -0.62, y: 0.72, open: true }), // chain stay
+      cyl(0.03, 0.03, 0.62, 6, 0x9aa0aa, { rz: 0.28, x: 0.7, y: 0.78, open: true }), // front fork
+      cyl(0.035, 0.035, 0.55, 6, 0x6a7078, { rx: HALF_PI, x: 0.66, y: 1.16 }), // handlebar
+      cyl(0.045, 0.045, 0.12, 5, 0x2e3138, { rx: HALF_PI, x: 0.66, y: 1.16, z: 0.26 }), // grip L
+      cyl(0.045, 0.045, 0.12, 5, 0x2e3138, { rx: HALF_PI, x: 0.66, y: 1.16, z: -0.26 }), // grip R
+      cyl(0.16, 0.16, 0.05, 9, 0x44484f, { rx: HALF_PI, x: -0.05, y: 0.5 }), // crank ring
+      box(0.3, 0.07, 0.16, 0x2e3138, { x: -0.45, y: 1.12 }), // saddle
+      box(0.5, 0.28, 0.38, 0xc9a06a, { x: -0.85, y: 1.18 }), // rear basket carton
+      box(0.44, 0.05, 0.32, 0xa07848, { x: -0.85, y: 1.34 }), // carton lid flap
+      box(0.04, 0.34, 0.04, 0x9aa0aa, { x: -0.62, y: 0.62 }), // kickstand
     ]);
   },
 });
@@ -782,19 +865,45 @@ add({
   radiusNominal: 0.85,
   radiusJitter: 0.15,
   spawnWeight: 1.4,
-  palette: [0xff7a5e, 0x5ea0ff, 0x6fdc8c, 0xffd06a, 0xc98aff, 0xffffff],
+  // v4 PALETTE REGRADE (separable change — old: [0xff7a5e, 0x5ea0ff,
+  // 0x6fdc8c, 0xffd06a, 0xc98aff, 0xffffff]): 6 tints alternating
+  // dark/light for value contrast between adjacent rolls.
+  palette: [0xc8432e, 0xf5e6c8, 0x2a55a8, 0xa8e0b8, 0x6a3f9e, 0xf2f2ee],
   yOffset: -0.03,
   upright: true,
   collisionScale: 0.8,
+  heroTriCap: HERO_TRI_CAP, // v4 HERO: head+cap, separated arms, bag variant
   buildGeometry(rng) {
-    return finish([
-      box(0.36, 0.6, 0.22, 0x39415e, { y: 0.3 }), // legs
-      cyl(0.2, 0.31, 0.72, 8, 0xffffff, { y: 0.95 }), // torso (tinted shirt)
-      cyl(0.07, 0.07, 0.8, 6, 0xffffff, { rz: HALF_PI, y: 1.18 }), // arms bar
-      sph(0.21, 0xeec39a, { ws: 7, hs: 5, y: 1.56 }), // head
-      sph(0.22, 0x4a3a2e, { ws: 6, hs: 3, theta0: 0, thetaLen: HALF_PI, y: 1.58 }), // hair cap
-      box(0.3, 0.36, 0.12, 0xe8e4da, { x: 0.3, y: 0.85, z: 0.18 }), // shopping bag
-    ]);
+    const parts = [
+      // Separated legs + shoes (was one box).
+      box(0.15, 0.56, 0.2, 0x39415e, { x: 0.1, y: 0.28 }), // leg R
+      box(0.15, 0.56, 0.2, 0x39415e, { x: -0.1, y: 0.28 }), // leg L
+      box(0.17, 0.1, 0.3, 0x2e3138, { x: 0.1, y: 0.05, z: 0.04 }), // shoe R
+      box(0.17, 0.1, 0.3, 0x2e3138, { x: -0.1, y: 0.05, z: 0.04 }), // shoe L
+      cyl(0.2, 0.3, 0.7, 9, 0xffffff, { y: 0.94 }), // torso (tinted shirt)
+      cyl(0.31, 0.31, 0.1, 9, 0xffffff, { y: 0.62 }), // jacket hem
+      // SEPARATED ARMS (was a single bar) — slight outward drop.
+      cyl(0.06, 0.06, 0.62, 6, 0xffffff, { rz: 0.18, x: 0.3, y: 1.0 }), // arm R
+      cyl(0.06, 0.06, 0.62, 6, 0xffffff, { rz: -0.18, x: -0.3, y: 1.0 }), // arm L
+      sph(0.07, 0xeec39a, { ws: 5, hs: 4, x: 0.36, y: 0.68 }), // hand R
+      sph(0.07, 0xeec39a, { ws: 5, hs: 4, x: -0.36, y: 0.68 }), // hand L
+      cyl(0.07, 0.09, 0.1, 6, 0xeec39a, { y: 1.36 }), // neck
+      sph(0.21, 0xeec39a, { ws: 9, hs: 6, y: 1.56 }), // head (real head)
+      // Cap: dome + brim (replaces the hair half-sphere).
+      sph(0.22, 0x4a3a2e, { ws: 8, hs: 4, theta0: 0, thetaLen: HALF_PI * 0.95, y: 1.58 }), // cap dome
+      cyl(0.23, 0.23, 0.04, 8, 0x4a3a2e, { y: 1.66, z: 0.0 }), // cap band
+      box(0.3, 0.04, 0.22, 0x3a2e24, { y: 1.62, z: 0.3 }), // cap brim
+      sph(0.05, 0x3a2e24, { ws: 4, hs: 3, y: 1.46, z: 0.19 }), // chin shadow knob (baked under-chin AO)
+    ];
+    // 2 silhouette variants by boot rng: shopping bag / hands-free.
+    if (rng() < 0.5) {
+      parts.push(box(0.3, 0.36, 0.14, 0xe8e4da, { x: 0.42, y: 0.46, z: 0.0 })); // shopping bag
+      parts.push(box(0.22, 0.05, 0.04, 0xc9b08a, { x: 0.42, y: 0.66, z: 0.0 })); // bag handle
+    } else {
+      parts.push(box(0.34, 0.46, 0.16, 0xffffff, { y: 1.0, z: -0.26 })); // backpack (tinted)
+      parts.push(box(0.3, 0.12, 0.06, 0xd8d4cc, { y: 1.18, z: -0.36 })); // backpack pocket
+    }
+    return finish(parts);
   },
 });
 
@@ -806,17 +915,45 @@ add({
   radiusNominal: 1.1,
   radiusJitter: 0.15,
   spawnWeight: 1.2,
-  palette: [0xc94f46, 0x3f6cc4, 0xe0a050, 0x3f8a5f, 0xffffff],
+  // v4 PALETTE REGRADE (separable change — old: [0xc94f46, 0x3f6cc4,
+  // 0xe0a050, 0x3f8a5f, 0xffffff]): alternate dark/light values.
+  palette: [0xb03428, 0xf6f2e6, 0x2a55a8, 0xf0b840, 0x2e6a48],
   yOffset: -0.14,
   upright: true,
   collisionScale: 0.55,
+  heroTriCap: HERO_TRI_CAP, // v4 HERO: frame+bracket+pseudo-glyph rows
   buildGeometry(rng) {
-    return finish([
-      box(0.7, 1.5, 0.1, 0xffffff, { rx: -0.16, y: 0.78, z: 0.12 }), // A-frame face (tinted ad)
-      box(0.7, 1.5, 0.1, 0xf2f2ee, { rx: 0.16, y: 0.78, z: -0.12 }), // A-frame back
-      box(0.56, 0.5, 0.06, 0xf6f2e6, { rx: -0.16, y: 1.05, z: 0.2 }), // poster patch
-      box(0.74, 0.06, 0.5, 0x8a9098, { y: 0.04 }), // base bar
-    ]);
+    const parts = [
+      box(0.7, 1.5, 0.08, 0xffffff, { rx: -0.16, y: 0.78, z: 0.12 }), // A-frame face (tinted ad)
+      box(0.7, 1.5, 0.08, 0xf2f2ee, { rx: 0.16, y: 0.78, z: -0.12 }), // A-frame back
+      // FRAME rails + hinge bracket (the v4 silhouette read).
+      box(0.06, 1.54, 0.1, 0x6a7078, { rx: -0.16, x: 0.36, y: 0.78, z: 0.12 }), // rail R
+      box(0.06, 1.54, 0.1, 0x6a7078, { rx: -0.16, x: -0.36, y: 0.78, z: 0.12 }), // rail L
+      box(0.78, 0.08, 0.34, 0x5a6068, { y: 1.54 }), // top hinge bracket
+      box(0.74, 0.07, 0.55, 0x8a9098, { y: 0.045 }), // base bar
+      box(0.56, 0.42, 0.05, 0xf6f2e6, { rx: -0.16, y: 1.12, z: 0.215 }), // poster patch (light)
+    ];
+    // Blocky pseudo-glyph quads — dark/light vertex pattern, NO textures.
+    // 2 columns x 4 rows of "kanji block" chips on the face, deterministic
+    // per boot rng (size jitter), plus a wide price strip below.
+    for (let r = 0; r < 4; r++) {
+      for (let c = 0; c < 2; c++) {
+        const w = 0.13 + rng() * 0.05;
+        const h = 0.13 + rng() * 0.05;
+        const y = 1.32 - r * 0.2;
+        const z = 0.165 + (1.32 - y) * 0.161; // follow the rx=-0.16 lean
+        parts.push(
+          box(w, h, 0.025, rng() < 0.3 ? 0xc8c2b4 : 0x2e3138, {
+            rx: -0.16,
+            x: -0.11 + c * 0.22,
+            y,
+            z,
+          })
+        );
+      }
+    }
+    parts.push(box(0.5, 0.12, 0.025, 0xb03428, { rx: -0.16, y: 0.42, z: 0.265 })); // price strip
+    return finish(parts);
   },
 });
 
@@ -828,19 +965,47 @@ add({
   radiusNominal: 1.0,
   radiusJitter: 0.12,
   spawnWeight: 1.1,
-  palette: [0xc94f46, 0x3f6cc4, 0xffffff, 0x3f8a5f, 0xe0a050],
+  // v4 PALETTE REGRADE (separable change — old: [0xc94f46, 0x3f6cc4,
+  // 0xffffff, 0x3f8a5f, 0xe0a050]): alternate dark/light values.
+  palette: [0xb03428, 0xf2f2ee, 0x2a55a8, 0xe8e0d0, 0xb87818],
   yOffset: -0.19,
   upright: true,
   collisionScale: 0.9,
+  heroTriCap: HERO_TRI_CAP, // v4 HERO: panel inset + 8 studs + glow band
   buildGeometry(rng) {
     const parts = [
       box(1.15, 2.1, 0.85, 0xffffff, { y: 1.05 }), // body (tinted)
-      box(0.95, 0.85, 0.08, 0x9fc4d8, { y: 1.55, z: 0.43 }), // display window
-      box(0.95, 0.3, 0.06, 0x2e3138, { y: 0.5, z: 0.44 }), // dispense slot
+      box(1.19, 0.08, 0.89, 0x8a9098, { y: 2.12 }), // top cap trim
+      box(1.19, 0.1, 0.89, 0x44484f, { y: 0.06 }), // base plinth
+      // FRONT PANEL INSET (slightly proud, darker rim reads as recess).
+      box(1.02, 1.86, 0.05, 0xd8dce2, { y: 1.06, z: 0.43 }), // panel plate
+      box(0.95, 0.78, 0.05, 0x2e3744, { y: 1.6, z: 0.46 }), // display window (dark glass)
+      // BRIGHT BAKED GLOW BAND — the Akiba icon (near-white warm strip).
+      box(0.98, 0.14, 0.05, 0xfff2c0, { y: 2.0, z: 0.465 }), // backlit brand band
+      box(0.95, 0.26, 0.05, 0x23262e, { y: 0.5, z: 0.46 }), // dispense slot
+      box(0.5, 0.05, 0.06, 0xb8bec8, { x: -0.2, y: 0.64, z: 0.47 }), // slot lip
+      box(0.2, 0.3, 0.05, 0x44484f, { x: 0.38, y: 1.0, z: 0.46 }), // coin/bill panel
+      cyl(0.035, 0.035, 0.05, 6, 0xffd84d, { rx: HALF_PI, x: 0.38, y: 1.12, z: 0.48 }), // coin slot LED
     ];
-    const drinkHex = [0xe04f3a, 0x3f8cff, 0x49c45f, 0xffd84d];
-    for (let i = 0; i < 4; i++) {
-      parts.push(cyl(0.08, 0.08, 0.24, 6, drinkHex[i], { x: -0.33 + i * 0.22, y: 1.62, z: 0.47 })); // sample cans
+    // 8 DRINK STUDS (2 rows x 4) in the display window.
+    const drinkHex = [0xe04f3a, 0x3f8cff, 0x49c45f, 0xffd84d, 0xf2f2ee, 0xb05cff, 0xe07820, 0x23262e];
+    for (let i = 0; i < 8; i++) {
+      const col = i % 4;
+      const row = (i / 4) | 0;
+      parts.push(
+        cyl(0.075, 0.075, 0.2, 8, drinkHex[i], {
+          x: -0.33 + col * 0.22,
+          y: 1.78 - row * 0.34,
+          z: 0.5,
+        })
+      ); // sample can stud
+      parts.push(
+        box(0.13, 0.05, 0.04, 0xe8e4da, {
+          x: -0.33 + col * 0.22,
+          y: 1.64 - row * 0.34,
+          z: 0.5,
+        })
+      ); // price chip
     }
     return finish(parts);
   },
@@ -854,18 +1019,34 @@ add({
   radiusNominal: 0.35,
   radiusJitter: 0.2,
   spawnWeight: 1.2,
-  palette: [0xf0a050, 0x9aa0aa, 0x4a4a52, 0xf5e9d8, 0xc8855f],
+  // v4 PALETTE REGRADE (separable change — old: [0xf0a050, 0x9aa0aa,
+  // 0x4a4a52, 0xf5e9d8, 0xc8855f]): alternate dark/light values.
+  palette: [0xe09038, 0xf5e9d8, 0x3a3a42, 0xb8bec8, 0x8a5a3a],
   yOffset: -0.33,
   upright: true,
   collisionScale: 0.9,
+  heroTriCap: HERO_TRI_CAP, // v4 HERO: ears, 3-seg curved tail, leg stubs
   buildGeometry(rng) {
     return finish([
-      sph(0.5, 0xffffff, { sx: 1.4, y: 0.5 }), // body (tinted)
-      sph(0.36, 0xffffff, { x: 0.55, y: 1.0 }), // head
-      cone(0.13, 0.26, 4, 0xffffff, { x: 0.4, y: 1.36 }), // ear L
-      cone(0.13, 0.26, 4, 0xffffff, { x: 0.72, y: 1.36 }), // ear R
-      cyl(0.06, 0.09, 0.75, 6, 0xffffff, { rz: -0.9, x: -0.85, y: 0.85 }), // tail
-      sph(0.13, 0xf6ead2, { ws: 6, hs: 4, x: 0.85, y: 0.92 }), // muzzle
+      sph(0.5, 0xffffff, { ws: 9, hs: 6, sx: 1.35, sy: 0.95, y: 0.52 }), // body (tinted)
+      sph(0.34, 0xffffff, { ws: 9, hs: 6, x: 0.55, y: 1.02 }), // head
+      sph(0.3, 0xffffff, { ws: 7, hs: 4, x: 0.25, y: 0.78 }), // chest ruff
+      // EARS — proper triangles with inner-ear plate.
+      cone(0.12, 0.26, 4, 0xffffff, { x: 0.42, y: 1.38, rz: 0.18 }), // ear L
+      cone(0.12, 0.26, 4, 0xffffff, { x: 0.7, y: 1.38, rz: -0.18 }), // ear R
+      cone(0.06, 0.14, 4, 0xd88a8a, { x: 0.42, y: 1.34, z: 0.05, rz: 0.18 }), // inner ear L
+      cone(0.06, 0.14, 4, 0xd88a8a, { x: 0.7, y: 1.34, z: 0.05, rz: -0.18 }), // inner ear R
+      // 3-SEGMENT CURVED TAIL (rising S-curve).
+      cyl(0.075, 0.09, 0.35, 6, 0xffffff, { rz: -1.15, x: -0.78, y: 0.62 }), // tail base
+      cyl(0.06, 0.075, 0.32, 6, 0xffffff, { rz: -0.55, x: -1.0, y: 0.88 }), // tail mid
+      cyl(0.04, 0.06, 0.3, 6, 0xffffff, { rz: 0.15, x: -1.08, y: 1.14 }), // tail tip (curls up)
+      // LEG STUBS (4) + paws.
+      cyl(0.09, 0.1, 0.3, 6, 0xffffff, { x: 0.42, y: 0.15, z: 0.2 }), // leg FR
+      cyl(0.09, 0.1, 0.3, 6, 0xffffff, { x: 0.42, y: 0.15, z: -0.2 }), // leg FL
+      cyl(0.1, 0.11, 0.3, 6, 0xffffff, { x: -0.38, y: 0.15, z: 0.2 }), // leg RR
+      cyl(0.1, 0.11, 0.3, 6, 0xffffff, { x: -0.38, y: 0.15, z: -0.2 }), // leg RL
+      sph(0.13, 0xf6ead2, { ws: 7, hs: 4, x: 0.84, y: 0.94 }), // muzzle
+      sph(0.045, 0x3a3038, { ws: 4, hs: 3, x: 0.94, y: 1.0 }), // nose
     ]);
   },
 });
@@ -878,18 +1059,32 @@ add({
   radiusNominal: 0.18,
   radiusJitter: 0.2,
   spawnWeight: 1.4,
-  palette: [0x9aa0aa, 0x8a90a0, 0xb0b4be, 0x7a8088],
+  // v4 PALETTE REGRADE (separable change — old: [0x9aa0aa, 0x8a90a0,
+  // 0xb0b4be, 0x7a8088]): widen value spread between adjacent tints.
+  palette: [0xb8bcc6, 0x5a6068, 0xd8dce2, 0x787e88],
   yOffset: -0.35,
   upright: true,
   collisionScale: 0.95,
+  heroTriCap: HERO_TRI_CAP, // v4 HERO: head-bob pose, wing ridges, neck sheen
   buildGeometry(rng) {
     return finish([
-      sph(0.55, 0xffffff, { ws: 8, hs: 5, sx: 1.25, sy: 0.95, y: 0.55 }), // body (tinted)
-      sph(0.28, 0x6a7a8a, { ws: 7, hs: 5, x: 0.6, y: 1.0 }), // head (iridescent neck)
-      cone(0.07, 0.22, 5, 0xe0a050, { rz: -HALF_PI, x: 0.92, y: 0.98 }), // beak
-      cone(0.28, 0.6, 4, 0x7a8088, { rz: 2.3, x: -0.75, y: 0.62 }), // tail fan
-      cyl(0.03, 0.03, 0.25, 4, 0xc4756a, { x: 0.1, y: 0.05 }), // leg
-      cyl(0.03, 0.03, 0.25, 4, 0xc4756a, { x: -0.12, y: 0.05 }), // leg
+      sph(0.55, 0xffffff, { ws: 9, hs: 6, sx: 1.25, sy: 0.92, y: 0.55 }), // body (tinted)
+      // HEAD-BOB SILHOUETTE: neck thrust forward, head slightly low.
+      sph(0.17, 0x5a8a6a, { ws: 7, hs: 5, x: 0.52, y: 0.86 }), // IRIDESCENT neck (green sheen)
+      sph(0.13, 0x7a5a9a, { ws: 6, hs: 4, x: 0.6, y: 0.95 }), // neck collar (purple sheen)
+      sph(0.24, 0x6a7a8a, { ws: 8, hs: 5, x: 0.72, y: 1.02 }), // head (thrust forward)
+      cone(0.06, 0.2, 5, 0xe0a050, { rz: -HALF_PI, x: 1.0, y: 1.0 }), // beak
+      sph(0.05, 0xf2f2ee, { ws: 4, hs: 3, x: 0.88, y: 1.0, z: 0.0 }), // cere (white nub)
+      sph(0.035, 0x23262e, { ws: 4, hs: 3, x: 0.84, y: 1.08, z: 0.13 }), // eye R
+      sph(0.035, 0x23262e, { ws: 4, hs: 3, x: 0.84, y: 1.08, z: -0.13 }), // eye L
+      // FOLDED-WING RIDGES — two elongated darker spheres along the flanks.
+      sph(0.3, 0x787e88, { ws: 7, hs: 4, sx: 1.5, sy: 0.55, x: -0.15, y: 0.72, z: 0.3 }), // wing ridge R
+      sph(0.3, 0x787e88, { ws: 7, hs: 4, sx: 1.5, sy: 0.55, x: -0.15, y: 0.72, z: -0.3 }), // wing ridge L
+      cone(0.26, 0.62, 4, 0x5a6068, { rz: 2.3, x: -0.78, y: 0.6 }), // tail fan
+      cyl(0.03, 0.03, 0.22, 4, 0xc4756a, { x: 0.12, y: 0.06 }), // leg R
+      cyl(0.03, 0.03, 0.22, 4, 0xc4756a, { x: -0.1, y: 0.06 }), // leg L
+      box(0.12, 0.03, 0.1, 0xc4756a, { x: 0.16, y: 0.015 }), // foot R
+      box(0.12, 0.03, 0.1, 0xc4756a, { x: -0.06, y: 0.015 }), // foot L
     ]);
   },
 });
@@ -1005,19 +1200,44 @@ add({
   radiusNominal: 2.2,
   radiusJitter: 0.2,
   spawnWeight: 1.5,
-  palette: [0xff5340, 0x3f8cff, 0x49c45f, 0xffd84d, 0xffffff, 0xb05cff],
+  // v4 PALETTE REGRADE (separable change — old: [0xff5340, 0x3f8cff,
+  // 0x49c45f, 0xffd84d, 0xffffff, 0xb05cff]): alternate dark/light values.
+  palette: [0xc83820, 0xf2f2ee, 0x2a55a8, 0xffd84d, 0x2e6a48, 0x8a48c8],
   yOffset: -0.5,
   upright: true,
   collisionScale: 0.8,
+  heroTriCap: HERO_TRI_CAP, // v4 HERO: arches, window inset, bumpers, 10-seg wheels
   buildGeometry(rng) {
-    return finish([
-      box(2.2, 0.55, 1.05, 0xffffff, { y: 0.56 }), // body (tinted)
-      box(1.15, 0.45, 0.95, 0x9fc4d8, { x: -0.12, y: 1.05 }), // glass cabin
-      cyl(0.28, 0.28, 0.24, 8, 0x23262e, { rx: HALF_PI, x: 0.72, z: 0.5, y: 0.28 }), // wheel FR
-      cyl(0.28, 0.28, 0.24, 8, 0x23262e, { rx: HALF_PI, x: 0.72, z: -0.5, y: 0.28 }), // wheel FL
-      cyl(0.28, 0.28, 0.24, 8, 0x23262e, { rx: HALF_PI, x: -0.72, z: 0.5, y: 0.28 }), // wheel RR
-      cyl(0.28, 0.28, 0.24, 8, 0x23262e, { rx: HALF_PI, x: -0.72, z: -0.5, y: 0.28 }), // wheel RL
-    ]);
+    const parts = [
+      box(2.2, 0.5, 1.05, 0xffffff, { y: 0.58 }), // body (tinted)
+      box(0.5, 0.16, 0.95, 0xffffff, { x: 0.95, y: 0.86 }), // hood step (tinted)
+      box(0.34, 0.14, 0.95, 0xffffff, { x: -1.0, y: 0.85 }), // trunk step (tinted)
+      // GLASS CABIN with DARK WINDOW-BAND INSET (vertex color reads as glass).
+      box(1.15, 0.42, 0.9, 0xffffff, { x: -0.12, y: 1.06 }), // cabin shell (tinted)
+      box(1.05, 0.3, 0.94, 0x28323e, { x: -0.12, y: 1.08 }), // window band (dark inset)
+      box(0.92, 0.28, 0.5, 0x35424f, { x: 0.48, y: 1.05 }), // windshield wedge
+      // WHEEL-ARCH INSETS (dark recesses behind the wheels).
+      box(0.7, 0.34, 1.08, 0x1c1f26, { x: 0.72, y: 0.36 }), // arch F
+      box(0.7, 0.34, 1.08, 0x1c1f26, { x: -0.72, y: 0.36 }), // arch R
+      // BUMPERS + lights + mirrors + grille.
+      box(0.14, 0.2, 1.12, 0xd8d8d4, { x: 1.16, y: 0.42 }), // front bumper
+      box(0.14, 0.2, 1.12, 0xd8d8d4, { x: -1.16, y: 0.42 }), // rear bumper
+      box(0.06, 0.12, 0.24, 0xffe9a0, { x: 1.22, y: 0.66, z: 0.36 }), // headlight R
+      box(0.06, 0.12, 0.24, 0xffe9a0, { x: 1.22, y: 0.66, z: -0.36 }), // headlight L
+      box(0.05, 0.1, 0.2, 0xc83828, { x: -1.2, y: 0.66, z: 0.36 }), // taillight R
+      box(0.05, 0.1, 0.2, 0xc83828, { x: -1.2, y: 0.66, z: -0.36 }), // taillight L
+      box(0.06, 0.1, 0.5, 0x44484f, { x: 1.21, y: 0.62 }), // grille
+      box(0.1, 0.08, 0.14, 0x9aa0aa, { x: 0.42, y: 1.0, z: 0.56 }), // mirror R
+      box(0.1, 0.08, 0.14, 0x9aa0aa, { x: 0.42, y: 1.0, z: -0.56 }), // mirror L
+    ];
+    // 10-SEG WHEELS + hubcaps.
+    const wx = [0.72, 0.72, -0.72, -0.72];
+    const wz = [0.52, -0.52, 0.52, -0.52];
+    for (let i = 0; i < 4; i++) {
+      parts.push(cyl(0.28, 0.28, 0.22, 10, 0x23262e, { rx: HALF_PI, x: wx[i], z: wz[i], y: 0.28 })); // tire
+      parts.push(cyl(0.14, 0.14, 0.24, 8, 0xb8bec8, { rx: HALF_PI, x: wx[i], z: wz[i], y: 0.28 })); // hubcap
+    }
+    return finish(parts);
   },
 });
 
@@ -1029,21 +1249,44 @@ add({
   radiusNominal: 2.3,
   radiusJitter: 0.15,
   spawnWeight: 1.2,
-  palette: [0xffc83d, 0x3f9a5f, 0x2e3138, 0xe8e8e2],
+  // v4 PALETTE REGRADE (separable change — old: [0xffc83d, 0x3f9a5f,
+  // 0x2e3138, 0xe8e8e2]): alternate dark/light fleet liveries.
+  palette: [0xffc81e, 0x23262e, 0xe8e8e2, 0x1e6a40],
   yOffset: -0.5,
   upright: true,
   collisionScale: 0.8,
+  heroTriCap: HERO_TRI_CAP, // v4 HERO: andon lamp, arches, bumpers, 10-seg wheels
   buildGeometry(rng) {
-    return finish([
-      box(2.3, 0.55, 1.05, 0xffffff, { y: 0.56 }), // body (tinted fleet color)
-      box(1.2, 0.45, 0.95, 0x9fc4d8, { x: -0.1, y: 1.05 }), // glass cabin
-      box(0.34, 0.16, 0.2, 0xe04f3a, { y: 1.36 }), // roof lamp (andon)
-      box(2.34, 0.1, 1.07, 0xf2f2ee, { y: 0.36 }), // side trim line
-      cyl(0.28, 0.28, 0.24, 8, 0x23262e, { rx: HALF_PI, x: 0.74, z: 0.5, y: 0.28 }), // wheel FR
-      cyl(0.28, 0.28, 0.24, 8, 0x23262e, { rx: HALF_PI, x: 0.74, z: -0.5, y: 0.28 }), // wheel FL
-      cyl(0.28, 0.28, 0.24, 8, 0x23262e, { rx: HALF_PI, x: -0.74, z: 0.5, y: 0.28 }), // wheel RR
-      cyl(0.28, 0.28, 0.24, 8, 0x23262e, { rx: HALF_PI, x: -0.74, z: -0.5, y: 0.28 }), // wheel RL
-    ]);
+    const parts = [
+      box(2.3, 0.5, 1.05, 0xffffff, { y: 0.58 }), // body (tinted fleet color)
+      box(0.5, 0.16, 0.95, 0xffffff, { x: 1.0, y: 0.86 }), // hood step
+      box(0.36, 0.14, 0.95, 0xffffff, { x: -1.05, y: 0.85 }), // trunk step
+      box(1.2, 0.42, 0.9, 0xffffff, { x: -0.1, y: 1.06 }), // cabin shell (tinted)
+      box(1.1, 0.3, 0.94, 0x28323e, { x: -0.1, y: 1.08 }), // dark window band inset
+      box(0.92, 0.28, 0.5, 0x35424f, { x: 0.52, y: 1.05 }), // windshield wedge
+      // TAXI ROOF LAMP (andon) on a stalk + lit face.
+      cyl(0.04, 0.04, 0.1, 5, 0x6a7078, { y: 1.3, x: -0.1 }), // lamp stalk
+      box(0.36, 0.16, 0.2, 0xe04f3a, { x: -0.1, y: 1.42 }), // andon body
+      box(0.3, 0.1, 0.22, 0xfff2c0, { x: -0.1, y: 1.42 }), // andon lit band
+      box(2.34, 0.09, 1.07, 0xf2f2ee, { y: 0.38 }), // side trim line
+      box(0.7, 0.34, 1.08, 0x1c1f26, { x: 0.74, y: 0.36 }), // wheel arch F
+      box(0.7, 0.34, 1.08, 0x1c1f26, { x: -0.74, y: 0.36 }), // wheel arch R
+      box(0.14, 0.2, 1.12, 0xd8d8d4, { x: 1.2, y: 0.42 }), // front bumper
+      box(0.14, 0.2, 1.12, 0xd8d8d4, { x: -1.2, y: 0.42 }), // rear bumper
+      box(0.06, 0.12, 0.24, 0xffe9a0, { x: 1.26, y: 0.66, z: 0.36 }), // headlight R
+      box(0.06, 0.12, 0.24, 0xffe9a0, { x: 1.26, y: 0.66, z: -0.36 }), // headlight L
+      box(0.05, 0.1, 0.2, 0xc83828, { x: -1.25, y: 0.66, z: 0.36 }), // taillight R
+      box(0.05, 0.1, 0.2, 0xc83828, { x: -1.25, y: 0.66, z: -0.36 }), // taillight L
+      box(0.1, 0.08, 0.14, 0x9aa0aa, { x: 0.46, y: 1.0, z: 0.56 }), // mirror R
+      box(0.1, 0.08, 0.14, 0x9aa0aa, { x: 0.46, y: 1.0, z: -0.56 }), // mirror L
+    ];
+    const wx = [0.74, 0.74, -0.74, -0.74];
+    const wz = [0.52, -0.52, 0.52, -0.52];
+    for (let i = 0; i < 4; i++) {
+      parts.push(cyl(0.28, 0.28, 0.22, 10, 0x23262e, { rx: HALF_PI, x: wx[i], z: wz[i], y: 0.28 })); // tire
+      parts.push(cyl(0.14, 0.14, 0.24, 8, 0xb8bec8, { rx: HALF_PI, x: wx[i], z: wz[i], y: 0.28 })); // hubcap
+    }
+    return finish(parts);
   },
 });
 
@@ -1055,18 +1298,45 @@ add({
   radiusNominal: 6.0,
   radiusJitter: 0.12,
   spawnWeight: 0.8,
-  palette: [0xffc83d, 0x4aa0a8, 0xc94f46, 0x6fdc8c, 0xffffff],
+  // v4 PALETTE REGRADE (separable change — old: [0xffc83d, 0x4aa0a8,
+  // 0xc94f46, 0x6fdc8c, 0xffffff]): alternate dark/light liveries.
+  palette: [0xf0b81e, 0x2e7a82, 0xe8e8e2, 0xa83828, 0x9adfb0],
   yOffset: -0.58,
   upright: true,
   collisionScale: 0.75,
+  heroTriCap: HERO_TRI_CAP, // v4 HERO: window inset, route stripe, real wheels
   buildGeometry(rng) {
-    return finish([
-      box(3.1, 1.15, 1.05, 0xffffff, { y: 0.85 }), // body (tinted)
-      box(3.14, 0.36, 0.98, 0x35414e, { y: 1.12 }), // window band
-      box(2.9, 0.08, 0.95, 0xf2f2ee, { y: 1.46 }), // roof
-      cyl(0.3, 0.3, 1.1, 8, 0x23262e, { rx: HALF_PI, x: 1.05, y: 0.3 }), // front axle
-      cyl(0.3, 0.3, 1.1, 8, 0x23262e, { rx: HALF_PI, x: -1.05, y: 0.3 }), // rear axle
-    ]);
+    const parts = [
+      box(3.1, 1.15, 1.05, 0xffffff, { y: 0.88 }), // body (tinted)
+      // DARK WINDOW-BAND INSET + per-window mullions.
+      box(3.14, 0.34, 0.98, 0x28323e, { y: 1.18 }), // window band (dark glass)
+      box(0.5, 0.5, 1.0, 0x35424f, { x: 1.52, y: 1.05 }), // front glass
+      box(0.08, 0.5, 1.02, 0xe8e8e2, { x: 1.26, y: 1.05 }), // A-pillar
+      // ROUTE STRIPE down the flank + destination board.
+      box(3.14, 0.1, 1.07, 0xc83828, { y: 0.62 }), // route stripe (accent)
+      box(0.6, 0.14, 1.0, 0xfff2c0, { x: 1.3, y: 1.42 }), // destination board (lit)
+      box(2.9, 0.08, 0.95, 0xf2f2ee, { y: 1.5 }), // roof
+      box(0.5, 0.12, 0.6, 0x9aa0aa, { x: -0.6, y: 1.58 }), // roof AC pod
+      // Door inset + arches + bumpers.
+      box(0.5, 0.8, 0.06, 0x35424f, { x: 0.55, y: 0.72, z: 0.51 }), // front door glass
+      box(0.5, 0.8, 0.06, 0x35424f, { x: -0.85, y: 0.72, z: 0.51 }), // mid door glass
+      box(0.74, 0.4, 1.08, 0x1c1f26, { x: 1.05, y: 0.34 }), // wheel arch F
+      box(0.74, 0.4, 1.08, 0x1c1f26, { x: -1.05, y: 0.34 }), // wheel arch R
+      box(0.12, 0.22, 1.1, 0xd8d8d4, { x: 1.6, y: 0.4 }), // front bumper
+      box(0.12, 0.22, 1.1, 0xd8d8d4, { x: -1.6, y: 0.4 }), // rear bumper
+      box(0.06, 0.1, 0.2, 0xffe9a0, { x: 1.64, y: 0.62, z: 0.36 }), // headlight R
+      box(0.06, 0.1, 0.2, 0xffe9a0, { x: 1.64, y: 0.62, z: -0.36 }), // headlight L
+      box(0.1, 0.1, 0.16, 0x9aa0aa, { x: 1.5, y: 1.3, z: 0.58 }), // mirror R
+      box(0.1, 0.1, 0.16, 0x9aa0aa, { x: 1.5, y: 1.3, z: -0.58 }), // mirror L
+    ];
+    // 10-SEG WHEELS (per-corner, replaces the old through-axles).
+    const wx = [1.05, 1.05, -1.05, -1.05];
+    const wz = [0.5, -0.5, 0.5, -0.5];
+    for (let i = 0; i < 4; i++) {
+      parts.push(cyl(0.3, 0.3, 0.24, 10, 0x23262e, { rx: HALF_PI, x: wx[i], z: wz[i], y: 0.3 })); // tire
+      parts.push(cyl(0.15, 0.15, 0.26, 8, 0xb8bec8, { rx: HALF_PI, x: wx[i], z: wz[i], y: 0.3 })); // hub
+    }
+    return finish(parts);
   },
 });
 
@@ -1078,18 +1348,40 @@ add({
   radiusNominal: 4.0,
   radiusJitter: 0.15,
   spawnWeight: 0.9,
-  palette: [0xffffff, 0x5ea0ff, 0xff8a5e, 0x9adfb0, 0xd8d8d0],
+  // v4 PALETTE REGRADE (separable change — old: [0xffffff, 0x5ea0ff,
+  // 0xff8a5e, 0x9adfb0, 0xd8d8d0]): alternate dark/light values.
+  palette: [0xf2f2ee, 0x2a55a8, 0xe07840, 0x4a8a60, 0x9aa0aa],
   yOffset: -0.61,
   upright: true,
   collisionScale: 0.8,
+  heroTriCap: HERO_TRI_CAP, // v4 HERO: cab detail, bumpers, 6x 10-seg wheels
   buildGeometry(rng) {
-    return finish([
-      box(1.0, 0.95, 1.05, 0xffffff, { x: 1.35, y: 0.78 }), // cab (tinted)
-      box(2.3, 1.25, 1.1, 0xe8e8ea, { x: -0.5, y: 0.95 }), // cargo box
-      box(0.95, 0.3, 0.95, 0x6fb0c8, { x: 1.4, y: 1.1, z: 0 }), // windshield band
-      cyl(0.32, 0.32, 1.15, 8, 0x23262e, { rx: HALF_PI, x: 1.25, y: 0.32 }), // front axle
-      cyl(0.32, 0.32, 1.15, 8, 0x23262e, { rx: HALF_PI, x: -1.0, y: 0.32 }), // rear axle
-    ]);
+    const parts = [
+      box(1.0, 0.9, 1.05, 0xffffff, { x: 1.35, y: 0.82 }), // cab (tinted)
+      box(1.0, 0.2, 1.05, 0x44484f, { x: 1.35, y: 0.32 }), // cab skirt
+      box(0.9, 0.34, 0.98, 0x28323e, { x: 1.38, y: 1.08 }), // windshield band (dark inset)
+      box(0.08, 0.4, 1.07, 0xd8d8d4, { x: 0.84, y: 0.9 }), // cab back pillar
+      box(2.3, 1.25, 1.1, 0xe8e8ea, { x: -0.5, y: 1.0 }), // cargo box
+      box(2.34, 0.16, 1.06, 0x9aa0aa, { x: -0.5, y: 0.42 }), // cargo underframe
+      box(0.05, 1.0, 1.0, 0xc8ccd0, { x: 0.62, y: 1.0 }), // cargo front wall lip
+      box(0.05, 1.0, 1.0, 0x8a9098, { x: -1.62, y: 1.0 }), // rear shutter (darker)
+      box(2.2, 0.06, 1.12, 0xc8ccd0, { x: -0.5, y: 1.64 }), // cargo roof rail
+      box(0.12, 0.18, 1.1, 0xd8d8d4, { x: 1.9, y: 0.4 }), // front bumper
+      box(0.06, 0.1, 0.22, 0xffe9a0, { x: 1.94, y: 0.6, z: 0.36 }), // headlight R
+      box(0.06, 0.1, 0.22, 0xffe9a0, { x: 1.94, y: 0.6, z: -0.36 }), // headlight L
+      box(0.05, 0.28, 0.5, 0x6a7078, { x: 1.92, y: 0.78 }), // grille
+      box(0.1, 0.08, 0.14, 0x9aa0aa, { x: 1.6, y: 1.32, z: 0.56 }), // mirror R
+      box(0.1, 0.08, 0.14, 0x9aa0aa, { x: 1.6, y: 1.32, z: -0.56 }), // mirror L
+      box(0.66, 0.34, 1.08, 0x1c1f26, { x: 1.3, y: 0.34 }), // wheel arch F
+    ];
+    // 6 WHEELS: single front pair + double rear bogie, 10-seg.
+    const wx = [1.3, 1.3, -0.6, -0.6, -1.25, -1.25];
+    const wz = [0.52, -0.52, 0.52, -0.52, 0.52, -0.52];
+    for (let i = 0; i < 6; i++) {
+      parts.push(cyl(0.3, 0.3, 0.22, 10, 0x23262e, { rx: HALF_PI, x: wx[i], z: wz[i], y: 0.3 })); // tire
+      parts.push(cyl(0.14, 0.14, 0.24, 6, 0xb8bec8, { rx: HALF_PI, x: wx[i], z: wz[i], y: 0.3 })); // hub (6-seg, tri budget)
+    }
+    return finish(parts);
   },
 });
 
@@ -1250,21 +1542,40 @@ add({
   radiusNominal: 18,
   radiusJitter: 0.2,
   spawnWeight: 1.3,
-  palette: [0xd9cfc2, 0xc2ccd9, 0xd9c2c2, 0xccd9c2, 0xe2d8c8],
+  // v4 PALETTE REGRADE (separable change — old: [0xd9cfc2, 0xc2ccd9,
+  // 0xd9c2c2, 0xccd9c2, 0xe2d8c8]): warm-gray ladder with clear value steps
+  // so neighboring zakkyo never read as one mass (matches the OSM voxels).
+  palette: [0xe2d8c8, 0xa8a2b4, 0xd9c2c2, 0x9aa894, 0xc8bca8],
   yOffset: -0.19,
   upright: true,
   collisionScale: 0.85,
+  heroTriCap: HERO_TRI_CAP, // v4 HERO: window rhythm + signage refresh (OSM voxel match)
   buildGeometry(rng) {
     const parts = [
       towerBanded(1.25, 2.7, 1.25, 8, 0xffffff, 0x39465e, 0xffd98a, rng, { y: 1.35 }), // banded block (tinted)
       box(1.35, 0.1, 1.35, 0x8a8f9a, { y: 2.75 }), // roof slab
+      box(0.4, 0.3, 0.4, 0xb8bec8, { x: -0.3, y: 2.92 }), // rooftop water tank
+      cyl(0.12, 0.12, 0.35, 6, 0x9aa0aa, { x: 0.4, y: 2.95 }), // rooftop vent pipe
       box(0.5, 0.35, 0.2, 0x6a7078, { y: 0.18, z: 0.7 }), // entrance
+      box(0.56, 0.06, 0.3, 0x44484f, { y: 0.4, z: 0.72 }), // entrance canopy
+      // First-floor tenant glass band (izakaya glow).
+      box(1.1, 0.3, 0.08, 0xffd98a, { x: -0.05, y: 0.26, z: 0.64 }), // ground glass (lit)
     ];
-    // Stacked tenant signs down the facade edge — the zakkyo look.
+    // SIGNAGE REFRESH — stacked tenant signs down the facade edge with
+    // alternating lit/dark plates + one large vertical kanban strip.
     const signHex = [0xe04f3a, 0x3f8cff, 0xffd84d, 0x49c45f];
     for (let i = 0; i < 4; i++) {
-      parts.push(box(0.3, 0.4, 0.1, signHex[i], { x: 0.72, y: 0.7 + i * 0.55, z: 0.62 }));
+      parts.push(box(0.3, 0.4, 0.1, signHex[i], { x: 0.72, y: 0.7 + i * 0.55, z: 0.62 })); // tenant sign
+      parts.push(
+        box(0.24, 0.1, 0.04, i % 2 === 0 ? 0xfff2c0 : 0x2e3138, {
+          x: 0.72,
+          y: 0.56 + i * 0.55,
+          z: 0.67,
+        })
+      ); // sign footer chip (lit/dark rhythm)
     }
+    parts.push(box(0.22, 1.9, 0.1, 0xf2f2ee, { x: -0.74, y: 1.6, z: 0.6 })); // vertical kanban strip
+    parts.push(box(0.16, 1.7, 0.04, 0xc83828, { x: -0.74, y: 1.6, z: 0.66 })); // kanban lettering band
     return finish(parts);
   },
 });
@@ -1301,18 +1612,38 @@ add({
   radiusNominal: 10,
   radiusJitter: 0.15,
   spawnWeight: 1.2,
-  palette: [0xffffff, 0xf0f4f8, 0xf8f0e8, 0xeef2ee],
+  // v4 PALETTE REGRADE (separable change — old: [0xffffff, 0xf0f4f8,
+  // 0xf8f0e8, 0xeef2ee]): keep near-white walls but force a visible value
+  // step between adjacent rolls.
+  palette: [0xffffff, 0xd8dee6, 0xf8f0e8, 0xc8d2c8],
   yOffset: -0.62,
   upright: true,
   collisionScale: 0.9,
+  heroTriCap: HERO_TRI_CAP, // v4 HERO: window rhythm + signage strip (OSM voxel match)
   buildGeometry(rng) {
-    return finish([
+    const parts = [
       box(2.6, 0.95, 1.5, 0xffffff, { y: 0.48 }), // store box (tinted white)
-      box(2.64, 0.22, 1.54, 0x3f6cc4, { y: 1.05 }), // fascia sign band (blue)
-      box(2.64, 0.08, 1.54, 0xe04f3a, { y: 1.2 }), // stripe (red)
-      box(2.2, 0.55, 0.06, 0x9fc4d8, { y: 0.42, z: 0.76 }), // glass front
-      box(0.5, 0.6, 0.08, 0x7a8088, { x: 0.9, y: 0.32, z: 0.76 }), // door
-    ]);
+      // SIGNAGE STRIP REFRESH — tricolor fascia like the OSM voxel look.
+      box(2.64, 0.2, 1.54, 0x2a55a8, { y: 1.04 }), // fascia band (blue)
+      box(2.64, 0.07, 1.54, 0xc83828, { y: 1.18 }), // stripe (red)
+      box(2.64, 0.05, 1.54, 0x3f8a5f, { y: 1.24 }), // stripe (green)
+      box(1.0, 0.16, 0.06, 0xfff2c0, { x: -0.6, y: 1.04, z: 0.78 }), // lit logo plate
+      box(2.7, 0.06, 1.6, 0x8a9098, { y: 1.3 }), // roof lip
+      box(0.4, 0.3, 0.3, 0xb8bec8, { x: 0.8, y: 1.42 }), // roof AC unit
+      // WINDOW-BAND VERTEX RHYTHM: glass front split by mullions, warm
+      // interior glow rows (reads as shelves at night).
+      box(2.2, 0.55, 0.06, 0x9fc4d8, { y: 0.45, z: 0.76 }), // glass front
+      box(2.1, 0.1, 0.07, 0xffe9b0, { y: 0.6, z: 0.765 }), // interior glow row (top shelf)
+      box(2.1, 0.08, 0.07, 0xf0d8a0, { y: 0.4, z: 0.765 }), // interior glow row (mid shelf)
+      box(0.06, 0.6, 0.08, 0xe8e4da, { x: -0.55, y: 0.42, z: 0.76 }), // mullion
+      box(0.06, 0.6, 0.08, 0xe8e4da, { x: 0.1, y: 0.42, z: 0.76 }), // mullion
+      box(0.06, 0.6, 0.08, 0xe8e4da, { x: -1.2, y: 0.42, z: 0.76 }), // mullion
+      box(0.5, 0.62, 0.08, 0x7a8088, { x: 0.9, y: 0.34, z: 0.76 }), // door
+      box(0.46, 0.4, 0.05, 0x9fc4d8, { x: 0.9, y: 0.42, z: 0.79 }), // door glass
+      box(0.5, 0.7, 0.4, 0xd8dce2, { x: -1.0, y: 0.36, z: 0.95 }), // ice box / copier by door
+      box(0.3, 0.5, 0.3, 0xc83828, { x: 1.3, y: 0.26, z: 1.0 }), // vending bin (accent)
+    ];
+    return finish(parts);
   },
 });
 
@@ -2686,18 +3017,444 @@ addExtra(93, null, {
 });
 
 /* ================================================================== */
-/* DISPLAY_NAME_BY_CODE — string[94], code-indexed (Phase-0 frozen)    */
+/* v4 OSM voxel archetypes — codes 94..109 (docs/DESIGN-V4.md 付録§B)  */
+/* ================================================================== */
+/*
+ * UNIT-BOX LAW (binding, boot-asserted in geometryFactory):
+ *   - every geometry spans EXACTLY [-1, 1] on all three axes (the OBB mass
+ *     fills the footprint — clearance baking and collision read the OBB, so
+ *     the visual mass must match it; small facade accents may protrude by
+ *     <= 0.06 unit, ~3% of the half-extent, accepted in the design);
+ *   - normals are axis-aligned (+-X/Y/Z) ONLY: parts are axis-aligned boxes,
+ *     never rotated — BatchedMesh applies no inverse-transpose, non-uniform
+ *     (w/2, h/2, d/2) scale would mislight sloped faces. Flat/stepped roofs
+ *     only in v1 (temple/shrine ship flat-roofed with vermilion/wood
+ *     banding; sloped variants are a documented post-ship option);
+ *   - <= 72 triangles each (OSM_UNITBOX_TRI_CAP, asserted in
+ *     geometryFactory).
+ * Window-band rows are baked vertex colors (towerBanded-style row parity);
+ * they stretch with the per-record non-uniform height scale — accepted as
+ * part of the voxel aesthetic (quantization IS the look).
+ * Spawned ONLY by world/osmSpawner.js: render scale = (w/2, h/2, d/2) from
+ * the decoded record, tint = palette row hashed by wayId, store radius =
+ * r_eff. spawnWeight 0 — never chunk-rolled; radiusNominal/collisionScale
+ * are representative fallbacks (runtime uses per-record values).
+ */
+
+/**
+ * OSM archetypes keyed by FROZEN code 94..109 (same objects as in CATALOG —
+ * each also carries .osmCode and .unitBox = true).
+ * @type {Record<number, Archetype & {osmCode: number, unitBox: true}>}
+ */
+export const OSM_CATALOG = {};
+
+/**
+ * Register an OSM voxel archetype: goes into CATALOG (by id) AND OSM_CATALOG
+ * (by frozen code 94..109).
+ * @param {number} code Frozen OSM code 94..109.
+ * @param {Archetype} a Archetype (spawnWeight must be 0 — osmSpawner-only).
+ */
+function addOsm(code, a) {
+  a.osmCode = code;
+  a.unitBox = true;
+  CATALOG[a.id] = a;
+  OSM_CATALOG[code] = a;
+}
+
+/**
+ * Unit-space banded wall slab for OSM voxels: an axis-aligned BoxGeometry
+ * (1 x floors x 1 segments) with towerBanded-style alternating wall/window
+ * vertex-color rows + deterministic lit windows. NEVER rotated (normals law).
+ * @param {number} w Full width (x). @param {number} d Full depth (z).
+ * @param {number} yMin @param {number} yMax Vertical span in unit space.
+ * @param {number} floors Height segments (8*floors+4 tris).
+ * @param {number} wallHex @param {number} winHex @param {number} litHex
+ * @param {() => number} rng Boot rng (deterministic lit-window pattern).
+ * @returns {THREE.BufferGeometry}
+ */
+function ubands(w, d, yMin, yMax, floors, wallHex, winHex, litHex, rng) {
+  const h = yMax - yMin;
+  const geo = towerBanded(w, h, d, floors, wallHex, winHex, litHex, rng);
+  geo.translate(0, (yMin + yMax) / 2, 0);
+  return geo;
+}
+
+/* ---- 94 osm_house 民家 — body + flat roof slab + door (36 tris) ----- */
+addOsm(94, {
+  id: 'osm_house',
+  displayNameJa: '民家',
+  tier: 3,
+  naturalBand: 3,
+  radiusNominal: 1.7, // representative r_eff (8x8x6.5 m real house)
+  radiusJitter: 0,
+  spawnWeight: 0,
+  palette: [0xe8e0d0, 0xc8b89a, 0xd8d0c4, 0xb0a890, 0xe2d4b8], // beiges/wood
+  yOffset: 0,
+  upright: true,
+  collisionScale: 0.85,
+  buildGeometry(rng) {
+    void rng;
+    return finishUnitBox([
+      box(2, 1.7, 2, 0xffffff, { y: -0.15, hex2: 0xd8d0c4 }), // walls (tinted)
+      box(2, 0.3, 2, 0x6a6a72, { y: 0.85 }), // flat roof slab (dark)
+      box(0.5, 0.7, 0.1, 0x6a5a48, { y: -0.65, z: 1.0 }), // door
+    ]);
+  },
+});
+
+/* ---- 95 osm_shop_low 商店 — fascia + glass front (48 tris) ---------- */
+addOsm(95, {
+  id: 'osm_shop_low',
+  displayNameJa: '商店',
+  tier: 3,
+  naturalBand: 3,
+  radiusNominal: 2.0,
+  radiusJitter: 0,
+  spawnWeight: 0,
+  palette: [0xe2d8c8, 0xc8d2d8, 0xd9c2c2, 0xb8c4b0], // light retail
+  yOffset: 0,
+  upright: true,
+  collisionScale: 0.85,
+  buildGeometry(rng) {
+    void rng;
+    return finishUnitBox([
+      box(2, 1.5, 2, 0xffffff, { y: -0.25, hex2: 0xe2ded4 }), // body (tinted)
+      box(2.04, 0.35, 2.04, 0xc83828, { y: 0.62 }), // fascia sign band (accent)
+      box(2, 0.26, 2, 0x6a6a72, { y: 0.87 }), // roof slab
+      box(1.7, 0.9, 0.08, 0x8fb4c8, { y: -0.5, z: 1.02 }), // glass front
+    ]);
+  },
+});
+
+/* ---- 96 osm_zakkyo 雑居ビル — banded + vertical sign strip (64) ----- */
+addOsm(96, {
+  id: 'osm_zakkyo',
+  displayNameJa: '雑居ビル',
+  tier: 3,
+  naturalBand: 3,
+  radiusNominal: 4.0,
+  radiusJitter: 0,
+  spawnWeight: 0,
+  palette: [0xd8cec0, 0xb8b2a4, 0xc4bcb0, 0xa89e94, 0xccc0ae], // warm grays
+  yOffset: 0,
+  upright: true,
+  collisionScale: 0.9,
+  buildGeometry(rng) {
+    return finishUnitBox([
+      ubands(2, 2, -1, 1, 6, 0xffffff, 0x39465e, 0xffd98a, rng), // banded block (tinted)
+      box(0.3, 1.5, 0.12, 0xe04f3a, { x: 0.7, y: 0.1, z: 1.02 }), // vertical kanban strip (signage accent)
+    ]);
+  },
+});
+
+/* ---- 97 osm_office_mid オフィスビル — banded + parapet (64) --------- */
+addOsm(97, {
+  id: 'osm_office_mid',
+  displayNameJa: 'オフィスビル',
+  tier: 3,
+  naturalBand: 3,
+  radiusNominal: 5.0,
+  radiusJitter: 0,
+  spawnWeight: 0,
+  palette: [0xc2ccd9, 0x9aa8bc, 0xb4c0d0, 0x8a98ac], // office blue-grays
+  yOffset: 0,
+  upright: true,
+  collisionScale: 0.9,
+  buildGeometry(rng) {
+    return finishUnitBox([
+      ubands(2, 2, -1, 0.88, 6, 0xffffff, 0x35424f, 0xe8f0c8, rng), // banded block (tinted)
+      box(2.04, 0.12, 2.04, 0x7a8088, { y: 0.94 }), // parapet cap
+    ]);
+  },
+});
+
+/* ---- 98 osm_office_tower 高層オフィス — 8-floor banded (68) --------- */
+addOsm(98, {
+  id: 'osm_office_tower',
+  displayNameJa: '高層オフィス',
+  tier: 4,
+  naturalBand: 4,
+  radiusNominal: 14,
+  radiusJitter: 0,
+  spawnWeight: 0,
+  palette: [0xaabccc, 0x7a90a8, 0x98aabc, 0x687e96], // curtain-wall glass
+  yOffset: 0,
+  upright: true,
+  collisionScale: 0.9,
+  buildGeometry(rng) {
+    return finishUnitBox([
+      ubands(2, 2, -1, 1, 8, 0xffffff, 0x2e3c4c, 0xd8e8f0, rng), // glass tower (tinted)
+    ]);
+  },
+});
+
+/* ---- 99 osm_apartment_tower タワーマンション — banded + rail (64) --- */
+addOsm(99, {
+  id: 'osm_apartment_tower',
+  displayNameJa: 'タワーマンション',
+  tier: 4,
+  naturalBand: 4,
+  radiusNominal: 14,
+  radiusJitter: 0,
+  spawnWeight: 0,
+  palette: [0xe2d8c8, 0xc0b8a8, 0xd0d8e2, 0xb0bac4], // apartment beiges
+  yOffset: 0,
+  upright: true,
+  collisionScale: 0.9,
+  buildGeometry(rng) {
+    return finishUnitBox([
+      ubands(2, 2, -1, 1, 6, 0xffffff, 0x44506a, 0xffe0a0, rng), // slab block (tinted)
+      box(2.05, 0.06, 2.05, 0xd8d4cc, { y: 0.1 }), // balcony rail band
+    ]);
+  },
+});
+
+/* ---- 100 osm_hotel ホテル — banded + canopy + roof sign (68) -------- */
+addOsm(100, {
+  id: 'osm_hotel',
+  displayNameJa: 'ホテル',
+  tier: 4,
+  naturalBand: 4,
+  radiusNominal: 11,
+  radiusJitter: 0,
+  spawnWeight: 0,
+  palette: [0xd9ccc2, 0xb09a8a, 0xc8b8b0, 0x9a8878], // hotel warm stone
+  yOffset: 0,
+  upright: true,
+  collisionScale: 0.9,
+  buildGeometry(rng) {
+    return finishUnitBox([
+      ubands(2, 2, -1, 1, 5, 0xffffff, 0x3c3744, 0xffd98a, rng), // body (tinted)
+      box(1.2, 0.12, 0.22, 0x8a3030, { y: -0.86, z: 0.96 }), // entrance canopy (accent, z<=1.07 within unitBox eps)
+      box(0.9, 0.18, 0.1, 0xfff2c0, { y: 0.86, z: 1.0 }), // lit roof sign plate
+    ]);
+  },
+});
+
+/* ---- 101 osm_school 学校 — banded + roof + porch (60) --------------- */
+addOsm(101, {
+  id: 'osm_school',
+  displayNameJa: '学校',
+  tier: 3,
+  naturalBand: 3,
+  radiusNominal: 6.0,
+  radiusJitter: 0,
+  spawnWeight: 0,
+  palette: [0xe8e4d8, 0xc8ccc0, 0xdcd8c8, 0xb8bcae], // school creams
+  yOffset: 0,
+  upright: true,
+  collisionScale: 0.9,
+  buildGeometry(rng) {
+    return finishUnitBox([
+      ubands(2, 2, -1, 0.85, 4, 0xffffff, 0x4a5a6a, 0xf0f0d8, rng), // classroom rows (tinted)
+      box(2, 0.3, 2, 0x7a8088, { y: 0.85 }), // flat roof
+      box(0.7, 0.5, 0.14, 0x6a7078, { y: -0.75, z: 1.02 }), // entrance porch
+    ]);
+  },
+});
+
+/* ---- 102 osm_temple 寺院 — flat stepped roofs + wood banding (48) ---- */
+addOsm(102, {
+  id: 'osm_temple',
+  displayNameJa: '寺院',
+  tier: 3,
+  naturalBand: 3,
+  radiusNominal: 2.5,
+  radiusJitter: 0,
+  spawnWeight: 0,
+  palette: [0x8a6a4a, 0x6a5038, 0x9a7a58, 0x584430], // temple wood
+  yOffset: 0,
+  upright: true,
+  collisionScale: 0.85,
+  buildGeometry(rng) {
+    void rng;
+    // FLAT-ROOFED v1 (axis-aligned-normals law) — the "temple read" comes
+    // from the dark eaves slab + stacked upper roof + wood banding.
+    return finishUnitBox([
+      box(2, 1.3, 2, 0xffffff, { y: -0.35, hex2: 0xc8b090 }), // wood body (tinted)
+      box(2.06, 0.18, 2.06, 0xb03428, { y: 0.2 }), // vermilion beam band
+      box(2.06, 0.35, 2.06, 0x3c3430, { y: 0.47 }), // lower eaves slab (dark)
+      box(1.4, 0.3, 1.4, 0x4a403a, { y: 0.8 }), // upper stacked roof
+    ]);
+  },
+});
+
+/* ---- 103 osm_shrine 神社 — vermilion + flat roof + ridge (48) -------- */
+addOsm(103, {
+  id: 'osm_shrine',
+  displayNameJa: '神社',
+  tier: 3,
+  naturalBand: 3,
+  radiusNominal: 2.0,
+  radiusJitter: 0,
+  spawnWeight: 0,
+  palette: [0xc04030, 0xa83424, 0xd05040, 0x983020], // shrine vermilion
+  yOffset: 0,
+  upright: true,
+  collisionScale: 0.85,
+  buildGeometry(rng) {
+    void rng;
+    return finishUnitBox([
+      box(2, 1.4, 2, 0xffffff, { y: -0.3, hex2: 0xe05a44 }), // vermilion body (tinted)
+      box(2.04, 0.25, 2.04, 0xf2ead8, { y: -0.84 }), // white base band
+      box(2.06, 0.3, 2.06, 0x3c3430, { y: 0.55 }), // flat dark roof slab
+      box(0.5, 0.3, 2.1, 0x2e2824, { y: 0.85 }), // ridge beam (katsuogi row)
+    ]);
+  },
+});
+
+/* ---- 104 osm_station 駅舎 — brick banded + entrance (60) ------------ */
+addOsm(104, {
+  id: 'osm_station',
+  displayNameJa: '駅舎',
+  tier: 4,
+  naturalBand: 4,
+  radiusNominal: 8.0,
+  radiusJitter: 0,
+  spawnWeight: 0,
+  palette: [0xa86048, 0x8a4c38, 0xb87058, 0x784030], // station brick
+  yOffset: 0,
+  upright: true,
+  collisionScale: 0.9,
+  buildGeometry(rng) {
+    return finishUnitBox([
+      ubands(2, 2, -1, 0.7, 4, 0xffffff, 0x584438, 0xffe0a0, rng), // brick arcade rows (tinted)
+      box(2, 0.3, 2, 0x5a5a62, { y: 0.85 }), // flat roof deck
+      box(1.1, 0.5, 0.14, 0x3c3a44, { y: -0.7, z: 1.02 }), // entrance maw
+    ]);
+  },
+});
+
+/* ---- 105 osm_warehouse 倉庫 — ribbed shed + shutter (60) ------------ */
+addOsm(105, {
+  id: 'osm_warehouse',
+  displayNameJa: '倉庫',
+  tier: 3,
+  naturalBand: 3,
+  radiusNominal: 5.0,
+  radiusJitter: 0,
+  spawnWeight: 0,
+  palette: [0x9aa4b0, 0x788494, 0xa8b0b8, 0x687480], // corrugated steel
+  yOffset: 0,
+  upright: true,
+  collisionScale: 0.9,
+  buildGeometry(rng) {
+    void rng;
+    return finishUnitBox([
+      box(2, 2, 2, 0xffffff, { hex2: 0xc8d0d8 }), // shed volume (tinted)
+      box(2.04, 0.1, 2.04, 0x5a626e, { y: 0.3 }), // rib band
+      box(2.04, 0.1, 2.04, 0x5a626e, { y: -0.3 }), // rib band
+      box(2.04, 0.1, 2.04, 0x5a626e, { y: -0.9 }), // rib band (skirt)
+      box(1.1, 1.1, 0.06, 0x6a7078, { y: -0.45, z: 1.0 }), // shutter door
+    ]);
+  },
+});
+
+/* ---- 106 osm_parking 駐車場ビル — open decks (72) -------------------- */
+addOsm(106, {
+  id: 'osm_parking',
+  displayNameJa: '駐車場ビル',
+  tier: 3,
+  naturalBand: 3,
+  radiusNominal: 5.0,
+  radiusJitter: 0,
+  spawnWeight: 0,
+  palette: [0xc8ccd4, 0xa8acb4, 0xb8c0c8, 0x989ca4], // concrete grays
+  yOffset: 0,
+  upright: true,
+  collisionScale: 0.9,
+  buildGeometry(rng) {
+    void rng;
+    const parts = [];
+    for (let i = 0; i < 4; i++) {
+      parts.push(box(2, 0.14, 2, 0xffffff, { y: -0.93 + i * 0.62, hex2: 0xd8dce2 })); // deck slabs (tinted)
+    }
+    parts.push(box(2, 1.14, 2, 0xffffff, { y: 0.43 })); // top floors volume
+    parts.push(box(0.18, 2, 2, 0xb0b4bc, { x: -0.91 })); // end wall
+    return finishUnitBox(parts); // 6 boxes = 72 tris (the cap, exactly)
+  },
+});
+
+/* ---- 107 osm_merged_block 長屋ブロック — row volume + dividers (60) - */
+addOsm(107, {
+  id: 'osm_merged_block',
+  displayNameJa: '長屋ブロック',
+  tier: 3,
+  naturalBand: 3,
+  radiusNominal: 4.5,
+  radiusJitter: 0,
+  spawnWeight: 0,
+  palette: [0xd8cec0, 0xb4aa9c, 0xc8beb2, 0xa49a8e], // shitamachi rows
+  yOffset: 0,
+  upright: true,
+  collisionScale: 0.92,
+  buildGeometry(rng) {
+    return finishUnitBox([
+      ubands(2, 2, -1, 1, 4, 0xffffff, 0x4c4640, 0xffd98a, rng), // merged row volume (tinted)
+      box(0.08, 2.02, 2.02, 0x6a6258, { x: -0.34 }), // party-wall divider
+      box(0.08, 2.02, 2.02, 0x6a6258, { x: 0.34 }), // party-wall divider
+    ]);
+  },
+});
+
+/* ---- 108 osm_tower_generic 超高層ビル — 8-floor banded (68) ---------- */
+addOsm(108, {
+  id: 'osm_tower_generic',
+  displayNameJa: '超高層ビル',
+  tier: 5,
+  naturalBand: 5,
+  radiusNominal: 64,
+  radiusJitter: 0,
+  spawnWeight: 0,
+  palette: [0x9ab0c4, 0x6a8098, 0x88a0b4, 0x587088], // mega-tower glass
+  yOffset: 0,
+  upright: true,
+  collisionScale: 0.9,
+  buildGeometry(rng) {
+    return finishUnitBox([
+      ubands(2, 2, -1, 1, 8, 0xffffff, 0x26323e, 0xc8e0f0, rng), // curtain wall (tinted)
+    ]);
+  },
+});
+
+/* ---- 109 osm_stepped_roof 段々ビル — 2 stacked banded boxes (68) ----- */
+addOsm(109, {
+  id: 'osm_stepped_roof',
+  displayNameJa: '段々ビル',
+  tier: 4,
+  naturalBand: 4,
+  radiusNominal: 12,
+  radiusJitter: 0,
+  spawnWeight: 0,
+  palette: [0xc2c8d0, 0xa0a8b4, 0xb2bac2, 0x909aa6], // setback concrete
+  yOffset: 0,
+  upright: true,
+  collisionScale: 0.9,
+  buildGeometry(rng) {
+    return finishUnitBox([
+      ubands(2, 2, -1, 0.4, 4, 0xffffff, 0x3c4654, 0xffe0a0, rng), // lower mass (tinted)
+      ubands(1.2, 1.2, 0.4, 0.92, 2, 0xf0eee8, 0x3c4654, 0xffe0a0, rng), // setback upper
+      box(1.2, 0.16, 1.2, 0x7a8088, { y: 0.96 }), // top slab
+    ]);
+  },
+});
+
+/* ================================================================== */
+/* DISPLAY_NAME_BY_CODE — string[110], code-indexed (Phase-0 frozen)   */
 /* ================================================================== */
 
 /**
  * Code -> Japanese display name (hud absorb-name floats with FLOAT_MERGE_S
  * burst merging, collection album, landmark toasts). Codes 0..69 follow the
- * frozen tiers.js order; 70..93 the frozen EXTRA order from objects.js.
+ * frozen tiers.js order; 70..93 the frozen EXTRA order from objects.js;
+ * 94..109 the frozen v4 OSM order from objects.js (110 total).
  * Built unconditionally (prod ships it); asserted complete in dev.
  * @type {string[]}
  */
 export const DISPLAY_NAME_BY_CODE = (() => {
-  const names = new Array(TIERS.length * ARCH_PER_TIER + EXTRA_ARCHETYPE_IDS.length);
+  const names = new Array(
+    TIERS.length * ARCH_PER_TIER + EXTRA_ARCHETYPE_IDS.length + OSM_ARCHETYPE_IDS.length
+  );
   for (let t = 0; t < TIERS.length; t++) {
     const ids = TIERS[t].archetypeIds;
     for (let i = 0; i < ids.length; i++) {
@@ -2708,6 +3465,10 @@ export const DISPLAY_NAME_BY_CODE = (() => {
   for (let e = 0; e < EXTRA_ARCHETYPE_IDS.length; e++) {
     const a = CATALOG[EXTRA_ARCHETYPE_IDS[e]];
     names[EXTRA_CODE_BASE + e] = a !== undefined && a.displayNameJa ? a.displayNameJa : '';
+  }
+  for (let o = 0; o < OSM_ARCHETYPE_IDS.length; o++) {
+    const a = CATALOG[OSM_ARCHETYPE_IDS[o]];
+    names[OSM_CODE_BASE + o] = a !== undefined && a.displayNameJa ? a.displayNameJa : '';
   }
   return names;
 })();
@@ -2787,14 +3548,45 @@ if (import.meta.env && import.meta.env.DEV) {
   assert(CATALOG['tokyo_tower'].collisionScale === 0.45, '東京タワー collisionScale frozen at 0.45');
   assert(CATALOG['tokyo_tower'].radiusNominal === 170, '東京タワー dioramaR frozen at 170');
 
+  // ---- 16 OSM voxel archetypes (frozen objects.js codes 94..109, v4) --
+  for (let o = 0; o < OSM_ARCHETYPE_IDS.length; o++) {
+    const code = OSM_CODE_BASE + o;
+    const id = OSM_ARCHETYPE_IDS[o];
+    const a = OSM_CATALOG[code];
+    assert(a !== undefined, `OSM code ${code}: missing archetype '${id}'`);
+    assert(a.id === id, `OSM code ${code}: id must be '${id}', found '${a.id}'`);
+    assert(CATALOG[id] === a, `OSM '${id}': must be the same object in CATALOG and OSM_CATALOG`);
+    assert(a.osmCode === code, `OSM '${id}': osmCode field mismatch`);
+    assert(a.unitBox === true, `OSM '${id}': unitBox must be true (DESIGN-V4 unit-box law)`);
+    assert(a.spawnWeight === 0, `OSM '${id}': spawnWeight must be 0 (osmSpawner-only, never chunk-rolled)`);
+    assert(a.tier === a.naturalBand, `OSM '${id}': tier field must equal naturalBand`);
+    checkCommon(a, `OSM '${id}'`);
+  }
+  assert(Object.keys(OSM_CATALOG).length === 16, 'OSM_CATALOG must contain exactly 16 codes (94..109)');
+
+  // ---- 12 hero archetypes (v4 HERO pass, frozen ids) -------------------
+  assert(HERO_ARCHETYPE_IDS.length === 12, 'HERO_ARCHETYPE_IDS must have exactly 12 entries (frozen)');
+  for (const id of HERO_ARCHETYPE_IDS) {
+    const a = CATALOG[id];
+    assert(a !== undefined, `hero '${id}': missing from CATALOG`);
+    assert(a.heroTriCap === HERO_TRI_CAP, `hero '${id}': heroTriCap must be HERO_TRI_CAP (${HERO_TRI_CAP})`);
+    assert(a.unitBox === undefined, `hero '${id}': heroes are unit-SPHERE archetypes, never unitBox`);
+  }
+  for (const id in CATALOG) {
+    if (CATALOG[id].heroTriCap !== undefined) {
+      assert(HERO_ARCHETYPE_IDS.indexOf(id) !== -1, `'${id}': heroTriCap on a non-hero id (12 frozen ids only)`);
+    }
+  }
+
   // ---- totals + display-name table ------------------------------------
   assert(
-    Object.keys(CATALOG).length === 94,
-    `CATALOG must contain exactly 94 ids (70 chunk + 24 EXTRA), found ${Object.keys(CATALOG).length}`
+    Object.keys(CATALOG).length === 110,
+    `CATALOG must contain exactly 110 ids (70 chunk + 24 EXTRA + 16 OSM), found ${Object.keys(CATALOG).length}`
   );
-  assert(DISPLAY_NAME_BY_CODE.length === 94, 'DISPLAY_NAME_BY_CODE must have exactly 94 entries');
-  for (let c = 0; c < 94; c++) {
+  assert(DISPLAY_NAME_BY_CODE.length === 110, 'DISPLAY_NAME_BY_CODE must have exactly 110 entries');
+  for (let c = 0; c < 110; c++) {
     assert(DISPLAY_NAME_BY_CODE[c].length > 0, `DISPLAY_NAME_BY_CODE hole at code ${c}`);
   }
   assert(DISPLAY_NAME_BY_CODE[93] === '東京スカイツリー', 'code 93 reserved for 東京スカイツリー');
+  assert(DISPLAY_NAME_BY_CODE[96] === '雑居ビル', 'code 96 (osm_zakkyo) display name frozen as 雑居ビル');
 }

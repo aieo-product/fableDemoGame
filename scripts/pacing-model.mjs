@@ -7,11 +7,17 @@
  * exemption), plus the per-band density table DENSITY_K_BY_BAND.
  * Run: node scripts/pacing-model.mjs
  */
+import { readFileSync, existsSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
 import { PLACEMENTS, LANDMARKS, bandAllowedAt, SKYTREE_POS } from '../src/config/cityMap.js';
 import {
   ABSORB_RATIO, GROWTH_K, growthKForObjR, SPEED_K, PICKUP_FORGIVE_K, START_RADIUS_M,
   GOAL_RADIUS_M, densityKForBand, SHOP_TERRAIN_RELEASE_M,
+  OSM_ALIVE_CAP, OSM_KEEP_K_BY_BAND,
 } from '../src/config/tuning.js';
+
+const OSM_MANIFEST_PATH = join(dirname(fileURLToPath(import.meta.url)), '../public/assets/tokyo/tokyo-v4-manifest.json');
 
 // Chunk catalog (id -> [tier, radiusNominal, jitter, weight]) — slots 0..7 fill + 8/9 landmarks.
 const CHUNK = {
@@ -230,6 +236,67 @@ function leakage() {
   console.log(`F. STREET/GUTTER placements: ${inStrip} inside the x[4.6,18] strip, ${outStrip} leaked outside`);
 }
 
+/* ============ G. v4 OSM coverage supply (reads tokyo-v4-manifest.json,  ============ */
+/* ============    NEVER design prose — docs/DESIGN-V4.md pacing plan)    ============ */
+function osmCoverage() {
+  if (!existsSync(OSM_MANIFEST_PATH)) {
+    console.log('G. OSM COVERAGE: tokyo-v4-manifest.json not built yet (run npm run osm:build) — skipped');
+    return;
+  }
+  const m = JSON.parse(readFileSync(OSM_MANIFEST_PATH, 'utf8'));
+  const area = m.coverageAreaGameM2; // game m^2 (= v3 "real meters" convention)
+  console.log(`G. OSM COVERAGE (manifest ${m.extractionDate}, ${Object.values(m.perBandCounts).reduce((a, b) => a + b, 0)} buildings, coverage ${(area / 1e6).toFixed(2)} km^2-game):`);
+  const bands = [2, 3, 4, 5];
+  const stat = (b) => m.bandStats[`band${b}`] || { count: 0, sumR3: 0, meanREff: 0 };
+  // per-band density + live-window worst supply vs OSM_ALIVE_CAP
+  const CAP = { 2: OSM_ALIVE_CAP.b2, 3: OSM_ALIVE_CAP.b3, 4: OSM_ALIVE_CAP.b4, 5: OSM_ALIVE_CAP.b5 };
+  for (const b of bands) {
+    const s = stat(b);
+    const density = s.count / area; // objs per game m^2 (post-thin, post-merge)
+    const half = 32 * WS(b); // live-window halfwidth (mirrors chunk window extent)
+    const windowSupply = Math.min(density * Math.pow(2 * half, 2), s.count); // window saturates at total supply
+    const capNote = windowSupply > CAP[b]
+      ? `OVER cap ${CAP[b]} -> lower OSM_KEEP_K_BY_BAND[${b}] (now ${OSM_KEEP_K_BY_BAND[b]}) to ~${(OSM_KEEP_K_BY_BAND[b] * CAP[b] / windowSupply).toFixed(2)} or raise cap`
+      : `<= cap ${CAP[b]} (headroom ${(100 * (1 - windowSupply / CAP[b])).toFixed(0)}%)`;
+    console.log(`   band${b}: n=${s.count} meanR=${s.meanREff}m ΣR³=${s.sumR3.toFixed(0)} density=${(density * 1e6).toFixed(0)}/km² worst-window ~${windowSupply.toFixed(0)} ${capNote}`);
+  }
+  // dwell re-solve: OSM-supplied bands 2..5 growth ODE inside coverage
+  const TARGET = { 2: 45, 3: 45, 4: 50, 5: 55 };
+  console.log('   dwell estimates (OSM supply only, coverage interior, vs design targets):');
+  for (let tier = 2; tier <= 5; tier++) {
+    let R = TIER_ENTER[tier];
+    const Rend = tier < 6 ? TIER_ENTER[tier + 1] : GOAL_RADIUS_M;
+    let t = 0;
+    const dt = 0.05;
+    while (R < Rend && t < 600) {
+      let rate = 0;
+      for (const b of bands) {
+        const s = stat(b);
+        if (!s.count) continue;
+        const r = s.meanREff;
+        if (r > ABSORB_RATIO * R) continue;
+        const density = s.count / area;
+        const width = 2 * ((1 + PICKUP_FORGIVE_K) * R + r);
+        const lambda = density * width * SPEED_K * R; // absorbs/s while rolling
+        rate += lambda * Math.log(1 + growthKForObjR(r) * Math.pow(r / R, 3));
+      }
+      if (rate <= 1e-9) { t = Infinity; break; }
+      R *= Math.exp(rate * dt);
+      t += dt;
+    }
+    const verdict = t === Infinity ? 'STALLED (needs curated/landmark jumps)' :
+      t < TARGET[tier] * 0.6 ? `${t.toFixed(0)}s — FAST vs target ${TARGET[tier]}s (cascade risk: lower KEEP_K[3] or DENSITY_K)` :
+      t > TARGET[tier] * 1.7 ? `${t.toFixed(0)}s — SLOW vs target ${TARGET[tier]}s (raise KEEP_K or rely on curated ladder)` :
+      `${t.toFixed(0)}s vs target ${TARGET[tier]}s — OK`;
+    console.log(`     T${tier} (r ${TIER_ENTER[tier]}->${Rend}m): ${verdict}`);
+  }
+  console.log('   NOTE: chunk bands 2 clutter + 5/6 procedural + curated jumps are additive on top;');
+  console.log('   dwell estimates assume UNCAPPED supply — OSM_ALIVE_CAP + the admission check');
+  console.log('   bound the effective density at runtime (FAST verdicts = cascade-risk flags,');
+  console.log('   resolved by the Phase-3 KEEP_K data-only re-run + >=3 agent-browser runs);');
+  console.log('   re-cut OSM_ALIVE_CAP from manifest.bandHistogram (authoritative) in Phase 3.');
+}
+
 shopSim();
 corridorSim('(shipped law: growthKForObjR + per-band density)');
 ladder();
@@ -240,3 +307,4 @@ regionSim(120, 30, 2, 600, 600, 'Akiba blocks x=120 from 2m');
 regionSim(400, 300, 12, 600, 600, 'general fill x=400 from 12m');
 regionSim(400, 300, 60, 600, 600, 'general fill T5 entry 60m');
 leakage();
+osmCoverage();

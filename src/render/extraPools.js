@@ -21,6 +21,26 @@
  * Zero per-frame allocation in steady state: BatchedMesh addInstance/
  * deleteInstance run only on curated activation/deactivation events (the
  * amortized <=64/frame ring path), never per frame.
+ *
+ * v4 (docs/DESIGN-V4.md レンダリング統合 — Stream R):
+ * - MEMBER-LIST INJECTION IS GENERAL: BatchedExtraPool is code-agnostic — it
+ *   maps any injected {code, geometry} member list to BatchedMesh geometry
+ *   ids. render/osmPools.js reuses the class verbatim for the two OSM
+ *   building batches (codes 94..109); buildExtraPools below stays the
+ *   curated EXTRA (70..92) partition.
+ * - NON-UNIFORM SCALE: setTransform(slot, pos, quat, sx, sy = sx, sz = sx).
+ *   Existing 4-arg callers (curated) are byte-identical (uniform). Fade
+ *   animators store/multiply the full scale triple; rescaleAll(S) scales all
+ *   three axes (the one-frame similarity stays pixel-identical).
+ * - AXIS-ALIGNED-NORMALS CONSTRAINT (binding for non-uniformly scaled
+ *   members): BatchedMesh applies NO inverse-transpose normal matrix per
+ *   instance, so a non-uniform scale would mislight any sloped face. Every
+ *   geometry rendered at non-uniform scale MUST have only +/-X/+/-Y/+/-Z
+ *   normals (flat/stepped boxes — the OSM voxel law; boot-asserted in
+ *   osmPools.js). Unit-SPHERE members (EXTRA codes) stay uniform-scaled.
+ * - RADIUS AUDIT: object radius/size semantics live in the ObjectStore —
+ *   no code may derive radius from matrix scale magnitude (the non-uniform
+ *   overload would silently break it). See osmPools.devAssertOsmScaleMatchesRadius.
  */
 
 import * as THREE from 'three';
@@ -94,7 +114,9 @@ export class BatchedExtraPool {
     /** @type {Float32Array} */ this._qy = new Float32Array(capacity);
     /** @type {Float32Array} */ this._qz = new Float32Array(capacity);
     /** @type {Float32Array} */ this._qw = new Float32Array(capacity);
-    /** @type {Float32Array} Base (un-faded) uniform scale. */ this._scale = new Float32Array(capacity);
+    /** @type {Float32Array} Base (un-faded) scale X (uniform callers: the one scale). */ this._scale = new Float32Array(capacity);
+    /** @type {Float32Array} Base scale Y (v4 non-uniform; == _scale for uniform callers). */ this._scaleY = new Float32Array(capacity);
+    /** @type {Float32Array} Base scale Z (v4 non-uniform; == _scale for uniform callers). */ this._scaleZ = new Float32Array(capacity);
     /** @type {Float32Array} Current fade factor in the matrix. */ this._curF = new Float32Array(capacity);
     /** @type {Uint8Array} 1 = allocated. */ this._alive = new Uint8Array(capacity);
     /** @type {Uint8Array} */ this._fadeMode = new Uint8Array(capacity);
@@ -123,7 +145,7 @@ export class BatchedExtraPool {
     if (this._allocated >= this.capacity) return -1;
     const gid = this._geomIdByCode.get(code);
     if (gid === undefined) {
-      if (DEV) console.warn(`[extraPools] alloc for unknown EXTRA code ${code}`);
+      if (DEV) console.warn(`[extraPools] alloc for code ${code} — not a member of this pool`);
       return -1;
     }
     const slot = this.mesh.addInstance(gid);
@@ -136,6 +158,8 @@ export class BatchedExtraPool {
     this._qz[slot] = 0;
     this._qw[slot] = 1;
     this._scale[slot] = 0;
+    this._scaleY[slot] = 0;
+    this._scaleZ[slot] = 0;
     this._curF[slot] = 1;
     this._fadeMode[slot] = FADE_NONE;
     this._writeMatrix(slot, 0); // invisible until setTransform
@@ -160,10 +184,14 @@ export class BatchedExtraPool {
 
   /**
    * Set a slot's TRS (copied; recomposed at the current fade factor).
+   * v4: optional non-uniform scale — OSM unit-box members pass
+   * (w/2, h/2, d/2) in sim units; 4-arg callers stay uniform (byte-identical).
+   * Non-uniform members MUST have axis-aligned normals (header constraint).
    * @param {number} slot @param {THREE.Vector3} pos
-   * @param {THREE.Quaternion} quat @param {number} scale
+   * @param {THREE.Quaternion} quat @param {number} sx Scale X (uniform callers: the scale).
+   * @param {number} [sy=sx] Scale Y. @param {number} [sz=sx] Scale Z.
    */
-  setTransform(slot, pos, quat, scale) {
+  setTransform(slot, pos, quat, sx, sy = sx, sz = sx) {
     this._px[slot] = pos.x;
     this._py[slot] = pos.y;
     this._pz[slot] = pos.z;
@@ -171,7 +199,9 @@ export class BatchedExtraPool {
     this._qy[slot] = quat.y;
     this._qz[slot] = quat.z;
     this._qw[slot] = quat.w;
-    this._scale[slot] = scale;
+    this._scale[slot] = sx;
+    this._scaleY[slot] = sy;
+    this._scaleZ[slot] = sz;
     this._writeMatrix(slot, this._factorOf(slot));
   }
 
@@ -220,8 +250,10 @@ export class BatchedExtraPool {
   }
 
   /**
-   * Step fade animators (called from updateAndFlushPools; capacity <= 12 so
-   * a flat scan is cheaper than a fade list).
+   * Step fade animators (called from updateAndFlushPools). Flat scan over
+   * capacity: EXTRA pools are <= 12 slots; the v4 OSM pools are 2048/1024 —
+   * still a single contiguous Uint8Array pass (~3k byte reads/frame total),
+   * cheaper than maintaining a fade list, zero allocation.
    * @param {number} dt
    */
   update(dt) {
@@ -246,7 +278,8 @@ export class BatchedExtraPool {
   /** No-op (BatchedMesh flags its own data textures on every write). */
   flush() {}
 
-  /** One-frame similarity rescale (ScaleManager eachPool). @param {number} S */
+  /** One-frame similarity rescale (ScaleManager eachPool) — scales the full
+   *  triple so non-uniform slots stay pixel-identical. @param {number} S */
   rescaleAll(S) {
     for (let slot = 0; slot < this.capacity; slot++) {
       if (this._alive[slot] === 0) continue;
@@ -254,6 +287,8 @@ export class BatchedExtraPool {
       this._py[slot] *= S;
       this._pz[slot] *= S;
       this._scale[slot] *= S;
+      this._scaleY[slot] *= S;
+      this._scaleZ[slot] *= S;
       this._writeMatrix(slot, this._curF[slot]);
     }
   }
@@ -294,13 +329,13 @@ export class BatchedExtraPool {
     return this._fadeStartF[slot] * u * u * u;
   }
 
-  /** Compose + upload one instance matrix at fade factor f. */
+  /** Compose + upload one instance matrix at fade factor f (scale triple
+   *  multiplied by f — Matrix4.compose handles non-uniform natively). */
   _writeMatrix(slot, f) {
     this._curF[slot] = f;
-    const s = this._scale[slot] * f;
     _POS.set(this._px[slot], this._py[slot], this._pz[slot]);
     _QUAT.set(this._qx[slot], this._qy[slot], this._qz[slot], this._qw[slot]);
-    _SCL.set(s, s, s);
+    _SCL.set(this._scale[slot] * f, this._scaleY[slot] * f, this._scaleZ[slot] * f);
     _M4.compose(_POS, _QUAT, _SCL);
     this.mesh.setMatrixAt(slot, _M4);
   }

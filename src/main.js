@@ -6,33 +6,50 @@
  * and wires all modules via constructor injection + the event bus.
  * NO GAME LOGIC lives here.
  *
- * ============ v3 (Hakoniwa Tokyo) — BINDING FRAME ORDER ============
- * (docs/DESIGN-V3.md §インターフェース; all five v3 streams INTEGRATED.)
+ * ============ v4 (Real Tokyo) — BINDING FRAME ORDER ============
+ * (docs/DESIGN-V4.md §インターフェース — a pure DELTA on the v3 order below;
+ *  all four streams P/C/R/W are INTEGRATED.)
  *  1   intent = input.read(); if (finale.inputLocked) zero x/y/boost/dash
  *  2   fixed steps { ballPhys.step(dt, intent, yaw+PI)
  *                      // terrain.collide runs INSIDE step, after XZ
  *                      // integration (injected CityTerrain — Stream B);
  *                    if (!finale.inputLocked) absorb.resolve(...) }
- *  3   if (!finale.inputLocked) { spawner.update(...); curated.update(...) }
- *                      // curated AFTER spawner, same gate (Stream B)
+ *  3   if (!finale.inputLocked) { spawner.update(...); curated.update(...);
+ *                                 osmSpawner.update(...) }
+ *                      // curated AFTER spawner; osmSpawner AFTER curated,
+ *                      // same gate (v4 — BINDING)
  *  4   scaleMgr.maybeTierUp(...); if (!finale.inputLocked) scaleMgr.maybeRebase(...)
  *  4.5 finale.update(frameDt, ballPhys.state)   // approach/contact vs
- *      SkytreeView (Stream A re-theme; v2 moon machinery until then),
- *      cinematic camera (drives cameraRig.cinematicUpdate)
+ *      SkytreeView, cinematic camera (drives cameraRig.cinematicUpdate)
  *  5   ball.update(...)
  *  6   if (!finale.cameraOwned) cameraRig.update(...)  // interior01 + boom
- *      clamp are INTERNAL to cameraRig (injected at construction, Stream A);
- *      env.update(...); backdrop.update(...); effects.update(...)
+ *      clamp are INTERNAL to cameraRig (injected at construction);
+ *      env.update(...); osmGround.update(dt, ballPos, env.fogFarSim);
+ *      backdrop.update(...); effects.update(...)
  *  6.5 runStats.addSimTime(steps * FIXED_DT)    // frozen after GOAL_CONTACT
  *  7   updateAndFlushPools(); renderer.render()
  * GameState: TITLE -> PLAYING -> FINALE (finale.inputLocked first true)
  *            -> WIN (main emits GAME_WIN at finale.state === 'done' — main
  *            is the SOLE game:win emitter).
- * BINDING ABSORB subscription order at boot (v3, frozen in events.js):
- *   chunk spawner (bookkeeping only; skips FLAG_CURATED slots)
+ * v4 OSM LIFECYCLE (main is the integrator — docs/DESIGN-V4.md):
+ *   - osmWorld.load(OSM_BASE_URL) kicked at title (shard fetch + decode is
+ *     title-screen work — documented exemption like the thumbnail pre-render).
+ *   - EVT.OSM_READY -> cityMap.setOsmCoverageActive(true) — ONE-SHOT, exactly
+ *     once per session.
+ *   - ONE-WAY TIER-2 DEADLINE LATCH: on TIER_UP into tier >= 2 with
+ *     !osmWorld.ready, main calls osmWorld.abortAndFail() (fetches cancelled,
+ *     failed latches true permanently, late data discarded) and
+ *     setOsmCoverageActive(false). Testable via ?osmdelay=ms (osmWorld DEV).
+ *   - resetWorld += osmSpawner.reset() (after curated.reset()); the coverage
+ *     latch is PER-SESSION and is NOT re-armed by reset.
+ *   - devTeleport += osmSpawner.onTeleport() + forceScan().
+ * BINDING ABSORB subscription order at boot (v4, frozen in events.js):
+ *   chunk spawner (bookkeeping only; skips FLAG_CURATED|FLAG_OSM slots)
  *   -> curated (CuratedSpawner constructs right after Spawner)
+ *   -> osmSpawner (constructs right after CuratedSpawner — v4)
  *   -> main attach-handler (sets store.instanceSlot = -1 on steal —
- *      load-bearing for curated's deferred cleanup, slot-steal convention)
+ *      load-bearing for curated's/osmSpawner's deferred cleanup, slot-steal
+ *      convention)
  *   -> runStats -> collection (constructs right after RunStats)
  *   -> sfx/effects/hud.
  * MUTE ownership: main is the single owner — reads LS_MUTE_KEY BEFORE
@@ -77,7 +94,7 @@ import { bus, EVT, PAYLOADS } from './core/events.js';
 import { resolveWorldSeed } from './core/rng.js';
 import { TIERS } from './config/tiers.js';
 import { CATALOG } from './config/catalog.js';
-import { ObjectStore, EXTRA_CODE_BASE } from './world/objects.js';
+import { ObjectStore, EXTRA_CODE_BASE, OSM_ARCHETYPE_IDS, OSM_CODE_BASE } from './world/objects.js';
 import { SpatialHash } from './world/spatialHash.js';
 import { BallPhysics } from './physics/ballPhysics.js';
 import { Absorb } from './physics/absorb.js';
@@ -112,7 +129,15 @@ import { Collection } from './game/collection.js'; // Stream D
 import { Donack } from './ui/donack.js'; // Stream E
 import { SkytreeView } from './render/goalTower.js'; // Stream A (replaces MoonView)
 import { DEV_STARTS } from './config/cityMap.js'; // Stream B
+import * as cityMap from './config/cityMap.js'; // v4: setOsmCoverageActive guard-called via namespace (lands with Stream W)
 import { buildExtraPools, extraClassIndexForCode } from './render/extraPools.js'; // integration (4 shared EXTRA pools)
+
+/* ---- v4 modules (integrated — streams P/C/R/W all landed) ------------- */
+import { OsmWorld } from './world/osmWorld.js'; // Stream W
+import { OsmSpawner } from './world/osmSpawner.js'; // Stream W
+import { makeOsmPools } from './render/osmPools.js'; // Stream R
+import { OsmGround } from './render/osmGround.js'; // Stream R
+import { makeObjectMaterial, setRimTint } from './render/objectMaterial.js'; // Stream C (rim)
 
 /* ------------------------------------------------------------------ */
 /* Game state machine                                                  */
@@ -160,6 +185,13 @@ const hashes = [
   new SpatialHash(TIERS[1].cellSizeSim * 5), // band +1 scenery, current units
 ];
 const geos = buildAllGeometries(CATALOG);
+
+/* v4 (Stream C): decorate the SINGLE shared object material with the rim
+ * term BEFORE the first pool/mesh is created so the first compiled program
+ * already carries it. makeObjectMaterial() returns the instances.js
+ * singleton — every existing getSharedObjectMaterial() call site below keeps
+ * receiving the same instance (one-material law, ledger untouched). */
+makeObjectMaterial();
 
 /** @type {Map<string, InstancedPool>} World pool per archetype id. */
 const instances = new Map();
@@ -216,8 +248,106 @@ for (let i = 0; i < extraPools.length; i++) {
  * handler must run second) and BEFORE the KNOCK_OFF / ABSORB handlers below. */
 const curated = new CuratedSpawner(store, hashes, instances, extraPools, bus, scaleMgr);
 if (import.meta.env && import.meta.env.DEV) {
-  curated.attachChunkSpawner(spawner); // 300-frame ownership identity assert
+  // v4: curated's 300-frame ownership identity assert is chunk + X === store.
+  // With OSM alive the chunk spawner alone no longer accounts for the rest —
+  // hand curated the 3-spawner sum (spawner + osmSpawner; osmSpawner is
+  // declared below, the getter only evaluates during curated.update()).
+  curated.attachChunkSpawner({
+    get aliveCount() {
+      return spawner.aliveCount + osmSpawner.aliveCount;
+    },
+  });
 }
+
+/* ================================================================== */
+/* v4 REAL TOKYO — integrated at the BINDING call sites                */
+/* (docs/DESIGN-V4.md §インターフェース / INTEGRATION order P->C->R->W). */
+/* ================================================================== */
+
+/** OSM shard base URL (public/assets/tokyo/, immutable-cached via _headers). */
+const OSM_BASE_URL = '/assets/tokyo/';
+
+/* OsmWorld (Stream W): fetches both shards (AbortController) + decodes typed
+ * arrays at title, emits EVT.OSM_READY, honors ?osmdelay=ms in DEV, drives
+ * #osm-progress; abortAndFail() is the ONE-WAY failure latch. */
+const osmWorld = new OsmWorld(bus);
+
+/* osmPools (Stream R): 2 BatchedExtraPool batches — detail cap 2048 (bands
+ * 2-3) / large cap 1024 (bands 4-5); OSM_ALIVE_CAP feasibility + unit-box +
+ * axis-aligned-normals boot asserts live inside makeOsmPools. Registered in
+ * `instances` (reserved keys) + `poolList` exactly like extraPools above so
+ * ScaleManager.eachPool covers RESCALE/REBASE and updateAndFlushPools covers
+ * fade stepping (+2 draws, honest ledger 68/72). */
+const osmGeometries = [];
+for (let i = 0; i < OSM_ARCHETYPE_IDS.length; i++) {
+  osmGeometries.push({ code: OSM_CODE_BASE + i, geometry: geos[OSM_ARCHETYPE_IDS[i]] });
+}
+const osmPools = makeOsmPools(getSharedObjectMaterial(), osmGeometries);
+renderer.scene.add(osmPools.detail.mesh);
+renderer.scene.add(osmPools.large.mesh);
+instances.set('osm:detail', osmPools.detail);
+instances.set('osm:large', osmPools.large);
+poolList.push(osmPools.detail, osmPools.large);
+
+/* OsmSpawner (Stream W) — MUST construct EXACTLY HERE: after CuratedSpawner
+ * (its ABSORB handler is THIRD in the frozen order) and before the
+ * KNOCK_OFF/ABSORB attach-handlers below. <=OSM_UPDATE_BUDGET ops/frame
+ * nearest-first, hard admission check (ALIVE_TOTAL_BUDGET -
+ * OSM_ADMISSION_HEADROOM), consumed bitmasks, deferred ABSORB bookkeeping,
+ * RESCALE/REBASE origin handlers (curated pattern verbatim); inert until
+ * osmWorld.ready, forever inert if failed. */
+const osmSpawner = new OsmSpawner(store, hashes, osmPools, bus, scaleMgr, osmWorld);
+
+/* OsmGround (Stream R): tile group (scale = 1/worldScale, pos = -origin —
+ * pure similarity transform), ground BatchedMesh + river mesh on the shared
+ * env water material, <=2 tile builds/frame, major/minor LOD; RESCALE/
+ * REBASE/GAME_RESET self-subscribed — NOT added to resetWorld (+2 draws). */
+const osmGround = new OsmGround(renderer.scene, scaleMgr, env.getWaterMaterial(), osmWorld);
+
+/* v4 ONE-SHOT coverage latch — cityMap.setOsmCoverageActive is called
+ * EXACTLY ONCE per session (on OSM_READY *or* at the tier-2 deadline),
+ * always before band 3 ever matters (~80 s of slack). NOT re-armed by
+ * resetWorld (per-session, docs/DESIGN-V4.md データパイプライン step 4). */
+let osmCoverageDecided = false;
+/** @param {boolean} active */
+function decideOsmCoverage(active) {
+  if (osmCoverageDecided) return;
+  osmCoverageDecided = true;
+  // Guarded until Stream W lands setOsmCoverageActive in cityMap.js.
+  const fn = /** @type {any} */ (cityMap).setOsmCoverageActive;
+  if (typeof fn === 'function') fn(active);
+}
+bus.on(EVT.OSM_READY, () => decideOsmCoverage(true));
+/* ONE-WAY TIER-2 DEADLINE LATCH: data lost the race — flip coverage back to
+ * procedural permanently (failure-path determinism caveat, documented).
+ * INTEGRATION FIX (lead): gated on the RUN states — the latch protocol is
+ * "the player reached tier 2 mid-run before the data" (~80 s of slack). A
+ * boot-time ?at=/?r= dev teleport at r >= 0.5 emits TIER_UP synchronously
+ * during TITLE (devTeleport's forced maybeTierUp), microseconds after the
+ * fetch kicked — without this guard every tier>=2 dev start aborts OSM
+ * before the local shards can possibly arrive, making the binding browser
+ * gates (street/marunouchi/ueno with real fill) structurally impossible.
+ * Title-time loads finish before play; the dev-start band-3 window is
+ * served by OSM_READY -> setOsmCoverageActive(true) exactly as in a normal
+ * run. The ?osmdelay=120000 deadline race (start small, PLAY through tier
+ * 2) still latches via this handler. */
+bus.on(EVT.TIER_UP, (p) => {
+  if (state === GameState.TITLE) return; // boot/dev-start TIER_UP — not the race
+  if (p.tierIndex >= 2 && !osmWorld.ready && !osmWorld.failed) {
+    osmWorld.abortAndFail();
+    decideOsmCoverage(false);
+  }
+});
+/* Kick the shard fetch during the title screen (OsmWorld emits OSM_READY
+ * after decode or latches failed internally; #osm-progress is its DOM). */
+osmWorld.load(OSM_BASE_URL);
+
+/* v4 (Stream C rim): the sky-tinted rim follows the tier palette — snap on
+ * every TIER_UP crossfade start (any sky-ish hex works per design); the
+ * immediate-palette sites (boot, resetWorld, devTeleport, ?r= dev start)
+ * call setRimTint alongside env.setTierPaletteImmediate below. */
+bus.on(EVT.TIER_UP, (p) => setRimTint(TIERS[p.tierIndex].skyTop));
+setRimTint(TIERS[scaleMgr.tierIndex].skyTop); // boot palette (tier 0)
 
 /* Absorb (Stream C): stamps AbsorbEvent.archetypeCode/collectibleId (via
  * curated.collectibleIdFor) BEFORE store.free. Emits only — construction
@@ -456,7 +586,10 @@ function resetWorld() {
   runStats.reset();
   terrain.reset(); // re-arms the shop terrain release latch (after scaleMgr.reset)
   curated.reset(); // frees curated slots + consumed bitmask
+  osmSpawner.reset(); // v4 (BINDING: after curated.reset) — frees OSM slots +
+  // consumed bitmasks; the per-SESSION coverage latch is NOT re-armed here
   collection.resetRun(); // clears foundThisRun; the album mask persists
+  setRimTint(TIERS[0].skyTop); // v4 rim — env self-resets its palette to tier 0
   simOriginX = 0; // real->sim bridge follows the fresh origin/scale
   simOriginZ = 0;
   spawner.preloadStartArea(ballPhys.state.pos, scaleMgr.tierIndex, ballPhys.state.radiusSim);
@@ -486,6 +619,14 @@ window.addEventListener('keydown', onFinaleSkipInput);
 function onGameStart() {
   if (state === GameState.PLAYING) return;
   state = GameState.PLAYING;
+  // v4: play begins ALREADY at tier >= 2 (dev ?at=/?r= start) — band 3/4
+  // matter immediately, so the coverage decision deadline is NOW (one-way,
+  // same latch as the mid-run TIER_UP race; normally a no-op because the
+  // local shards decode during the title screen).
+  if (scaleMgr.tierIndex >= 2 && !osmWorld.ready && !osmWorld.failed) {
+    osmWorld.abortAndFail();
+    decideOsmCoverage(false);
+  }
   accumulator = 0;
   lastTime = performance.now(); // no huge first-frame dt
   input.setTouchUiEnabled(true); // re-enable after a finale lockout
@@ -532,6 +673,22 @@ function onGameWin() {
  * @returns {boolean} True if the teleport ran.
  */
 function devTeleport(name, rOverrideM = 0) {
+  const d = DEV_STARTS[name];
+  if (d === undefined) return false;
+  return devTeleportTo(d.x, d.z, rOverrideM > 0 ? rOverrideM : d.r);
+}
+
+/**
+ * Arbitrary-coordinate dev teleport (the body of devTeleport; v4 also
+ * exposed DEV-only as window.__v4park for the BINDING coverage-boundary
+ * park test — DESIGN-V4 ゲームプレイ統合 admission check, 300-frame
+ * alive<4096 assert at r~4/r~40 parked ON the coverage boundary).
+ * @param {number} xRealM Real-meter X (origin = ball start).
+ * @param {number} zRealM Real-meter Z.
+ * @param {number} rM True ball radius (real meters).
+ * @returns {boolean} True if the teleport ran.
+ */
+function devTeleportTo(xRealM, zRealM, rM) {
   // Finale guard: post-contact the finale owns the run (ball.pos writes,
   // camera, frozen streaming). Teleporting would re-arm the Skytree base
   // collider against the MERGE writes and permanently stall streaming
@@ -540,10 +697,8 @@ function devTeleport(name, rOverrideM = 0) {
     console.warn('[devTeleport] refused: finale owns the run (reset first)');
     return false;
   }
-  const d = DEV_STARTS[name];
-  if (d === undefined) return false;
   runStats.markDevRun(); // dev starts never persist bests / show NEW RECORD
-  const rM = rOverrideM > 0 ? rOverrideM : d.r;
+  const d = { x: xRealM, z: zRealM };
   let ws = START_RADIUS_M / SIM_RADIUS_MIN; // boot worldScale (0.04)
   while (rM / ws >= SIM_RADIUS_MAX) ws *= 5; // minimal k: r/ws in [0.5, 2.5)
   scaleMgr.worldScale = ws;
@@ -559,10 +714,13 @@ function devTeleport(name, rOverrideM = 0) {
   terrain.reset();
   spawner.onTeleport(); // resyncs the chunk scale exponent (scaleMgr injected)
   curated.forceScan(); // deactivate stale actives + full pass on next update()
+  osmSpawner.onTeleport(); // v4: resync OSM origin/scale to the snapped pose
+  osmSpawner.forceScan(); // v4: deactivate stale actives + full ring pass
   skytree.onTeleport(); // drop the stale rebase shift (no REBASE event fires here)
   scaleMgr.maybeTierUp(ballPhys.state, store, hashes, instances, cameraRig, env);
   scaleMgr.maybeRebase(ballPhys.state, store, hashes, instances, cameraRig, env, spawner); // one forced pass
   env.setTierPaletteImmediate(scaleMgr.tierIndex);
+  setRimTint(TIERS[scaleMgr.tierIndex].skyTop); // v4 rim follows the palette snap
   backdrop.setProfileImmediate(scaleMgr.tierIndex);
   spawner.preloadStartArea(ballPhys.state.pos, scaleMgr.tierIndex, ballPhys.state.radiusSim);
   // forceScan() above only SCHEDULED the full pass — run it now with the
@@ -572,10 +730,12 @@ function devTeleport(name, rOverrideM = 0) {
 }
 if (import.meta.env && import.meta.env.DEV) {
   /** @type {any} */ (window).devTeleport = devTeleport; // console access
+  /** @type {any} */ (window).__v4park = devTeleportTo; // coverage-boundary park test
   // DEV-only integration probe (e2e harness reads sim state; never in prod).
   /** @type {any} */ (window).__v3dbg = {
     ballPhys, scaleMgr, curated, terrain, spawner, store, finale, collection,
     getBallPosReal,
+    osmWorld, osmSpawner, osmGround, osmPools, // v4 (integrated)
   };
 }
 
@@ -599,6 +759,7 @@ if (devAtName === null || !devTeleport(devAtName, startRadiusM !== null ? startR
       devTier++;
     }
     env.setTierPaletteImmediate(devTier);
+    setRimTint(TIERS[devTier].skyTop); // v4 rim follows the palette snap
     backdrop.setProfileImmediate(devTier); // skip the profile crossfade too
   }
   spawner.preloadStartArea(ballPhys.state.pos, scaleMgr.tierIndex, ballPhys.state.radiusSim);
@@ -671,11 +832,14 @@ function frame(now) {
   /* 3) Amortized world streaming: chunk diff + spawn/despawn queues        */
   /*    (<=64 each) + sub-pixel sweep + knock-off flights, then the curated  */
   /*    round-robin (<=64 placements: activation vs the floored load radius, */
-  /*    dynamic re-banding, deferred ABSORB bookkeeping). Curated AFTER      */
-  /*    spawner, same gate — BINDING v3 order. Frozen post-contact.          */
+  /*    dynamic re-banding, deferred ABSORB bookkeeping), then the OSM       */
+  /*    round-robin (<=OSM_UPDATE_BUDGET, nearest-first, hard admission      */
+  /*    check). Curated AFTER spawner; osmSpawner AFTER curated, same gate   */
+  /*    — BINDING v4 order. Frozen post-contact.                             */
   if (!finale.inputLocked) {
     spawner.update(ballPhys.state.pos, scaleMgr.tierIndex, ballPhys.state.radiusSim, frameDt);
     curated.update(ballPhys.state.pos, scaleMgr.tierIndex, ballPhys.state.radiusSim, frameDt);
+    osmSpawner.update(ballPhys.state.pos, scaleMgr.tierIndex, ballPhys.state.radiusSim, frameDt);
   }
 
   /* 4) BETWEEN update and render — pixel-identity transforms:              */
@@ -713,6 +877,8 @@ function frame(now) {
     cameraRig.update(frameDt, ballPhys.state, input.takeYawDrag());
   }
   env.update(frameDt, ballPhys.state);
+  // v4 (step 6, BINDING): OSM ground tile streaming AFTER env (fresh fog).
+  osmGround.update(frameDt, ballPhys.state.pos, env.fogFarSim);
   backdrop.update(frameDt, ballPhys.state, renderer.camera);
   effects.update(frameDt, ballPhys.state);
 

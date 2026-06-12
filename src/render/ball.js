@@ -28,13 +28,20 @@
  * archetypeIds; landmark slots 8/9 fold onto proxy families 0/1). v3: EXTRA
  * curated codes 70..93 fold onto proxy families with the SAME
  * (code % ARCH_PER_TIER) & 7 formula (e.g. 80 ハチ公像 -> family 0).
+ * v4: OSM voxel-building codes 94..109 do NOT use the modulo fold (it would
+ * scatter buildings onto ring/gem/cone proxies) — they map through the
+ * explicit OSM_STUCK_FAMILY table below onto the BUILDING-SHAPED proxy
+ * families only (0 boxy / 4 flat slab / 5 tall pillar), so an absorbed
+ * streetscape reads as masonry chunks on the ball, never donuts.
  *
  * v3 KNOCK-OFF RULE (DESIGN-V3.md MAJOR 4): knockOff() SKIPS stuck entries
  * with archetype code >= EXTRA_CODE_BASE (70) — EXTRA landmarks/collectibles
  * are PERMANENTLY stuck (credit was granted at absorb; curated identity lives
  * in its consumed bitmask, never re-injected). Chunk-coded curated placements
  * (< 70) re-enter via the normal spawner.reinject path, which strips
- * FLAG_CURATED|FLAG_RARE.
+ * FLAG_CURATED|FLAG_RARE. v4: the SAME >= EXTRA_CODE_BASE skip covers OSM
+ * codes 94..109 (94 > 70) — absorbed OSM buildings are permanently stuck,
+ * no reinject path exists (DESIGN-V4 ゲームプレイ統合; boot-asserted below).
  *
  * v3 SLOT-STEAL CONVENTION (load-bearing): main.js's ABSORB attach handler
  * calls attachStuck and then sets store.instanceSlot[i] = -1 — it runs AFTER
@@ -60,7 +67,12 @@ import {
   KNOCKOFF_POP_SPEED_K,
 } from '../config/tuning.js';
 import { TIERS, ARCH_PER_TIER } from '../config/tiers.js';
-import { ARCHETYPE_ID_BY_CODE, EXTRA_CODE_BASE } from '../world/objects.js';
+import {
+  ARCHETYPE_ID_BY_CODE,
+  EXTRA_CODE_BASE,
+  OSM_CODE_BASE,
+  OSM_ARCHETYPE_IDS,
+} from '../world/objects.js';
 import { FreeList, IntRing } from '../core/pool.js';
 import { mulberry32 } from '../core/rng.js';
 import { easeOutCubic, lerp, damp } from '../core/mathUtils.js';
@@ -134,9 +146,37 @@ const ARCHETYPE_IDS = (() => {
   return ids;
 })();
 
-/* Boot DEV cross-assert (v3 stride migration): the chunk table must agree
-   with objects.js ARCHETYPE_ID_BY_CODE entry-for-entry across all 70 chunk
-   codes, and objects.js must carry the full 94 (70 chunk + 24 EXTRA). */
+/**
+ * v4 STUCK-FAMILY MAP for OSM voxel-building codes 94..109 (DESIGN-V4
+ * Stream C): index = code - OSM_CODE_BASE, value = proxy family. Buildings
+ * fold ONLY onto the building-shaped proxies — 0 boxy (low/square masses),
+ * 4 flat slab (long row/shed masses), 5 tall pillar (towers) — never onto
+ * cylinder/cone/ring/gem, which would read as absurd debris at T3-T5 where
+ * buildings dominate absorbs. Order mirrors the frozen OSM_ARCHETYPE_IDS.
+ */
+const OSM_STUCK_FAMILY = Uint8Array.from([
+  0, // 94  osm_house            -> boxy
+  0, // 95  osm_shop_low         -> boxy
+  5, // 96  osm_zakkyo           -> tall pillar
+  5, // 97  osm_office_mid       -> tall pillar
+  5, // 98  osm_office_tower     -> tall pillar
+  5, // 99  osm_apartment_tower  -> tall pillar
+  5, // 100 osm_hotel            -> tall pillar
+  4, // 101 osm_school           -> flat slab
+  0, // 102 osm_temple           -> boxy
+  0, // 103 osm_shrine           -> boxy
+  4, // 104 osm_station          -> flat slab
+  4, // 105 osm_warehouse        -> flat slab
+  0, // 106 osm_parking          -> boxy
+  4, // 107 osm_merged_block     -> flat slab
+  5, // 108 osm_tower_generic    -> tall pillar
+  5, // 109 osm_stepped_roof     -> tall pillar
+]);
+
+/* Boot DEV cross-assert (v3 stride migration + v4 OSM codes): the chunk
+   table must agree with objects.js ARCHETYPE_ID_BY_CODE entry-for-entry
+   across all 70 chunk codes, and objects.js must carry the full 110
+   (70 chunk + 24 EXTRA + 16 OSM — DESIGN-V4 Phase-0 appendix §B). */
 if (import.meta.env && import.meta.env.DEV) {
   if (ARCHETYPE_IDS.length !== 70 || EXTRA_CODE_BASE !== 70) {
     throw new Error(
@@ -144,10 +184,10 @@ if (import.meta.env && import.meta.env.DEV) {
         `(ball ${ARCHETYPE_IDS.length}, base ${EXTRA_CODE_BASE})`
     );
   }
-  if (ARCHETYPE_ID_BY_CODE.length !== 94) {
+  if (ARCHETYPE_ID_BY_CODE.length !== 110) {
     throw new Error(
-      `[ball.js invariant] objects.js ARCHETYPE_ID_BY_CODE must have 94 entries ` +
-        `(70 chunk + 24 EXTRA), found ${ARCHETYPE_ID_BY_CODE.length}`
+      `[ball.js invariant] objects.js ARCHETYPE_ID_BY_CODE must have 110 entries ` +
+        `(70 chunk + 24 EXTRA + 16 OSM), found ${ARCHETYPE_ID_BY_CODE.length}`
     );
   }
   for (let c = 0; c < 70; c++) {
@@ -155,6 +195,30 @@ if (import.meta.env && import.meta.env.DEV) {
       throw new Error(
         `[ball.js invariant] code ${c} mismatch vs objects.js: ` +
           `'${ARCHETYPE_IDS[c]}' !== '${ARCHETYPE_ID_BY_CODE[c]}'`
+      );
+    }
+  }
+  // v4: the knockOff permanently-stuck law must keep covering OSM codes, and
+  // the stuck-family table must span exactly the 16 frozen OSM codes onto
+  // building proxies only (0 box / 4 slab / 5 pillar).
+  if (!(OSM_CODE_BASE >= EXTRA_CODE_BASE) || OSM_CODE_BASE !== 94) {
+    throw new Error(
+      `[ball.js invariant] OSM_CODE_BASE must be 94 and >= EXTRA_CODE_BASE (${EXTRA_CODE_BASE}) ` +
+        `so the knockOff skip keeps OSM permanently stuck — found ${OSM_CODE_BASE}`
+    );
+  }
+  if (OSM_STUCK_FAMILY.length !== OSM_ARCHETYPE_IDS.length || OSM_STUCK_FAMILY.length !== 16) {
+    throw new Error(
+      `[ball.js invariant] OSM_STUCK_FAMILY must map all 16 OSM codes ` +
+        `(found ${OSM_STUCK_FAMILY.length} vs ${OSM_ARCHETYPE_IDS.length} ids)`
+    );
+  }
+  for (let o = 0; o < OSM_STUCK_FAMILY.length; o++) {
+    const f = OSM_STUCK_FAMILY[o];
+    if (f !== 0 && f !== 4 && f !== 5) {
+      throw new Error(
+        `[ball.js invariant] OSM_STUCK_FAMILY[${o}] ('${OSM_ARCHETYPE_IDS[o]}') = ${f} — ` +
+          `OSM buildings may fold only onto building proxies 0/4/5`
       );
     }
   }
@@ -346,8 +410,12 @@ export class Ball {
     // Stride 10: slot-in-tier folds to the 8 proxy families; landmark slots
     // 8/9 land on families 0/1 (boxy/roundish proxies). v3 EXTRA codes
     // 70..93 fold with the same formula (and become permanently stuck —
-    // knockOff skips code >= EXTRA_CODE_BASE).
-    const family = (code % ARCH_PER_TIER) & 7;
+    // knockOff skips code >= EXTRA_CODE_BASE). v4: OSM codes 94..109 map
+    // through OSM_STUCK_FAMILY onto building proxies 0/4/5 only.
+    const family =
+      code >= OSM_CODE_BASE
+        ? OSM_STUCK_FAMILY[code - OSM_CODE_BASE]
+        : (code % ARCH_PER_TIER) & 7;
     const objR = store.radius[objIndex];
     const sg = this.group.scale.x;
 
@@ -459,7 +527,7 @@ export class Ball {
     for (let k = 1; k <= STUCK_CAP && found < want; k++) {
       const rec = this._recs[(this._tail - k) & RING_MASK];
       if (rec.stage === 'culled') continue;
-      if (rec.code >= EXTRA_CODE_BASE) continue; // v3: EXTRA = permanently stuck
+      if (rec.code >= EXTRA_CODE_BASE) continue; // v3 EXTRA + v4 OSM (94+) = permanently stuck
       const re = this._reentries[found];
       // World-space socket direction from the ball-local socket.
       _v1.set(rec.tx, rec.ty, rec.tz).multiplyScalar(sg).applyQuaternion(ball.quat);
