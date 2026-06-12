@@ -17,7 +17,7 @@
 export const SIM_RADIUS_MIN = 0.5;
 /** Upper edge — reaching it triggers the one-frame similarity rescale (S = RESCALE_S). */
 export const SIM_RADIUS_MAX = 2.5;
-/** Starting ball radius in real meters (v3: 2 cm — アキバパーツ館 parts-bin tier). */
+/** Starting ball radius in real meters (v3: 2 cm — センゴク電子 parts-bin tier). */
 export const START_RADIUS_M = 0.02;
 /* v2: WIN_RADIUS_M deleted — replaced by the goal radius (finale owns the goal).
  * v3: GOAL_RADIUS_M arms the Skytree finale contact. */
@@ -49,8 +49,11 @@ export const SKY_SILHOUETTE_WS_MAX = 0.2;
 export const FLASH_S = 0.45;
 /** MERGE: ball.pos lerps into the tower glow over this (s); ball hidden at t >= 0.6s. */
 export const GOAL_MERGE_S = 1.2;
-/** ASCENSION duration (s): camera pullback over the night diorama (v2 machinery re-themed). */
-export const GOAL_ASCEND_S = 5.0;
+/** ASCENSION duration (s): camera pullback over the night diorama (v2
+ *  machinery re-themed). v5: 5.0 -> 7.0 — the liftoff-into-space ending
+ *  (finale.js + render/earthView.js) needs the longer pull to read; skip
+ *  path unchanged (SKIP_TIME_SCALE compresses the full sequence). */
+export const GOAL_ASCEND_S = 7.0;
 /** Ascension target height = ascendBaseY + GOAL_ASCEND_HEIGHT_K * radiusSim. */
 export const GOAL_ASCEND_HEIGHT_K = 40;
 /** AFTERGLOW hang time (s) before finale.state === 'done' (main emits game:win). */
@@ -208,8 +211,10 @@ export const MAX_FLOATS_MOBILE = 3;
 export const MAX_FLOATS_DESKTOP = 6;
 /** #collect-popup card auto-out (s). */
 export const COLLECT_POPUP_S = 3.5;
-/** Collection denominator shown in UI (album mask is append-only beyond it). */
-export const COLLECT_TOTAL = 12;
+/** Collection denominator shown in UI (album mask is append-only beyond it).
+ *  v5: 12 -> 13 (id 12 スタックチャン, code 110 via collectibleCodeForId —
+ *  old 12-bit masks load unchanged, bit 12 simply starts unfound). */
+export const COLLECT_TOTAL = 13;
 /** Pre-rendered collectible thumbnail size (px, data-URL canvases). */
 export const THUMB_SIZE_PX = 96;
 
@@ -547,7 +552,10 @@ export const HUD_THROTTLE_HZ = 10;
 /* NEVER hand-edit one side alone.                                     */
 /* ------------------------------------------------------------------ */
 
-/** Anchor lat/lon (FROZEN): the fictional アキバパーツ館 (= world origin, ball
+/** Anchor lat/lon (FROZEN — v5 decision: KEEP; the real 千石電商 maps to game
+ *  (36.2, -13.3) under this anchor, ~36 game m from the shop door, so the
+ *  センゴク電子 re-theme is geographically honest without any pipeline
+ *  re-run): the fictional センゴク電子 (= world origin, ball
  *  start) sits ~180 m real WEST of the actual ラジオ会館 so the authored
  *  shop/street never collides with its real counterpart. */
 export const OSM_ANCHOR_LAT = 35.6987;

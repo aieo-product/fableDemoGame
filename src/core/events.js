@@ -26,7 +26,7 @@
  *   'muteChanged' {muted}                         (main -> hud icon)
  *   ---- v3 (Hakoniwa Tokyo — docs/DESIGN-V3.md §インターフェース) ----
  *   'goalCall'    {trueRadius}                    (finale once -> hud toast 「スカイツリーが呼んでいる…！」, skytree beam pulse, bgm swell, sfx pad)
- *   'goalGuide'   {x01, y01, onScreen, active}    (finale 10Hz during APPROACH, +one active:false on CONTACT -> hud #goal-arrow)
+ *   'goalGuide'   {x01, y01, onScreen, active, kind} (finale 10Hz during APPROACH, +one active:false on CONTACT -> hud #goal-arrow; v5: onboarding emits kind:'parts' for the opening parts guide — hud swaps 🗼->🔩 and suppresses the tower toast)
  *   'goalContact' {}                              (finale once = run end -> runStats freeze+GOAL, bgm duck, sfx fanfare, hud hide, screens flash; #donack-root survives — outside #hud)
  *   'landmark'    {landmarkId, nameJa, sizeReal}  (curated, AFTER the normal ABSORB chain -> hud toast, effects gold ring, sfx fanfare sting, Donack trivia, runStats bonus)
  *   'collect'     {collectibleId, nameJa, isNew, found, total} (collection -> #collect-popup, Donack, sfx gliss)
@@ -143,7 +143,7 @@ export const PAYLOADS = {
   /** @type {import('../types.js').GoalCallEvent} */
   goalCall: { trueRadius: 0 },
   /** @type {import('../types.js').GoalGuideEvent} */
-  goalGuide: { x01: 0, y01: 0, onScreen: false, active: false },
+  goalGuide: { x01: 0, y01: 0, onScreen: false, active: false, kind: 'goal' },
   /** @type {import('../types.js').GoalContactEvent} */
   goalContact: {},
   /** @type {import('../types.js').LandmarkEvent} */

@@ -45,7 +45,7 @@
 
 import * as THREE from 'three';
 import { ARCHETYPE_ID_BY_CODE, EXTRA_CODE_BASE } from '../world/objects.js';
-import { EXTRA_SIZE_CLASS_BY_CODE } from '../config/catalog.js';
+import { EXTRA_SIZE_CLASS_BY_CODE, EXTRA_POOL_CAPS } from '../config/catalog.js';
 
 const DEV = !!(import.meta.env && import.meta.env.DEV);
 
@@ -362,13 +362,33 @@ const CLASS_INDEX = Object.freeze({
 });
 
 /**
- * Instance caps per class. Spec floor is 12/4/4/4 (EXTRA_POOL_CAPS) but
- * Stream B's capacity audit found landmark-mid worst case 5 concurrent
- * (80,82,83,84,86) and landmark-XL 5 (3 bridge spans + tower + shell) at
- * T5/T6 map-wide load radii — caps are MEMORY only, never extra draws,
- * so 12/6/6/6 per the integration notes.
+ * Instance caps per class — the render-side capacity AUTHORITY (catalog.js
+ * EXTRA_POOL_CAPS is the documented spec floor; this array is what
+ * BatchedExtraPool is actually constructed with — keep CLASS_CAPS[k] >=
+ * EXTRA_POOL_CAPS[class], asserted below in dev). v4 audit: landmark-mid
+ * worst case 5 concurrent (80,82,83,84,86), landmark-XL 5 (3 bridge spans +
+ * tower + shell) at T5/T6 map-wide load radii. v5 audit: collectible-small
+ * gains stack_chan (code 110) -> 12 member archetypes, cap 13; landmark-mid
+ * gains the 6 Akihabara placements of codes 111..114 -> worst co-location
+ * 5 + 6 = 11, cap 12. Caps are MEMORY only (one BatchedMesh per class) —
+ * never extra draws.
  */
-const CLASS_CAPS = Object.freeze([12, 6, 6, 6]);
+const CLASS_CAPS = Object.freeze([13, 12, 6, 6]);
+
+/* Boot DEV feasibility assert: the constructed caps may never silently fall
+   below the catalog.js spec floors (the v4 mismatch trap — EXTRA_POOL_CAPS
+   raised without this mirror would overflow the live pools). */
+if (DEV) {
+  const order = ['collectible-small', 'landmark-mid', 'landmark-large', 'landmark-xl'];
+  for (let k = 0; k < order.length; k++) {
+    if (!(CLASS_CAPS[k] >= EXTRA_POOL_CAPS[order[k]])) {
+      throw new Error(
+        `[extraPools.js invariant] CLASS_CAPS[${k}] (${CLASS_CAPS[k]}) < EXTRA_POOL_CAPS` +
+          `['${order[k]}'] (${EXTRA_POOL_CAPS[order[k]]}) — render pools would overflow`
+      );
+    }
+  }
+}
 
 /**
  * Build the 4 shared size-class pools from the boot geometry map.

@@ -72,6 +72,8 @@ import {
   EXTRA_CODE_BASE,
   OSM_CODE_BASE,
   OSM_ARCHETYPE_IDS,
+  V5_CODE_BASE,
+  V5_ARCHETYPE_IDS,
 } from '../world/objects.js';
 import { FreeList, IntRing } from '../core/pool.js';
 import { mulberry32 } from '../core/rng.js';
@@ -173,6 +175,22 @@ const OSM_STUCK_FAMILY = Uint8Array.from([
   5, // 109 osm_stepped_roof     -> tall pillar
 ]);
 
+/**
+ * v5 STUCK-FAMILY MAP for curated codes 110..114 (objects.js V5_CODE_BASE):
+ * index = code - V5_CODE_BASE, value = proxy family. Same building-proxy
+ * rule as OSM (0 boxy / 4 flat slab / 5 tall pillar); stack_chan is itself
+ * a cube, so the boxy proxy IS its silhouette. Order mirrors the frozen
+ * V5_ARCHETYPE_IDS. Codes 110..114 are >= EXTRA_CODE_BASE, so knockOff's
+ * skip keeps them permanently stuck (no reinject path).
+ */
+const V5_STUCK_FAMILY = Uint8Array.from([
+  0, // 110 stack_chan      -> boxy (it IS a cube)
+  0, // 111 game_center     -> boxy
+  5, // 112 denki_retailer  -> tall pillar
+  0, // 113 maid_cafe       -> boxy
+  5, // 114 pc_parts_bldg   -> tall pillar
+]);
+
 /* Boot DEV cross-assert (v3 stride migration + v4 OSM codes): the chunk
    table must agree with objects.js ARCHETYPE_ID_BY_CODE entry-for-entry
    across all 70 chunk codes, and objects.js must carry the full 110
@@ -184,10 +202,10 @@ if (import.meta.env && import.meta.env.DEV) {
         `(ball ${ARCHETYPE_IDS.length}, base ${EXTRA_CODE_BASE})`
     );
   }
-  if (ARCHETYPE_ID_BY_CODE.length !== 110) {
+  if (ARCHETYPE_ID_BY_CODE.length !== 115) {
     throw new Error(
-      `[ball.js invariant] objects.js ARCHETYPE_ID_BY_CODE must have 110 entries ` +
-        `(70 chunk + 24 EXTRA + 16 OSM), found ${ARCHETYPE_ID_BY_CODE.length}`
+      `[ball.js invariant] objects.js ARCHETYPE_ID_BY_CODE must have 115 entries ` +
+        `(70 chunk + 24 EXTRA + 16 OSM + 5 v5), found ${ARCHETYPE_ID_BY_CODE.length}`
     );
   }
   for (let c = 0; c < 70; c++) {
@@ -219,6 +237,30 @@ if (import.meta.env && import.meta.env.DEV) {
       throw new Error(
         `[ball.js invariant] OSM_STUCK_FAMILY[${o}] ('${OSM_ARCHETYPE_IDS[o]}') = ${f} — ` +
           `OSM buildings may fold only onto building proxies 0/4/5`
+      );
+    }
+  }
+  // v5: codes 110..114 must stay covered by the >= EXTRA_CODE_BASE knockOff
+  // skip, and the v5 stuck-family table must span exactly the 5 frozen v5
+  // codes onto building proxies only (0 box / 4 slab / 5 pillar).
+  if (!(V5_CODE_BASE >= EXTRA_CODE_BASE) || V5_CODE_BASE !== OSM_CODE_BASE + OSM_STUCK_FAMILY.length) {
+    throw new Error(
+      `[ball.js invariant] V5_CODE_BASE must be 110 (= OSM_CODE_BASE + 16) and >= EXTRA_CODE_BASE ` +
+        `(${EXTRA_CODE_BASE}) so the knockOff skip keeps v5 codes permanently stuck — found ${V5_CODE_BASE}`
+    );
+  }
+  if (V5_STUCK_FAMILY.length !== V5_ARCHETYPE_IDS.length || V5_STUCK_FAMILY.length !== 5) {
+    throw new Error(
+      `[ball.js invariant] V5_STUCK_FAMILY must map all 5 v5 codes ` +
+        `(found ${V5_STUCK_FAMILY.length} vs ${V5_ARCHETYPE_IDS.length} ids)`
+    );
+  }
+  for (let v = 0; v < V5_STUCK_FAMILY.length; v++) {
+    const f = V5_STUCK_FAMILY[v];
+    if (f !== 0 && f !== 4 && f !== 5) {
+      throw new Error(
+        `[ball.js invariant] V5_STUCK_FAMILY[${v}] ('${V5_ARCHETYPE_IDS[v]}') = ${f} — ` +
+          `v5 codes may fold only onto building proxies 0/4/5`
       );
     }
   }
@@ -411,11 +453,15 @@ export class Ball {
     // 8/9 land on families 0/1 (boxy/roundish proxies). v3 EXTRA codes
     // 70..93 fold with the same formula (and become permanently stuck —
     // knockOff skips code >= EXTRA_CODE_BASE). v4: OSM codes 94..109 map
-    // through OSM_STUCK_FAMILY onto building proxies 0/4/5 only.
+    // through OSM_STUCK_FAMILY onto building proxies 0/4/5 only. v5: codes
+    // 110..114 map through V5_STUCK_FAMILY (the OSM branch must NOT swallow
+    // them — code - OSM_CODE_BASE would index out of the 16-entry table).
     const family =
-      code >= OSM_CODE_BASE
-        ? OSM_STUCK_FAMILY[code - OSM_CODE_BASE]
-        : (code % ARCH_PER_TIER) & 7;
+      code >= V5_CODE_BASE
+        ? V5_STUCK_FAMILY[code - V5_CODE_BASE]
+        : code >= OSM_CODE_BASE
+          ? OSM_STUCK_FAMILY[code - OSM_CODE_BASE]
+          : (code % ARCH_PER_TIER) & 7;
     const objR = store.radius[objIndex];
     const sg = this.group.scale.x;
 

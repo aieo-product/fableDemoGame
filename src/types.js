@@ -284,6 +284,9 @@
  * @property {number}  y01      Goal center NDC y mapped to 0..1 (clamped, 0 = top).
  * @property {boolean} onScreen Goal center is inside the frustum.
  * @property {boolean} active   Guide visible; false = hide the arrow.
+ * @property {string}  kind     'goal' (finale tower guide, default) | 'parts'
+ *   (v5 opening onboarding guide — hud swaps the glyph 🗼->🔩 and suppresses
+ *   the 「スカイツリーへ向かえ！」 toast + its once-latch).
  */
 /** @typedef {GoalGuideEvent} MoonGuideEvent @deprecated v3: use GoalGuideEvent (same shape, wire name 'goalGuide'). */
 

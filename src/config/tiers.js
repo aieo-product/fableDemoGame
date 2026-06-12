@@ -54,7 +54,7 @@ export const ARCH_PER_TIER = 10;
 
 /**
  * The v3 tier table — 箱庭東京. True ball radius ~x5 per tier:
- * T0 パーツ棚 2cm-10cm, T1 ショップ 10cm-50cm, T2 電気街 0.5m-2.5m,
+ * T0 センゴク電子 2cm-10cm, T1 ショップ 10cm-50cm, T2 電気街 0.5m-2.5m,
  * T3 下町 2.5m-12m, T4 都心 12m-60m, T5 大東京 60m-300m,
  * T6 スカイライン 300m+ (goal: Skytree contact arms at GOAL_RADIUS_M 420m).
  * x5 rescale ladder unchanged — rescales at true r = 0.1/0.5/2.5/12.5/62.5/312.5.
@@ -74,7 +74,7 @@ export const ARCH_PER_TIER = 10;
 export const TIERS = [
   {
     index: 0,
-    name: 'パーツ棚',
+    name: 'センゴク電子', // v5: 千石電商-inspired shop name (was パーツ棚) — drives HUD #tier-label
     enterTrueRadius: 0.02,
     cellSizeSim: 32,
     loadRadiusSim: 96,

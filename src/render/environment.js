@@ -247,6 +247,8 @@ uniform vec3 uGoalSilDir;   // horizontal unit dir camera -> tower
 uniform float uGoalSilTanH; // tan(angular height) = towerHeightSim / dist
 uniform float uGoalSilTanW; // tan(angular half-width at base) = baseRSim / dist
 uniform float uGoalSilFade; // 1 = silhouette owns the tower, 0 = mesh does
+// v5 space-earth finale: zenith -> space-black darkening (finale-only).
+uniform float uSpaceFade;
 varying vec3 vDir;
 
 float hash21(vec2 p) {
@@ -279,6 +281,13 @@ void main() {
 
   // (a) vertical gradient — as v1.
   vec3 sky = mix(uBottom, uTop, pow(clamp(h, 0.0, 1.0), 0.65));
+
+  // (a') v5 SPACE FADE (finale ascension only; uSpaceFade 0 in play): the
+  // zenith darkens toward space black, elevation-weighted so the horizon
+  // band keeps the (night) fog color — it reads as the atmospheric limb
+  // over the EarthView globe. Applied BEFORE stars so the star layer
+  // brightens against true space. Radius-independent (uniform-driven).
+  sky = mix(sky, vec3(0.001, 0.0015, 0.004), uSpaceFade * smoothstep(0.0, 0.5, h));
 
   // (d) STARS — hashed sparkle grid, per-star twinkle phase/speed, gated by
   // uStarIntensity (per tier; NIGHT 1.0) and by elevation (above horizon only).
@@ -364,7 +373,10 @@ void main() {
  *   ?at=/?r= dev start: env.setTierPaletteImmediate(startTierIndex);
  *   Finale (Stream A, v3): env.setGoalSilFade(skytree.silFade01) every frame
  *     (silhouette <-> goalTower mesh handoff);
- *     env.beginNightFade(GOAL_ASCEND_S) on ASCENSION.
+ *     env.beginNightFade(GOAL_ASCEND_S) on ASCENSION;
+ *     v5: env.setSpaceFade01(u) per ASCENSION frame (zenith -> space black);
+ *   OsmGround (v5): osmGround.setEnvironment(env) late-wire reads
+ *     getGroundColorWorking(target) per frame (謎の溝 ground fade).
  * Subscribes to 'tierUp' (palette crossfade), 'game:reset' (snap to T0,
  * resets all uniforms + ws/shift trackers) and 'grow' (10 Hz worldScale
  * resync) on the singleton bus.
@@ -450,6 +462,8 @@ export class Environment {
     this._shiftZ = 0;
     /** v3 Skytree silhouette fade (finale-driven via setGoalSilFade). */
     this._goalSilFade = 1;
+    /** v5 space fade (finale-driven via setSpaceFade01; 0 in play). */
+    this._spaceFade = 0;
     /** Hoisted silhouette direction (uniform holds the live ref). */
     this._vGoalSilDir = new THREE.Vector3(0, 0, 1);
 
@@ -521,6 +535,8 @@ export class Environment {
       uGoalSilTanH: { value: 0 },
       uGoalSilTanW: { value: 0 },
       uGoalSilFade: { value: 1 },
+      // v5 space-earth finale (setSpaceFade01; 0 in play).
+      uSpaceFade: { value: 0 },
     };
     const skyMat = new THREE.ShaderMaterial({
       uniforms: this._skyUniforms,
@@ -733,6 +749,7 @@ export class Environment {
     su.uMoonAngSize.value = this._moonAngSize;
     su.uStarIntensity.value = this._starIntensity;
     su.uCloudDensity.value = this._cloudDensity;
+    su.uSpaceFade.value = this._spaceFade; // v5 (0 outside the finale)
 
     // v3 Skytree silhouette: azimuth + angular size recomputed per frame
     // from the camera -> SKYTREE_POS real-meter geometry (BLOCKER 2). The
@@ -874,6 +891,32 @@ export class Environment {
   }
 
   /**
+   * v5 (Stream C) — the LIVE terrain ground color (working space, palette-
+   * crossfade aware: mid-fade it is the blended value). Copied into `target`
+   * — zero allocation, caller owns the destination. Consumed per frame by
+   * render/osmGround.js for the radius-driven ground-layer fade (謎の溝 fix).
+   * @param {THREE.Color} target Receives the color.
+   * @returns {THREE.Color} The same `target`.
+   */
+  getGroundColorWorking(target) {
+    return target.copy(this._cGround);
+  }
+
+  /**
+   * v5 space-earth finale — darken the sky-dome zenith toward space black
+   * (uSpaceFade, elevation-weighted in the shader so the horizon keeps the
+   * night-fog color as an atmospheric limb over the EarthView globe).
+   * Driven per frame by the finale during ASCENSION (u 0..1) and held at 1
+   * through AFTERGLOW; finale-only — nothing else writes it, and
+   * setTierPaletteImmediate (game reset / dev start) clears it back to 0.
+   * Radius-independent (pure uniform), so the seamlessness law is untouched.
+   * @param {number} k01 0..1.
+   */
+  setSpaceFade01(k01) {
+    this._spaceFade = clamp01(k01);
+  }
+
+  /**
    * Sky-moon disc + halo scale (uMoonFade 0..1). v3: the moon is a NIGHT
    * COSMETIC — nothing drives this in play (it stays 1); kept for tests.
    * @param {number} k01 0..1.
@@ -957,15 +1000,17 @@ export class Environment {
     this._cloudDensity = p.cloudDensity;
     this._toIndex = tierIndex;
     this._fadeDur = 0; // cancels any in-flight fade (incl. night fade)
-    // Finale-control reset (v2 moon controls + v3 silhouette fade).
+    // Finale-control reset (v2 moon controls + v3 silhouette + v5 space fade).
     this._moonFade = 1;
     this._pulseOn = false;
     this._pulsePhase = 0;
     this._goalSilFade = 1;
+    this._spaceFade = 0;
     const su = this._skyUniforms;
     su.uMoonFade.value = 1;
     su.uMoonGlow.value = 1;
     su.uGoalSilFade.value = 1;
+    su.uSpaceFade.value = 0;
     su.uSunIntensity.value = this._sunIntensity;
     su.uMoonAngSize.value = this._moonAngSize;
     su.uStarIntensity.value = this._starIntensity;

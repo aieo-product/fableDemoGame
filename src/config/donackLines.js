@@ -1,7 +1,10 @@
 /**
  * @file donackLines.js — Donack コメントテーブル (v3, FROZEN — docs/DESIGN-V3.md
- * §ドナック実況). The full authored Japanese copy: 43 lines (the design's
- * "~42 lines"), each keyed by a FROZEN string id. ui/donack.js consumes this
+ * §ドナック実況). The full authored Japanese copy: 45 lines (the design's
+ * "~42 lines" + the Phase-3 col_golden_objet and v5 col_stackchan appends;
+ * the v5 polish also retexts 'start' and 'ascension' in place — ids
+ * unchanged, append-only contract intact), each keyed by a FROZEN string id.
+ * ui/donack.js consumes this
  * table verbatim; per-id dedupe / once-per-run semantics hang off these ids,
  * so ids are append-only — never reuse, rename or reorder.
  *
@@ -37,13 +40,13 @@
 const PLAY = 'play';
 
 /**
- * The frozen line table: id -> line. 43 entries.
+ * The frozen line table: id -> line. 45 entries.
  * @type {Readonly<Record<string, Readonly<DonackLine>>>}
  */
 export const DONACK_LINES = Object.freeze({
-  /* ---- run start ---- */
+  /* ---- run start (v5: センゴク電子 rename + onboarding arrow callout) ---- */
   start: Object.freeze({
-    text: 'アキバのパーツ屋からスタート！まずはネジと抵抗からね',
+    text: 'センゴク電子パーツからスタート！光る矢印の先にパーツがあるよ',
     priority: 2, expression: 'idle', once: true, phase: PLAY,
   }),
 
@@ -219,6 +222,12 @@ export const DONACK_LINES = Object.freeze({
     text: 'なにこの金ピカのオブジェ！？よくわかんないけど確保！',
     priority: 2, expression: 'happy', once: true, phase: PLAY,
   }),
+  // APPENDED (v5): collectible id 12 スタックチャン — the open-source
+  // M5Stack robot, Donack's cousin (append-only contract — new id only).
+  col_stackchan: Object.freeze({
+    text: 'スタックチャンだ！ボクのいとこみたいなロボだよ',
+    priority: 2, expression: 'happy', once: true, phase: PLAY,
+  }),
 
   /* ---- DUAL ハチ公 (the design table's merged line "#42") ---- */
   dual_hachiko: Object.freeze({
@@ -231,8 +240,10 @@ export const DONACK_LINES = Object.freeze({
     text: 'やった────！東京まるごと、いただき！',
     priority: 3, expression: 'speaking', once: true, phase: 'cinematic',
   }),
+  // v5 space-earth ending: the ascension now lifts off into space over a
+  // glowing procedural Earth (render/earthView.js) — the line follows.
   ascension: Object.freeze({
-    text: '見て、東京の夜景…きれいだね',
+    text: 'うわぁ…地球が見えるよ…！東京の光、きれいだね',
     priority: 3, expression: 'speaking', once: true, phase: 'cinematic',
   }),
   result: Object.freeze({
@@ -276,9 +287,9 @@ export const LANDMARK_LINE_IDS = Object.freeze([
 ]);
 
 /**
- * CollectEvent.collectibleId (frozen 0..11, COLLECTIBLE_IDS) -> line id.
+ * CollectEvent.collectibleId (frozen 0..12, COLLECTIBLE_IDS) -> line id.
  * Id 3 (秋葉原フィギュア) uses the generic line; donack.js also falls back
- * to 'col_generic' for any future id >= 12 (append-only contract).
+ * to 'col_generic' for any future id >= 13 (append-only contract).
  * @type {ReadonlyArray<string>}
  */
 export const COLLECT_LINE_IDS = Object.freeze([
@@ -296,6 +307,7 @@ export const COLLECT_LINE_IDS = Object.freeze([
                          //   second of the pair never got a bubble)
   'dual_hachiko',        // 10 ハチ公像 — DUAL (merged line "#42")
   'col_yakatabune',      // 11 屋形船
+  'col_stackchan',       // 12 スタックチャン (v5 append)
 ]);
 
 /** The DUAL-tagged collectible/landmark ids (ハチ公像). */

@@ -127,6 +127,11 @@ export class Hud {
     this._muteBtn = /** @type {HTMLButtonElement} */ (document.getElementById('mute-button'));
     this._toastEl = /** @type {HTMLElement} */ (document.getElementById('hud-toast'));
     this._arrowEl = /** @type {HTMLElement} */ (document.getElementById('goal-arrow'));
+    /** v5: the glyph text node ('🗼' / '🔩') — last child of #goal-arrow
+     * (after the .arrow-tip span). Cached once; writes are kind-diffed. */
+    this._arrowGlyphNode = /** @type {Text} */ (this._arrowEl.lastChild);
+    /** @type {string} Current glyph kind ('goal' | 'parts') — write diff. */
+    this._arrowKind = 'goal';
     // ---- v3 collect popup ----
     this._popupEl = /** @type {HTMLElement} */ (document.getElementById('collect-popup'));
     this._popupImgEl = /** @type {HTMLImageElement} */ (
@@ -537,12 +542,22 @@ export class Hud {
    * @param {GoalGuideEvent} p
    */
   _onGoalGuide(p) {
+    // v5: the opening parts-onboarding guide reuses this exact path with
+    // kind:'parts' — swap the glyph (diffed one-line DOM write) and suppress
+    // the tower toast + its once-latch (otherwise the toast fires at game
+    // start and the latch eats the real finale toast later).
+    const parts = p.kind === 'parts';
+    const kind = parts ? 'parts' : 'goal';
+    if (kind !== this._arrowKind) {
+      this._arrowKind = kind;
+      this._arrowGlyphNode.nodeValue = parts ? '🔩' : '🗼';
+    }
     if (!p.active || p.onScreen) {
       // Inactive OR the tower itself is visible on screen — an edge arrow
       // sitting on top of the goal is noise; it returns when the goal
       // leaves the frustum (payload keeps arriving at 10 Hz).
       this._arrowEl.classList.add('hidden');
-      if (p.active && !this._guideToastShown) {
+      if (p.active && !parts && !this._guideToastShown) {
         this._guideToastShown = true;
         this._showToast('スカイツリーへ向かえ！');
       }
@@ -565,7 +580,7 @@ export class Hud {
     this._arrowEl.style.top = y.toFixed(0) + 'px';
     const deg = Math.atan2(p.x01 - 0.5, 0.5 - p.y01) * (180 / Math.PI);
     this._arrowEl.style.setProperty('--arrow-rot', deg.toFixed(1) + 'deg');
-    if (!this._guideToastShown) {
+    if (!parts && !this._guideToastShown) {
       this._guideToastShown = true;
       this._showToast('スカイツリーへ向かえ！');
     }

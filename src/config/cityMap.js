@@ -7,7 +7,9 @@
  *
  * Contents (docs/DESIGN-V3.md §箱庭東京マップ, frozen export signatures in
  * §インターフェース):
- *  - SHOP        アキバパーツ館 interior rect, open front, walls W1-W5,
+ *  - SHOP        センゴク電子 (v5 rename — 千石電商-inspired parody name;
+ *                geometry/exclusions untouched) interior rect, open front,
+ *                walls W1-W5,
  *                prisms P1-P4 (the only authored collision besides map
  *                bounds + the Skytree base — world/terrain.js consumes).
  *  - PLACEMENTS  ~400 CuratedPlacement records (≈236 interior from seeded
@@ -20,7 +22,8 @@
  *                REAL METERS; mask 0 inside the shop interior and outside
  *                MAP_BOUNDS; T6 allowed map-wide).
  *  - LANDMARKS   11 landmark defs (frozen landmarkId 0..10, threshold ladder).
- *  - COLLECTIBLE_IDS (frozen EXPLICIT enum 0..11, append-only) + COLLECTIBLES.
+ *  - COLLECTIBLE_IDS (frozen EXPLICIT enum, append-only; v5 appends id 12) +
+ *    COLLECTIBLES.
  *  - SKYTREE_POS, MAP_BOUNDS (re-export — single source is tuning.js),
  *    DEV_STARTS.
  *  - validateCityMap()  every authored-data assert from the spec; DEV builds
@@ -51,12 +54,20 @@
  *   landmarks:    82 西郷さん像, 83 雷門, 84 ラジオ会館風ビル, 85 渋谷109,
  *                 86 スクランブル交差点(デカール), 87 東京ドーム, 88 東京駅,
  *                 89 国会議事堂, 90 レインボーブリッジ橋スパン, 91 東京タワー
- *   92 アキバパーツ館 (shop shell), 93 東京スカイツリー (display-name slot
- *   ONLY — never spawned into the store; not a placement here).
+ *   92 センゴク電子 (shop shell — v5 rename), 93 東京スカイツリー
+ *   (display-name slot ONLY — never spawned into the store; not a placement
+ *   here).
+ *
+ * v5 appendix codes (objects.js V5_CODE_BASE = 110; the 70+id collectible
+ * rule is FULL at 82): 110 スタックチャン (collectible id 12),
+ * 111 ゲームセンター, 112 家電量販店, 113 メイドカフェ,
+ * 114 PCパーツショップビル. v5 placements expand via a SEPARATE rng stream
+ * (mulberry32(0x56355041)) appended AFTER the v4 block — v4 placements stay
+ * byte-identical.
  */
 
 import { mulberry32 } from '../core/rng.js';
-import { ARCHETYPE_CODE_BY_ID } from '../world/objects.js';
+import { ARCHETYPE_CODE_BY_ID, collectibleCodeForId } from '../world/objects.js';
 import {
   ABSORB_RATIO,
   CURATED_PLACEMENT_CAP,
@@ -297,14 +308,24 @@ const CODE_TOKYO_STATION = 88;
 const CODE_DIET = 89;
 const CODE_BRIDGE_SPAN = 90;
 const CODE_TOKYO_TOWER = 91;
-/** アキバパーツ館 shop shell (activates at terrain release, absorbable @6.2m). */
+/** センゴク電子 shop shell (activates at terrain release, absorbable @6.2m). */
 export const CODE_SHOP_SHELL = 92;
+
+/* v5 EXTRA codes (objects.js V5_CODE_BASE appendix — the collectible
+ * code = 70 + id rule is FULL at code 82 (西郷さん像), so v5 archetypes
+ * append after the 110-entry table; objects.js collectibleCodeForId() is the
+ * single mapping authority and the validator asserts through it). */
+const CODE_STACK_CHAN = 110; //      スタックチャン collectible (id 12)
+const CODE_GAME_CENTER = 111; //     ゲームセンター
+const CODE_DENKI_RETAILER = 112; //  家電量販店
+const CODE_MAID_CAFE = 113; //       メイドカフェ
+const CODE_PC_PARTS_BLDG = 114; //   PCパーツショップビル
 
 /** Chunk-code lookup (frozen tier table order via objects.js). */
 const C = ARCHETYPE_CODE_BY_ID;
 
 /* ================================================================== */
-/* A. PARTS SHOP 「アキバパーツ館」 — terrain + interior                */
+/* A. PARTS SHOP 「センゴク電子」 — terrain + interior                  */
 /* ================================================================== */
 
 /**
@@ -532,10 +553,12 @@ export const COLLECTIBLE_IDS = Object.freeze({
   GOLDEN_OBJET: 9,
   HACHIKO: 10,
   YAKATABUNE: 11,
+  STACK_CHAN: 12, // v5 append (code 110 via collectibleCodeForId — 70+id is full)
 });
 
 /**
- * 12 collectible defs (archetypeCode = 70 + id, frozen mapping). y = surface
+ * 13 collectible defs (archetypeCode = collectibleCodeForId(id): 70 + id for
+ * ids 0..11, v5 appendix codes 110+ for ids 12+). y = surface
  * rest height (shop shelf/table items); landmarkId -1 except ハチ公像.
  * v4: district collectibles (ids 5..11) are RECOMPUTED via geo.mjs values —
  * shop interior (0..3) and the 秋葉原 exit-lane ゲーミングPC (4) are FROZEN
@@ -557,6 +580,10 @@ export const COLLECTIBLES = Object.freeze([
   // DUAL landmark+collectible: emits EVT.COLLECT FIRST then EVT.LANDMARK.
   { id: 10, nameJa: 'ハチ公像', x: OSM_GEN.hachiko.x, y: 0, z: OSM_GEN.hachiko.z, radiusReal: 1.2, archetypeCode: 80, landmarkId: 0, naturalBand: 2, rIntent: 1.85 },
   { id: 11, nameJa: '屋形船', x: 380 + D_WANGAN.x, y: 0, z: 1340 + D_WANGAN.z, radiusReal: 8.0, archetypeCode: 81, landmarkId: -1, naturalBand: 4, rIntent: 12.5 },
+  // v5: スタックチャン (the open-source M5Stack robot — Donack's cousin) on
+  // the shelf-A mid level: an electronics shop shelf is its natural home.
+  // Code 110 = the first v5 EXTRA appendix code (70+id rule is full at 82).
+  { id: 12, nameJa: 'スタックチャン', x: 0.065, y: 0.7, z: -2.6, radiusReal: 0.04, archetypeCode: CODE_STACK_CHAN, landmarkId: -1, naturalBand: 1, rIntent: 0.4 },
 ]);
 
 /* ================================================================== */
@@ -709,6 +736,59 @@ const DISTRICT_CLUSTERS = [
   ['person', -100 + D_MARUNOUCHI.x, 455 + D_MARUNOUCHI.z, 4, 15, 0.32, 0.38, 0, 0.6, null], // 東京駅前 (寿司屋台まわり)
 ];
 
+/* ================================================================== */
+/* v5 cluster tables (owner playtest polish — docs/DESIGN-V3 format)   */
+/* ================================================================== */
+
+/**
+ * v5 OPENING SPAWN CARPET (~40): T0 parts ringing the 2 cm ball start so the
+ * FIRST absorb lands within ~2 s of rolling in ANY direction (owner req 2 —
+ * the live-run diagnosis showed the nearest v4 interior parts 0.5-0.9 m out
+ * while fog far at 2 cm is ~1.1 m: an empty brown floor). Same authoring
+ * format; interior rejection keeps every item out of the prisms/walls.
+ */
+const V5_OPENING_CLUSTERS = [
+  ['screw', 0.55, 0.0, 8, 0.55, 0.006, 0.010, 0, 0.02, null],
+  ['resistor', -0.45, -0.4, 8, 0.50, 0.006, 0.009, 0, 0.02, null],
+  ['led', 0.0, 0.6, 8, 0.55, 0.006, 0.009, 0, 0.02, null],
+  ['capacitor', 0.3, -0.7, 8, 0.60, 0.007, 0.011, 0, 0.02, null],
+  ['button_battery', -0.5, 0.5, 8, 0.55, 0.006, 0.010, 0, 0.02, null],
+];
+
+/**
+ * v5 BREADCRUMB TRAIL (~24): a dense parts lane rect-clamped onto the
+ * interior exit corridor (|z| <= 0.3, prism-free by the exit-lane assert) —
+ * connects the spawn carpet to the gate, where the frozen v3/v4 exterior
+ * gutter + exit-lane carpet takes over. The onboarding guide arrow
+ * (game/onboarding.js) walks the same lane.
+ */
+const V5_TRAIL_RECT = { x0: 0.6, x1: 4.4, z0: -0.3, z1: 0.3 };
+const V5_TRAIL_CLUSTERS = [
+  ['screw', 2.5, 0, 8, 0, 0.006, 0.010, 0, 0.02, V5_TRAIL_RECT],
+  ['led', 2.5, 0, 8, 0, 0.006, 0.009, 0, 0.02, V5_TRAIL_RECT],
+  ['paperclip', 2.5, 0, 8, 0, 0.006, 0.010, 0, 0.02, V5_TRAIL_RECT],
+];
+
+/**
+ * v5 AKIBA curated buildings (6 singletons, codes 111..114, naturalBand 4 —
+ * absorbable mid-game at ball r ~9..22 m): ゲームセンター x2, 家電量販店,
+ * メイドカフェ, PCパーツショップビル x2 dress the 電気街 zone east of the
+ * curated strip. Format: [code, x, z, radiusReal] — yaw comes from the v5
+ * rng stream; rIntent = radiusReal / ABSORB_RATIO. Positions keep every
+ * footprint east of the strip edge (x - r > 25) and clear of the
+ * ラジオ会館風ビル landmark disc (dist >= dioramaR 24 + r); interpenetration
+ * with generic OSM footprints is accepted hakoniwa style (single-constant
+ * nudges on screenshot review).
+ */
+const V5_AKIBA_CLUSTERS = [
+  [CODE_GAME_CENTER, 34, -60, 8],
+  [CODE_GAME_CENTER, 44, 95, 7.5],
+  [CODE_DENKI_RETAILER, 66, 60, 14],
+  [CODE_MAID_CAFE, 32, -8, 6],
+  [CODE_PC_PARTS_BLDG, 36, -25, 9],
+  [CODE_PC_PARTS_BLDG, 66, -105, 10],
+];
+
 /* ------------------------------------------------------------------ */
 /* Expansion (module load, seed-INDEPENDENT mulberry32(0x544f4b59))    */
 /* ------------------------------------------------------------------ */
@@ -789,8 +869,10 @@ export const PLACEMENTS = [];
   expandClusters(rng, GUTTER_CLUSTERS, false, PLACEMENTS);
   expandClusters(rng, DISTRICT_CLUSTERS, false, PLACEMENTS);
 
-  // 12 collectibles (FLAG_RARE|FLAG_CURATED in curated.js; gold tint).
+  // 13 collectibles (FLAG_RARE|FLAG_CURATED in curated.js; gold tint).
+  // v5: id 12 (スタックチャン) is also a shop-interior shelf item.
   for (const cdef of COLLECTIBLES) {
+    const inShop = cdef.id <= 3 || cdef.id === 12;
     PLACEMENTS.push({
       archetypeCode: cdef.archetypeCode,
       x: cdef.x, y: cdef.y, z: cdef.z,
@@ -799,8 +881,8 @@ export const PLACEMENTS = [];
       naturalBand: cdef.naturalBand,
       landmarkId: cdef.landmarkId,
       collectibleId: cdef.id,
-      interior: cdef.id <= 3,
-      interiorElevated: cdef.id <= 3 && cdef.y > 0,
+      interior: inShop,
+      interiorElevated: inShop && cdef.y > 0,
       releaseGated: false,
       yK: 1,
       colorHex: GOLD,
@@ -845,7 +927,7 @@ export const PLACEMENTS = [];
     });
   }
 
-  // Shop shell 「アキバパーツ館」 — activates only after the terrain release
+  // Shop shell 「センゴク電子」 — activates only after the terrain release
   // (trueRadius >= SHOP_TERRAIN_RELEASE_M); absorbable @ 4.0/0.65 ~ 6.2m.
   PLACEMENTS.push({
     archetypeCode: CODE_SHOP_SHELL,
@@ -861,6 +943,36 @@ export const PLACEMENTS = [];
     colorHex: 0xc9b9a0,
     rIntent: 6.2,
   });
+
+  /* ---- v5 expansion appendix (DETERMINISM LAW): a SEPARATE rng stream,
+   * appended strictly AFTER the v4 block above — the 0x544f4b59 stream is
+   * never touched, so every v4 placement stays byte-identical (no
+   * opening-minute regression risk from an rng-stream shift). ---- */
+  const rng2 = mulberry32(0x56355041); // 'V5PA' — v5 authoring stream
+  expandClusters(rng2, V5_OPENING_CLUSTERS, true, PLACEMENTS);
+  expandClusters(rng2, V5_TRAIL_CLUSTERS, true, PLACEMENTS);
+
+  // 6 akiba building singletons (codes 111..114; explicit naturalBand 4 —
+  // the chunk-code (code/10)|0 rule does not apply to EXTRA appendix codes).
+  // colorHex 0xffffff (identity tint, landmark convention): these archetypes
+  // are fully vertex-colored (signage bands / pink awnings) — colorHex -1
+  // would fall back to the curated FALLBACK_PALETTE greys, which multiply
+  // the vertex colors and wash the facades to dull grey (v5 integration fix).
+  for (const [code, x, z, r] of V5_AKIBA_CLUSTERS) {
+    PLACEMENTS.push({
+      archetypeCode: code,
+      x, y: 0, z,
+      radiusReal: r,
+      yaw: rng2() * Math.PI * 2,
+      naturalBand: 4,
+      landmarkId: -1,
+      collectibleId: -1,
+      interior: false, interiorElevated: false, releaseGated: false,
+      yK: 1,
+      colorHex: 0xffffff,
+      rIntent: r / ABSORB_RATIO,
+    });
+  }
 }
 
 /* ================================================================== */
@@ -885,7 +997,11 @@ export function validateCityMap() {
   assert(PLACEMENTS.length <= CURATED_PLACEMENT_CAP,
     `PLACEMENTS ${PLACEMENTS.length} exceeds CURATED_PLACEMENT_CAP ${CURATED_PLACEMENT_CAP}`);
   for (const p of PLACEMENTS) {
-    assert(Number.isInteger(p.archetypeCode) && p.archetypeCode >= 0 && p.archetypeCode <= 92,
+    // Codes 0..92 (chunk + frozen EXTRA) plus the v5 appendix 110..114.
+    assert(
+      Number.isInteger(p.archetypeCode) &&
+      ((p.archetypeCode >= 0 && p.archetypeCode <= 92) ||
+        (p.archetypeCode >= CODE_STACK_CHAN && p.archetypeCode <= CODE_PC_PARTS_BLDG)),
       `placement archetypeCode out of range: ${p.archetypeCode}`);
     assert(p.radiusReal > 0, 'placement radiusReal must be > 0');
     assert(p.naturalBand >= 0 && p.naturalBand <= 6, 'naturalBand out of range');
@@ -896,7 +1012,9 @@ export function validateCityMap() {
     );
   }
 
-  /* ---- collectible ids: unique, < 31, code = 70 + id ---- */
+  /* ---- collectible ids: unique, < 31, code rule via collectibleCodeForId
+   *      (70 + id for ids 0..11; v5 appendix 110 + (id - 12) for ids 12+ —
+   *      objects.js is the single mapping authority) ---- */
   {
     const ids = Object.values(COLLECTIBLE_IDS);
     const seen = new Set();
@@ -905,10 +1023,16 @@ export function validateCityMap() {
       assert(!seen.has(id), `duplicate collectible id ${id}`);
       seen.add(id);
     }
-    assert(COLLECTIBLES.length === 12, 'exactly 12 collectible defs in v3');
+    assert(COLLECTIBLES.length === 13, 'exactly 13 collectible defs in v5');
     for (const cd of COLLECTIBLES) {
       assert(seen.has(cd.id), `collectible def id ${cd.id} missing from COLLECTIBLE_IDS`);
-      assert(cd.archetypeCode === EXTRA_CODE_BASE + cd.id, `collectible ${cd.id}: code must be 70 + id`);
+      assert(cd.archetypeCode === collectibleCodeForId(cd.id),
+        `collectible ${cd.id}: code ${cd.archetypeCode} != collectibleCodeForId ${collectibleCodeForId(cd.id)}`);
+    }
+    // The frozen 70+id range must never be extended past 81 (82 = 西郷さん像).
+    for (const cd of COLLECTIBLES) {
+      if (cd.id <= 11) assert(cd.archetypeCode === EXTRA_CODE_BASE + cd.id, `v3/v4 collectible ${cd.id}: code must be 70 + id`);
+      else assert(cd.archetypeCode >= CODE_STACK_CHAN, `v5 collectible ${cd.id}: code must be in the 110+ appendix`);
     }
   }
 
@@ -1076,7 +1200,7 @@ export function validateCityMap() {
   /* ---- landmark/collectible placements present exactly once ---- */
   {
     const lmCount = new Array(11).fill(0);
-    const colCount = new Array(12).fill(0);
+    const colCount = new Array(13).fill(0);
     let shell = 0;
     for (const p of PLACEMENTS) {
       if (p.landmarkId >= 0) lmCount[p.landmarkId]++;
@@ -1087,8 +1211,34 @@ export function validateCityMap() {
       const want = i === 9 ? 3 : 1; // bridge = 3 spans
       assert(lmCount[i] === want, `landmark ${i} placement count ${lmCount[i]} != ${want}`);
     }
-    for (let i = 0; i < 12; i++) assert(colCount[i] === 1, `collectible ${i} placement count != 1`);
+    for (let i = 0; i < 13; i++) assert(colCount[i] === 1, `collectible ${i} placement count != 1`);
     assert(shell === 1, 'exactly one shop-shell placement');
+  }
+
+  /* ---- v5 appendix placements (akiba buildings + スタックチャン) ---- */
+  {
+    // Expected concurrency per v5 code (extraPools capacity audit input).
+    const wantByCode = { 110: 1, 111: 2, 112: 1, 113: 1, 114: 2 };
+    const gotByCode = { 110: 0, 111: 0, 112: 0, 113: 0, 114: 0 };
+    const rk = LANDMARKS[3]; // ラジオ会館風ビル (dioramaR 24) — strip neighbor
+    for (const p of PLACEMENTS) {
+      if (p.archetypeCode < CODE_STACK_CHAN || p.archetypeCode > CODE_PC_PARTS_BLDG) continue;
+      gotByCode[p.archetypeCode]++;
+      if (p.archetypeCode === CODE_STACK_CHAN) continue; // interior shelf item
+      // Building footprints stay east of the curated strip edge (x = 25)...
+      assert(p.x - p.radiusReal > 25,
+        `v5 akiba building code ${p.archetypeCode} at (${p.x}, ${p.z}) overlaps the curated strip`);
+      // ...and clear of the ラジオ会館風ビル landmark disc.
+      const d = Math.hypot(p.x - rk.x, p.z - rk.z);
+      assert(d >= rk.dioramaR + p.radiusReal - 1e-9,
+        `v5 akiba building code ${p.archetypeCode} at (${p.x}, ${p.z}) intersects ラジオ会館風ビル (d=${d.toFixed(1)})`);
+      assert(p.naturalBand === 4 && p.rIntent >= p.radiusReal / ABSORB_RATIO - 1e-9,
+        `v5 akiba building code ${p.archetypeCode}: band/rIntent rule`);
+    }
+    for (const code of Object.keys(wantByCode)) {
+      assert(gotByCode[code] === wantByCode[code],
+        `v5 code ${code} placement count ${gotByCode[code]} != ${wantByCode[code]}`);
+    }
   }
 
   /* ================================================================ */

@@ -714,6 +714,12 @@
     }
     .collect-cell img { width: 38px; height: 38px; }
     .collect-cell.unfound::before { content: '？'; font-size: 18px; font-weight: 800; color: #3c4260; }
+    /* v5: COLLECT_TOTAL 13 — the 13th cell (スタックチャン) centers on row 4
+       by spanning the middle two columns (cells are fixed-width, so
+       justify-self centers the cell inside the span; width-independent —
+       holds at the 48px mobile breakpoint too). NOTE: the grid cells are
+       .collect-cell ('.cell-new' is the NEW badge INSIDE a cell). */
+    #collection-grid .collect-cell:nth-child(13) { grid-column: 2 / 4; justify-self: center; }
     .collect-cell .cell-new {
       position: absolute;
       top: 2px; right: 2px;
@@ -908,7 +914,7 @@
     </div>
 
     <div id="progress-bar">
-      <span id="tier-label">パーツ棚</span>
+      <span id="tier-label">センゴク電子</span>
       <div id="progress-fill"></div>
     </div>
 
@@ -990,9 +996,10 @@
       <div id="result-rank">S</div>
       <div id="new-record-badge" class="hidden">NEW RECORD!</div>
     </div>
-    <!-- v3 collection album (screens.js fills the 12 cells + count) -->
+    <!-- v3 collection album (screens.js fills the COLLECT_TOTAL cells + count).
+         v5: the static total below MUST track config/tuning.js COLLECT_TOTAL (13). -->
     <div id="collection-grid-wrap">
-      <div id="collection-header">🏯 コレクション <span id="result-collect-n">0</span>/12</div>
+      <div id="collection-header">🏯 コレクション <span id="result-collect-n">0</span>/13</div>
       <div id="collection-grid"></div>
     </div>
     <p id="result-best" class="seed-line"></p>

@@ -139,6 +139,10 @@ import { makeOsmPools } from './render/osmPools.js'; // Stream R
 import { OsmGround } from './render/osmGround.js'; // Stream R
 import { makeObjectMaterial, setRimTint } from './render/objectMaterial.js'; // Stream C (rim)
 
+/* ---- v5 modules (integrated) ------------------------------------------ */
+import { Onboarding } from './game/onboarding.js'; // opening parts guide
+import { EarthView } from './render/earthView.js'; // space-earth ending sky element
+
 /* ------------------------------------------------------------------ */
 /* Game state machine                                                  */
 /* ------------------------------------------------------------------ */
@@ -303,6 +307,9 @@ const osmSpawner = new OsmSpawner(store, hashes, osmPools, bus, scaleMgr, osmWor
  * env water material, <=2 tile builds/frame, major/minor LOD; RESCALE/
  * REBASE/GAME_RESET self-subscribed — NOT added to resetWorld (+2 draws). */
 const osmGround = new OsmGround(renderer.scene, scaleMgr, env.getWaterMaterial(), osmWorld);
+/* v5 謎の溝 fix: live ground tint for the radius-driven OSM ground fade —
+ * unwired the ground renders exactly as v4 (and warns in DEV). REQUIRED. */
+osmGround.setEnvironment(env);
 
 /* v4 ONE-SHOT coverage latch — cityMap.setOsmCoverageActive is called
  * EXACTLY ONCE per session (on OSM_READY *or* at the tier-2 deadline),
@@ -453,6 +460,14 @@ const screens = new Screens(bus, worldSeed, collection); // result grid + X text
 const skytree = new SkytreeView(renderer.scene, scaleMgr);
 const finale = new Finale(bus, scaleMgr, skytree, env, cameraRig, ball, renderer.camera);
 finale.setEffects(effects);
+/* v5 space-earth ending: glowing Earth + star dome (sky element, fog:false,
+ * +2 draws finale-only — ledger worst 70/72). finale.reset() owns hide(). */
+const earthView = new EarthView(renderer.scene);
+finale.setEarthView(earthView);
+/* v5 opening onboarding: parts-trail guide (EVT.GOAL_GUIDE kind:'parts').
+ * Constructed AFTER the finale (state gate injected); updated at frame-order
+ * step 4.6 below; resetWorld owns reset() (plus its GAME_START self-rearm). */
+const onboarding = new Onboarding(bus, renderer.camera, scaleMgr, finale);
 effects.setRareProvider(spawner.forEachAliveRare.bind(spawner));
 effects.setCollectibleProvider(curated.forEachAliveCollectible.bind(curated));
 const backdrop = new Backdrop(renderer.scene, worldSeed);
@@ -589,6 +604,8 @@ function resetWorld() {
   osmSpawner.reset(); // v4 (BINDING: after curated.reset) — frees OSM slots +
   // consumed bitmasks; the per-SESSION coverage latch is NOT re-armed here
   collection.resetRun(); // clears foundThisRun; the album mask persists
+  onboarding.reset(); // v5: rearm the opening parts guide (earthView needs no
+  // entry here — finale.reset() above already calls earthView.hide())
   setRimTint(TIERS[0].skyTop); // v4 rim — env self-resets its palette to tier 0
   simOriginX = 0; // real->sim bridge follows the fresh origin/scale
   simOriginZ = 0;
@@ -736,6 +753,7 @@ if (import.meta.env && import.meta.env.DEV) {
     ballPhys, scaleMgr, curated, terrain, spawner, store, finale, collection,
     getBallPosReal,
     osmWorld, osmSpawner, osmGround, osmPools, // v4 (integrated)
+    onboarding, earthView, // v5 (integrated)
   };
 }
 
@@ -866,6 +884,11 @@ function frame(now) {
     PAYLOADS.gameWin.seed = worldSeed;
     bus.emit(EVT.GAME_WIN, PAYLOADS.gameWin); // -> onGameWin (state = WIN)
   }
+
+  /* 4.6) v5 opening parts guide (game/onboarding.js) — AFTER finale.update  */
+  /*      so its finale-state gate reads THIS frame's truth (no same-frame   */
+  /*      GOAL_GUIDE collision with the finale by construction).             */
+  onboarding.update(frameDt);
 
   /* 5) Ball visuals: attach animations, staggered burial cull.             */
   ball.update(frameDt, ballPhys.state);

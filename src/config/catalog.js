@@ -1,5 +1,5 @@
 /**
- * @file catalog.js — v4 リアル東京: all 110 archetypes.
+ * @file catalog.js — v5 リアル東京: all 115 archetypes.
  *
  * 70 CHUNK archetypes (ARCH_PER_TIER 10 x 7 tiers, ids FROZEN by
  * config/tiers.js; slots [8]/[9] of every tier are CHUNK LANDMARKS —
@@ -39,12 +39,13 @@
  *     entry at boot; k = entry.aoK ?? AO_BAKE_DEFAULT (tuning.js; global
  *     kill switch = 0).
  *
- * EXPORTS (Phase-0 frozen shapes): CATALOG (110 ids), DISPLAY_NAME_BY_CODE
- * (string[110], code-indexed), EXTRA_CATALOG (code 70..93 -> archetype),
- * EXTRA_SIZE_CLASS_BY_CODE + EXTRA_POOL_CAPS (the 4 shared EXTRA render
- * pools: collectible-small/landmark-mid/landmark-large/landmark-xl — flat
- * +4 draws in the 64/72 ledger), OSM_CATALOG (code 94..109 -> archetype),
- * HERO_ARCHETYPE_IDS (12, frozen).
+ * EXPORTS (Phase-0 frozen shapes): CATALOG (115 ids), DISPLAY_NAME_BY_CODE
+ * (string[115], code-indexed), EXTRA_CATALOG (codes 70..93 + v5 110..114 ->
+ * archetype), EXTRA_SIZE_CLASS_BY_CODE + EXTRA_POOL_CAPS (the 4 shared EXTRA
+ * render pools: collectible-small/landmark-mid/landmark-large/landmark-xl —
+ * flat +4 draws in the 64/72 ledger), OSM_CATALOG (code 94..109 ->
+ * archetype), HERO_ARCHETYPE_IDS (12, frozen). v5 adds codes 110..114
+ * (stack_chan collectible 12 + 4 Akihabara buildings — append-only).
  *
  * Each archetype's buildGeometry(rng) returns ONE merged, vertex-colored
  * BufferGeometry composed of a handful of low-segment primitives
@@ -82,6 +83,8 @@ import {
   EXTRA_CODE_BASE,
   OSM_ARCHETYPE_IDS,
   OSM_CODE_BASE,
+  V5_ARCHETYPE_IDS,
+  V5_CODE_BASE,
 } from '../world/objects.js';
 
 /** @typedef {import('../types.js').Archetype} Archetype */
@@ -2335,18 +2338,26 @@ add({
  * The 4 shared EXTRA render pools (size classes). Stream B builds ONE pool
  * per class (flat +4 draws, ledger 64/72); instance caps below are the
  * worst-case CONCURRENTLY-ALIVE counts, not archetype counts.
+ * v5: collectible-small 12 -> 13 (stack_chan, code 110, joins the 11 v3
+ * members) and landmark-mid 4 -> 12 (worst co-location: 5 audited v3
+ * members 80/82/83/84/86 + 6 Akihabara placements of codes 111..114 +
+ * headroom). Caps are capacity only — same 4 batches, zero extra draws.
+ * render/extraPools.js CLASS_CAPS is the render-side authority and must be
+ * >= these floors (mirrored there: [13, 12, 6, 6]).
  * @type {Readonly<Record<string, number>>}
  */
 export const EXTRA_POOL_CAPS = Object.freeze({
-  'collectible-small': 12,
-  'landmark-mid': 4,
+  'collectible-small': 13,
+  'landmark-mid': 12,
   'landmark-large': 4,
   'landmark-xl': 4,
 });
 
 /**
- * EXTRA archetypes keyed by FROZEN code 70..93 (same objects as in CATALOG —
- * each also carries .extraCode and .sizeClass).
+ * EXTRA archetypes keyed by FROZEN code 70..93 PLUS the v5 curated codes
+ * 110..114 (same objects as in CATALOG — each also carries .extraCode and
+ * .sizeClass). v5 codes ride the same 4 shared pools (extraPools.js scans
+ * EXTRA_SIZE_CLASS_BY_CODE up to ARCHETYPE_ID_BY_CODE.length).
  * @type {Record<number, Archetype & {extraCode: number, sizeClass: string|null}>}
  */
 export const EXTRA_CATALOG = {};
@@ -2367,7 +2378,7 @@ export const EXTRA_SIZE_CLASS_BY_CODE = {};
 /**
  * Register an EXTRA curated archetype: goes into CATALOG (by id — shared
  * geometry/collisionScale lookups) AND EXTRA_CATALOG (by frozen code).
- * @param {number} code Frozen EXTRA code 70..93.
+ * @param {number} code Frozen EXTRA code 70..93, or v5 code 110..114.
  * @param {string|null} sizeClass One of EXTRA_POOL_CAPS keys, or null.
  * @param {Archetype} a Archetype (spawnWeight must be 0 — curated-only).
  */
@@ -2962,8 +2973,8 @@ addExtra(91, 'landmark-xl', {
 });
 
 addExtra(92, 'landmark-xl', {
-  id: 'akiba_parts_shop',
-  displayNameJa: 'アキバパーツ館',
+  id: 'akiba_parts_shop', // id frozen — v5 re-themes the shop as センゴク電子
+  displayNameJa: 'センゴク電子', // v5: 千石電商-inspired light parody name
   tier: 3,
   naturalBand: 3,
   radiusNominal: 4.0, // shop shell (activates at terrain release; absorbable @ 6.2m)
@@ -3440,20 +3451,189 @@ addOsm(109, {
 });
 
 /* ================================================================== */
-/* DISPLAY_NAME_BY_CODE — string[110], code-indexed (Phase-0 frozen)   */
+/* v5 curated archetypes — codes 110..114 (DESIGN-V5 mini-spec)        */
+/* ================================================================== */
+/*
+ * Append-only after the frozen 110-entry v4 table (objects.js
+ * V5_CODE_BASE/V5_ARCHETYPE_IDS). Registered through the same addExtra path
+ * as codes 70..93: curated-only (spawnWeight 0), rendered from the shared
+ * EXTRA size-class pools (zero extra draws — capacity raises only, see
+ * EXTRA_POOL_CAPS above), permanently stuck once absorbed (ball.knockOff's
+ * >= EXTRA_CODE_BASE skip). Normal unit-sphere finish() geometry, <= 350
+ * tris each (ARCHETYPE_TRI_CAP — these are NOT unitBox/OSM entries).
+ *   110 stack_chan      collectible id 12 (collectibleCodeForId), band 1 —
+ *                       parts-shop shelf placement (cityMap COLLECTIBLES)
+ *   111..114            Akihabara 電気街 buildings, band 4 (absorbable
+ *                       mid-game), landmark-mid pool, cityMap V5 clusters
+ */
+
+addExtra(110, 'collectible-small', {
+  // スタックチャン — the open-source M5Stack robot (a palm-sized cube body
+  // that IS its screen face). Donack's cousin; an electronics shop shelf is
+  // its natural habitat. Cute voxel cube + dark screen + cyan eyes/smile.
+  id: 'stack_chan',
+  displayNameJa: 'スタックチャン',
+  tier: 1,
+  naturalBand: 1,
+  radiusNominal: 0.04, // shelf-A pickup size (cityMap radiusReal 0.04)
+  radiusJitter: 0,
+  spawnWeight: 0,
+  palette: [0xff9d3d, 0xffa948, 0xf69336, 0xffb050], // M5 case orange
+  yOffset: -0.18,
+  upright: true,
+  collisionScale: 0.95,
+  buildGeometry(rng) {
+    void rng;
+    return finish([
+      box(1.5, 1.3, 1.1, 0xffffff, { y: 0.75, hex2: 0xffe2bc }), // cube body (tinted case orange)
+      box(1.26, 1.02, 0.12, 0x14181f, { y: 0.78, z: 0.56 }), // screen face panel (inset dark)
+      box(0.2, 0.26, 0.06, 0x53e6e6, { x: -0.3, y: 0.92, z: 0.64 }), // cyan eye L
+      box(0.2, 0.26, 0.06, 0x53e6e6, { x: 0.3, y: 0.92, z: 0.64 }), // cyan eye R
+      box(0.46, 0.1, 0.06, 0x53e6e6, { y: 0.5, z: 0.64 }), // cyan smile
+      box(0.18, 0.34, 0.34, 0x2e3138, { x: -0.84, y: 0.62 }), // side-arm stub L
+      box(0.18, 0.34, 0.34, 0x2e3138, { x: 0.84, y: 0.62 }), // side-arm stub R
+      box(0.42, 0.16, 0.5, 0x2e3138, { x: -0.34, y: 0.08 }), // foot L
+      box(0.42, 0.16, 0.5, 0x2e3138, { x: 0.34, y: 0.08 }), // foot R
+    ]);
+  },
+});
+
+addExtra(111, 'landmark-mid', {
+  id: 'game_center',
+  displayNameJa: 'ゲームセンター',
+  tier: 4,
+  naturalBand: 4,
+  radiusNominal: 8,
+  radiusJitter: 0,
+  spawnWeight: 0,
+  palette: [0xf6f2e6, 0xefe9da, 0xfdf6e8, 0xe8e2d2],
+  yOffset: -0.42,
+  upright: true,
+  collisionScale: 0.9,
+  buildGeometry(rng) {
+    void rng;
+    const parts = [
+      box(2.0, 1.5, 1.6, 0xffffff, { y: 0.75, hex2: 0xf2ece0 }), // hall body (tinted cream)
+      box(2.08, 0.42, 1.68, 0xffd84d, { y: 1.7 }), // yellow marquee band
+      box(1.5, 0.3, 0.1, 0xe04f3a, { y: 1.7, z: 0.86 }), // red GAME sign plate
+      box(2.0, 0.18, 1.6, 0x6a6a72, { y: 1.96 }), // roof slab
+      box(1.3, 0.7, 0.08, 0x39465e, { y: 0.45, z: 0.82 }), // glass entrance
+      box(0.34, 0.5, 0.1, 0xc06af2, { x: -0.55, y: 1.05, z: 0.84 }), // crane-game poster
+    ];
+    // Bright multicolor signage strip across the facade (arcade kitsch).
+    const signHex = [0xff4a6a, 0x3fd0ff, 0x49c45f, 0xffd84d, 0xff8a3d];
+    for (let i = 0; i < 5; i++) {
+      parts.push(box(0.3, 0.3, 0.08, signHex[i], { x: -0.7 + i * 0.35, y: 1.32, z: 0.84 }));
+    }
+    return finish(parts);
+  },
+});
+
+addExtra(112, 'landmark-mid', {
+  id: 'denki_retailer',
+  displayNameJa: '家電量販店',
+  tier: 4,
+  naturalBand: 4,
+  radiusNominal: 14,
+  radiusJitter: 0,
+  spawnWeight: 0,
+  palette: [0xf2ece0, 0xe8e2d2, 0xf8f2e6, 0xe0dacb],
+  yOffset: -0.2,
+  upright: true,
+  collisionScale: 0.9,
+  buildGeometry(rng) {
+    void rng;
+    const parts = [
+      box(1.6, 2.8, 1.3, 0xffffff, { y: 1.4, hex2: 0xf4eee2 }), // tall retail slab (tinted)
+      box(1.66, 0.46, 1.36, 0xe04f3a, { y: 2.95 }), // rooftop logo band (red)
+      box(1.1, 0.3, 0.1, 0xfff6e0, { y: 2.95, z: 0.72 }), // white logo face
+      box(1.62, 0.3, 1.32, 0xd8d4cc, { y: 0.15 }), // street podium
+    ];
+    // Colorful banded facade: alternating red/white/yellow floor strips —
+    // the big-camera-store look.
+    const floorHex = [0xe04f3a, 0xf6f2e6, 0xffd84d, 0xe04f3a, 0xf6f2e6, 0xffd84d];
+    for (let i = 0; i < 6; i++) {
+      parts.push(box(1.5, 0.16, 0.1, floorHex[i], { y: 0.55 + i * 0.42, z: 0.68 }));
+    }
+    return finish(parts);
+  },
+});
+
+addExtra(113, 'landmark-mid', {
+  id: 'maid_cafe',
+  displayNameJa: 'メイドカフェ',
+  tier: 4,
+  naturalBand: 4,
+  radiusNominal: 6,
+  radiusJitter: 0,
+  spawnWeight: 0,
+  palette: [0xfdf2ee, 0xf8ece6, 0xfff6f0, 0xf2e6e0],
+  yOffset: -0.4,
+  upright: true,
+  collisionScale: 0.9,
+  buildGeometry(rng) {
+    void rng;
+    return finish([
+      box(1.6, 1.7, 1.3, 0xffffff, { y: 0.85, hex2: 0xfbeee8 }), // cream box (tinted)
+      box(1.66, 0.3, 1.36, 0xff9ab8, { y: 1.78 }), // pink roofline band
+      box(1.6, 0.16, 1.3, 0x8a7078, { y: 1.96 }), // roof slab
+      box(1.5, 0.28, 0.5, 0xff9ab8, { y: 1.18, z: 0.78, hex2: 0xffc2d4 }), // pink awning
+      box(0.9, 0.26, 0.1, 0xfff0f4, { y: 1.5, z: 0.68 }), // sign plate
+      box(0.22, 0.22, 0.08, 0xff4a6a, { y: 1.5, z: 0.74 }), // heart logo block
+      box(0.9, 0.62, 0.08, 0x6a4a58, { y: 0.42, z: 0.66 }), // cafe entrance
+      box(0.26, 0.5, 0.1, 0xff9ab8, { x: 0.84, y: 0.6, z: 0.5 }), // pink accent strip
+      box(0.26, 0.5, 0.1, 0xff9ab8, { x: -0.84, y: 0.6, z: 0.5 }), // pink accent strip
+    ]);
+  },
+});
+
+addExtra(114, 'landmark-mid', {
+  id: 'pc_parts_bldg',
+  displayNameJa: 'PCパーツショップビル',
+  tier: 4,
+  naturalBand: 4,
+  radiusNominal: 9,
+  radiusJitter: 0,
+  spawnWeight: 0,
+  palette: [0xd8cec0, 0xc4bcb0, 0xccc0ae, 0xb8b2a4],
+  yOffset: -0.24,
+  upright: true,
+  collisionScale: 0.9,
+  buildGeometry(rng) {
+    const parts = [
+      towerBanded(1.4, 2.4, 1.2, 7, 0xffffff, 0x39465e, 0xffd98a, rng, { y: 1.2 }), // zakkyo slab (tinted)
+      box(1.46, 0.34, 1.26, 0x49c45f, { y: 2.5 }), // green rooftop parts-shop band
+      box(1.4, 0.16, 1.2, 0x6a6a72, { y: 2.66 }), // roof slab
+      box(1.42, 0.26, 1.22, 0x3f8cff, { y: 0.13 }), // blue street-level sign base
+    ];
+    // Stacked green/blue parts-shop signage rows up the facade.
+    const signHex = [0x49c45f, 0x3f8cff, 0x49c45f, 0x3f8cff];
+    for (let i = 0; i < 4; i++) {
+      parts.push(box(0.32, 0.4, 0.1, signHex[i], { x: 0.78, y: 0.5 + i * 0.52, z: 0.3 }));
+    }
+    return finish(parts);
+  },
+});
+
+/* ================================================================== */
+/* DISPLAY_NAME_BY_CODE — string[115], code-indexed (append-only)      */
 /* ================================================================== */
 
 /**
  * Code -> Japanese display name (hud absorb-name floats with FLOAT_MERGE_S
  * burst merging, collection album, landmark toasts). Codes 0..69 follow the
  * frozen tiers.js order; 70..93 the frozen EXTRA order from objects.js;
- * 94..109 the frozen v4 OSM order from objects.js (110 total).
- * Built unconditionally (prod ships it); asserted complete in dev.
+ * 94..109 the frozen v4 OSM order; 110..114 the frozen v5 order from
+ * objects.js (115 total). Built unconditionally (prod ships it); asserted
+ * complete in dev.
  * @type {string[]}
  */
 export const DISPLAY_NAME_BY_CODE = (() => {
   const names = new Array(
-    TIERS.length * ARCH_PER_TIER + EXTRA_ARCHETYPE_IDS.length + OSM_ARCHETYPE_IDS.length
+    TIERS.length * ARCH_PER_TIER +
+      EXTRA_ARCHETYPE_IDS.length +
+      OSM_ARCHETYPE_IDS.length +
+      V5_ARCHETYPE_IDS.length
   );
   for (let t = 0; t < TIERS.length; t++) {
     const ids = TIERS[t].archetypeIds;
@@ -3469,6 +3649,10 @@ export const DISPLAY_NAME_BY_CODE = (() => {
   for (let o = 0; o < OSM_ARCHETYPE_IDS.length; o++) {
     const a = CATALOG[OSM_ARCHETYPE_IDS[o]];
     names[OSM_CODE_BASE + o] = a !== undefined && a.displayNameJa ? a.displayNameJa : '';
+  }
+  for (let v = 0; v < V5_ARCHETYPE_IDS.length; v++) {
+    const a = CATALOG[V5_ARCHETYPE_IDS[v]];
+    names[V5_CODE_BASE + v] = a !== undefined && a.displayNameJa ? a.displayNameJa : '';
   }
   return names;
 })();
@@ -3564,6 +3748,33 @@ if (import.meta.env && import.meta.env.DEV) {
   }
   assert(Object.keys(OSM_CATALOG).length === 16, 'OSM_CATALOG must contain exactly 16 codes (94..109)');
 
+  // ---- 5 v5 curated archetypes (frozen objects.js codes 110..114) -----
+  for (let v = 0; v < V5_ARCHETYPE_IDS.length; v++) {
+    const code = V5_CODE_BASE + v;
+    const id = V5_ARCHETYPE_IDS[v];
+    const a = EXTRA_CATALOG[code];
+    assert(a !== undefined, `v5 code ${code}: missing archetype '${id}'`);
+    assert(a.id === id, `v5 code ${code}: id must be '${id}', found '${a.id}'`);
+    assert(CATALOG[id] === a, `v5 '${id}': must be the same object in CATALOG and EXTRA_CATALOG`);
+    assert(a.extraCode === code, `v5 '${id}': extraCode field mismatch`);
+    assert(a.spawnWeight === 0, `v5 '${id}': spawnWeight must be 0 (curated-only, never chunk-rolled)`);
+    assert(a.tier === a.naturalBand, `v5 '${id}': tier field must equal naturalBand (types.js contract)`);
+    assert(a.unitBox === undefined, `v5 '${id}': v5 entries are unit-SPHERE archetypes, never unitBox`);
+    assert(
+      EXTRA_POOL_CAPS[a.sizeClass] !== undefined,
+      `v5 '${id}': sizeClass '${a.sizeClass}' must be one of the 4 frozen pool classes`
+    );
+    assert(EXTRA_SIZE_CLASS_BY_CODE[code] === a.sizeClass, `v5 '${id}': size-class table mismatch`);
+    checkCommon(a, `v5 '${id}'`);
+  }
+  assert(
+    EXTRA_SIZE_CLASS_BY_CODE[110] === 'collectible-small',
+    'code 110 (stack_chan) must ride the collectible-small pool'
+  );
+  for (let c = 111; c <= 114; c++) {
+    assert(EXTRA_SIZE_CLASS_BY_CODE[c] === 'landmark-mid', `code ${c} (akiba) must ride the landmark-mid pool`);
+  }
+
   // ---- 12 hero archetypes (v4 HERO pass, frozen ids) -------------------
   assert(HERO_ARCHETYPE_IDS.length === 12, 'HERO_ARCHETYPE_IDS must have exactly 12 entries (frozen)');
   for (const id of HERO_ARCHETYPE_IDS) {
@@ -3580,13 +3791,15 @@ if (import.meta.env && import.meta.env.DEV) {
 
   // ---- totals + display-name table ------------------------------------
   assert(
-    Object.keys(CATALOG).length === 110,
-    `CATALOG must contain exactly 110 ids (70 chunk + 24 EXTRA + 16 OSM), found ${Object.keys(CATALOG).length}`
+    Object.keys(CATALOG).length === 115,
+    `CATALOG must contain exactly 115 ids (70 chunk + 24 EXTRA + 16 OSM + 5 v5), found ${Object.keys(CATALOG).length}`
   );
-  assert(DISPLAY_NAME_BY_CODE.length === 110, 'DISPLAY_NAME_BY_CODE must have exactly 110 entries');
-  for (let c = 0; c < 110; c++) {
+  assert(DISPLAY_NAME_BY_CODE.length === 115, 'DISPLAY_NAME_BY_CODE must have exactly 115 entries');
+  for (let c = 0; c < 115; c++) {
     assert(DISPLAY_NAME_BY_CODE[c].length > 0, `DISPLAY_NAME_BY_CODE hole at code ${c}`);
   }
+  assert(DISPLAY_NAME_BY_CODE[92] === 'センゴク電子', 'code 92 (shop shell) display name is センゴク電子 (v5)');
   assert(DISPLAY_NAME_BY_CODE[93] === '東京スカイツリー', 'code 93 reserved for 東京スカイツリー');
   assert(DISPLAY_NAME_BY_CODE[96] === '雑居ビル', 'code 96 (osm_zakkyo) display name frozen as 雑居ビル');
+  assert(DISPLAY_NAME_BY_CODE[110] === 'スタックチャン', 'code 110 reserved for スタックチャン (collectible 12)');
 }

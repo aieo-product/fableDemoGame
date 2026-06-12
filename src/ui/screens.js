@@ -22,8 +22,9 @@
  *                    buttons). If no goal was cached (legacy v1 win path),
  *                    everything shows immediately without .staged.
  *
- * v3 COLLECTION GRID (#collection-grid-wrap, frozen ids/classes): 12
- * .collect-cell cells in frozen-id order — found = thumbnail + name, unfound
+ * v3 COLLECTION GRID (#collection-grid-wrap, frozen ids/classes):
+ * COLLECT_TOTAL (v5: 13) .collect-cell cells in frozen-id order (the 13th
+ * cell centers on row 4 via index.html nth-child CSS) — found = thumbnail + name, unfound
  * = dark .unfound 「？」 cell, .cell-new badge on first-ever finds of this
  * run; header n = GoalEvent.collectFound. Built once per win (one-shot
  * allocation path). Reveal rides the 1.9s cue (index.html pre-wires
@@ -44,6 +45,7 @@
 
 import { EVT, PAYLOADS } from '../core/events.js';
 import { COLLECT_TOTAL, LS_DONACK_KEY } from '../config/tuning.js';
+import { collectibleCodeForId } from '../world/objects.js';
 import { formatLength } from '../core/mathUtils.js';
 import { RunStats } from '../game/runStats.js';
 // Namespace import: DISPLAY_NAME_BY_CODE (string[94], frozen) lands with
@@ -59,8 +61,10 @@ import * as catalogModule from '../config/catalog.js';
 const DISPLAY_NAME_BY_CODE = /** @type {string[]} */ (
   catalogModule.DISPLAY_NAME_BY_CODE !== undefined ? catalogModule.DISPLAY_NAME_BY_CODE : []
 );
-/** FROZEN mapping (DESIGN-V3.md Phase-0 appendix): collectible code = 70 + id. */
-const EXTRA_CODE_BASE = 70;
+/* v5: collectible id -> code goes through objects.js collectibleCodeForId
+   (ids 0..11 -> 70..81 frozen v3 rule, id 12+ -> V5_CODE_BASE 110+). The old
+   local `70 + id` hand-roll is BANNED — for id 12 it resolves to code 82
+   (西郷さん像). collection.js boot-asserts every displayed id resolves. */
 
 /** Share target shown in the post + the intent text (live deployment). */
 const SHARE_URL = 'https://fable-katamari.pages.dev';
@@ -439,7 +443,7 @@ export class Screens {
   }
 
   /**
-   * Build the 12-cell collection grid (one-shot per win — allocation OK).
+   * Build the COLLECT_TOTAL-cell collection grid (one-shot per win — allocation OK).
    * Cells in frozen-id order: found = thumbnail + name, unfound = .unfound
    * 「？」, .cell-new badge on first-ever finds of this run.
    * @param {number} foundCount Header n (GoalEvent.collectFound).
@@ -462,7 +466,7 @@ export class Screens {
           cell.appendChild(img);
         }
         const name = document.createElement('span');
-        const nameJa = DISPLAY_NAME_BY_CODE[EXTRA_CODE_BASE + id];
+        const nameJa = DISPLAY_NAME_BY_CODE[collectibleCodeForId(id)];
         name.textContent = typeof nameJa === 'string' ? nameJa : '';
         cell.appendChild(name);
         if (typeof c.isNewThisRun === 'function' && c.isNewThisRun(id)) {

@@ -22,12 +22,17 @@
  *    cameraRig.beginCinematic().
  *  - MERGE: finale writes ball.pos (lerp into the glowing tower axis); ball
  *    view hidden at t >= 0.6 s; tower glow flash across the merge.
- *  - ASCENSION: the (hidden) anchor point rises ease-in to
- *    ascendBaseY + GOAL_ASCEND_HEIGHT_K * r over the night diorama;
- *    env.beginNightFade(GOAL_ASCEND_S); effects.ascensionBurst() golden
- *    fountain rides the anchor (ball.pos is parked on it).
- *  - AFTERGLOW: tower glow breathing over night Tokyo, then state = 'done' —
- *    main.js (the SOLE 'game:win' emitter) fires EVT.GAME_WIN.
+ *  - ASCENSION (v5: the LIFTOFF): the (hidden) anchor point rises ease-in to
+ *    ascendBaseY + GOAL_ASCEND_HEIGHT_K * r; env.beginNightFade(GOAL_ASCEND_S)
+ *    + effects.ascensionBurst() golden fountain ride the anchor (ball.pos is
+ *    parked on it). v5 space-earth ending: earthView.show() at entry, then per
+ *    frame u drives env.setSpaceFade01(u) (sky zenith -> space black), the
+ *    EarthView fade/parallax-sink (glowing night globe below) and the camera
+ *    pullback ramp (CINE_BACK_K 14->30, CINE_UP_K 4->8, look biasing down for
+ *    u > 0.5) — leaving Earth instead of merely rising over night Tokyo.
+ *  - AFTERGLOW: tower glow breathing over the twinkling globe (earthView
+ *    stays, spaceFade held 1), then state = 'done' — main.js (the SOLE
+ *    'game:win' emitter) fires EVT.GAME_WIN.
  *
  * SILHOUETTE -> MESH HANDOFF (BLOCKER 2): finale.update drives
  * skytree.update(dt, cameraPos) every frame and forwards
@@ -82,13 +87,24 @@ const BALL_HIDE_AT_S = 0.6;
 const CINE_BACK_K = 14;
 const CINE_UP_K = 4;
 const CINE_FOV_END = 52;
+/* ---- v5 space-earth liftoff (ASCENSION reads as leaving the planet) ----
+ * Over ascension u the pullback/raise ramp CINE_BACK_K -> CINE_BACK_END_K and
+ * CINE_UP_K -> CINE_UP_END_K (eased), and for u > 0.5 the look target biases
+ * down toward anchor - (0, CINE_LOOK_DOWN_K * r, 0) so the EarthView globe
+ * fills the lower frame while the sparkle column keeps rising at center.
+ * All dimensionless multiples of the frozen post-contact r — rescale-moot. */
+const CINE_BACK_END_K = 30;
+const CINE_UP_END_K = 8;
+const CINE_LOOK_DOWN_K = 6;
 /** APPROACH tower glow breathing (base level + amp, Hz). */
 const APPROACH_GLOW_BASE = 0.45;
 const APPROACH_GLOW_AMP = 0.15;
 const GLOW_BREATH_HZ = 0.5;
-/** skipCinematic() time multiplier — MERGE+ASCENSION+AFTERGLOW (8.7 s)
- *  compress to ~1.7 s. A fast-forward, not a hard cut: every phase still
- *  runs (night fade, ball hide, GAME_WIN emission order all preserved). */
+/** skipCinematic() time multiplier — MERGE+ASCENSION+AFTERGLOW
+ *  (GOAL_MERGE_S + GOAL_ASCEND_S + AFTERGLOW_S) compress by 5x (~2.1 s at
+ *  the v5 timings). A fast-forward, not a hard cut: every phase still runs
+ *  (night fade, space fade, earth reveal, ball hide, GAME_WIN emission order
+ *  all preserved). */
 const SKIP_TIME_SCALE = 5;
 
 const TWO_PI = Math.PI * 2;
@@ -128,6 +144,10 @@ export class Finale {
     this._ballView = ballView;
     this._camera = camera;
     this._effects = effects;
+    /** v5 space-earth view (render/earthView.js) — injected via setEarthView
+     *  (the 7-arg constructor shape is frozen; setEffects precedent).
+     *  @type {object|null} */
+    this._earthView = null;
 
     /** @type {'idle'|'called'|'approach'|'contact'|'merge'|'ascension'|'afterglow'|'done'} */
     this._state = 'idle';
@@ -168,6 +188,10 @@ export class Finale {
     this._timeScale = 1;
     /** @type {number} Last forwarded env silhouette fade (skip no-op calls). */
     this._lastSilFade = -1;
+    /** @type {number} v5 liftoff progress 0..1 (ASCENSION u; 1 in AFTERGLOW).
+     * DIMENSIONLESS — needs no _simCache entry (the rescale/rebase law covers
+     * sim-space lengths only; this is a pure phase fraction). */
+    this._liftU = 0;
 
     // Current cinematic anchor — DERIVED, rewritten every post-contact frame
     // BEFORE any consumer (cinematic targets) reads it, so it needs no
@@ -221,6 +245,17 @@ export class Finale {
    */
   setEffects(effects) {
     this._effects = effects;
+  }
+
+  /**
+   * v5 late wiring hook for render/earthView.js (the space-earth ending) —
+   * same precedent as setEffects: the frozen 7-arg constructor survives and
+   * the integrator injects the view after construction. Optional: without it
+   * the finale degrades to the v4 night-sky ending (every call is guarded).
+   * @param {object} earthView render/earthView.js EarthView.
+   */
+  setEarthView(earthView) {
+    this._earthView = earthView;
   }
 
   /**
@@ -323,6 +358,12 @@ export class Finale {
     this._skipGuideOnce = false;
     this._timeScale = 1;
     this._lastSilFade = -1; // re-forward on the first update
+    this._liftU = 0;
+    // v5: hide the space-earth view (env uSpaceFade is cleared by
+    // setTierPaletteImmediate on GAME_RESET — env's own reset ownership).
+    if (this._earthView !== null && typeof this._earthView.hide === 'function') {
+      this._earthView.hide();
+    }
     const c = this._simCache;
     c.towerX = 0; c.towerZ = 0;
     c.towerR = 0;
@@ -469,6 +510,12 @@ export class Finale {
       if (this._effects && typeof this._effects.ascensionBurst === 'function') {
         this._effects.ascensionBurst(); // golden sparkle fountain
       }
+      // v5 SPACE-EARTH: reveal the globe + star shell (faded in over u by
+      // _driveEarth) — the liftoff reading of the same ascension timings.
+      if (this._earthView !== null && typeof this._earthView.show === 'function') {
+        this._earthView.show();
+        this._driveEarth(0, ball.pos.x, ball.pos.y, ball.pos.z, ball.radiusSim);
+      }
     }
   }
 
@@ -493,6 +540,12 @@ export class Finale {
     ball.pos.z = c.towerZ;
     ball.vel.set(0, 0, 0);
 
+    // v5 liftoff: u drives the camera ramp (_driveCinematic), the sky's
+    // space darkening, and the EarthView fade/sink — all continuous in u.
+    this._liftU = u;
+    this._envCall('setSpaceFade01', u);
+    this._driveEarth(u, c.towerX, ay, c.towerZ, r);
+
     if (this._phaseT >= GOAL_ASCEND_S) {
       this._state = 'afterglow';
       this._phaseT = 0;
@@ -506,7 +559,7 @@ export class Finale {
     const c = this._simCache;
     const r = ball.radiusSim;
 
-    const ay = c.ascendBaseY + GOAL_ASCEND_HEIGHT_K * r; // hangs over night Tokyo
+    const ay = c.ascendBaseY + GOAL_ASCEND_HEIGHT_K * r; // hangs over the Earth
     this._goalView.setGlow01(0.55 + 0.25 * Math.sin(TWO_PI * GLOW_BREATH_HZ * this._phaseT));
     this._setAnchor(c.towerX, ay, c.towerZ);
 
@@ -514,6 +567,11 @@ export class Finale {
     ball.pos.y = ay;
     ball.pos.z = c.towerZ;
     ball.vel.set(0, 0, 0);
+
+    // v5: the EarthView stays (twinkling globe below the breathing glow).
+    this._liftU = 1;
+    this._envCall('setSpaceFade01', 1);
+    this._driveEarth(1, c.towerX, ay, c.towerZ, r);
 
     if (this._phaseT >= AFTERGLOW_S) {
       this._state = 'done'; // main emits EVT.GAME_WIN (sole emitter)
@@ -598,10 +656,30 @@ export class Finale {
   }
 
   /**
+   * v5 — guarded EarthView drive (progress, pose, twinkle clock). One call
+   * site per phase; every value is derived from the rescale-safe _simCache /
+   * frozen ball radius, so the view needs no bus subscriptions of its own.
+   * @param {number} u Liftoff progress 0..1.
+   * @param {number} ax Anchor x (sim). @param {number} ay Anchor y (sim).
+   * @param {number} az Anchor z (sim). @param {number} r Ball radius (sim).
+   */
+  _driveEarth(u, ax, ay, az, r) {
+    const v = this._earthView;
+    if (v === null || typeof v.setAnchor !== 'function') return;
+    v.setProgress01(u);
+    v.setAnchor(ax, ay, az, r);
+    v.setTime(this._cineT);
+  }
+
+  /**
    * Cinematic camera targets, derived fresh every frame: camPos = anchor +
-   * back*14r + up*4r (back = horizontal tower->mergeFrom direction, all from
-   * _simCache), look = anchor (the golden fountain / rising point over the
-   * night diorama), FOV eases 60 -> 52 over merge+ascension.
+   * back*backK*r + up*upK*r (back = horizontal tower->mergeFrom direction,
+   * all from _simCache), look = anchor, FOV eases 60 -> 52 over
+   * merge+ascension. v5 liftoff: backK ramps CINE_BACK_K -> CINE_BACK_END_K
+   * and upK CINE_UP_K -> CINE_UP_END_K over eased _liftU, and for u > 0.5
+   * the look target slides down toward anchor - (0, CINE_LOOK_DOWN_K*r, 0)
+   * so the EarthView globe fills the lower frame — all continuous in u, and
+   * the rig springs smooth the targets anyway.
    * @param {number} dt @param {BallState} ball
    */
   _driveCinematic(dt, ball) {
@@ -617,12 +695,17 @@ export class Finale {
       bx = 0;
       bz = 1;
     }
+    const lift = easeInOutCubic(this._liftU);
+    const backK = CINE_BACK_K + (CINE_BACK_END_K - CINE_BACK_K) * lift;
+    const upK = CINE_UP_K + (CINE_UP_END_K - CINE_UP_K) * lift;
+    const lookDown =
+      CINE_LOOK_DOWN_K * r * easeInOutCubic(clamp01((this._liftU - 0.5) * 2));
     _v3a.set(
-      this._anchorX + bx * CINE_BACK_K * r,
-      this._anchorY + CINE_UP_K * r,
-      this._anchorZ + bz * CINE_BACK_K * r
+      this._anchorX + bx * backK * r,
+      this._anchorY + upK * r,
+      this._anchorZ + bz * backK * r
     );
-    _v3b.set(this._anchorX, this._anchorY, this._anchorZ);
+    _v3b.set(this._anchorX, this._anchorY - lookDown, this._anchorZ);
     const fovTarget =
       FOV_BASE +
       (CINE_FOV_END - FOV_BASE) *

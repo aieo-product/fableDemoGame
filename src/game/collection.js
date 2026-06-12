@@ -13,16 +13,19 @@
  * PERSISTENCE (LS_COLLECTION_KEY, schema {v:1, mask:int}) — FROZEN-ID RULE
  * (binding, docs/DESIGN-V3.md §フィードバック + Phase-0 appendix):
  *   - bit N of mask == collectible with FROZEN id N (COLLECTIBLE_IDS).
- *   - ids are APPEND-ONLY: v3.1+ may add ids 12..30 and bump the displayed
- *     total, but ids are NEVER reused or reordered.
+ *   - ids are APPEND-ONLY: v5 added id 12 スタックチャン (code 110 via
+ *     objects.js collectibleCodeForId — the 70 + id rule is unextendable);
+ *     later builds may add ids 13..30 and bump the displayed total, but ids
+ *     are NEVER reused or reordered. Old 12-bit masks load unchanged (bit 12
+ *     simply reads unfound).
  *   - UNKNOWN HIGH BITS (ids this build doesn't know) are PRESERVED across
  *     load/collect/save (forward compat with newer-build saves).
  *   - shape-validated like RunStats._loadBest: any anomaly -> mask 0.
  * The album mask survives GAME_RESET / resetWorld (resetRun clears only the
  * per-run NEW state).
  *
- * THUMBNAILS: prerenderThumbnails(renderer, geos) renders the 12 collectible
- * archetypes ONCE into THUMB_SIZE_PX data-URL canvases via a throwaway scene
+ * THUMBNAILS: prerenderThumbnails(renderer, geos) renders the COLLECT_TOTAL
+ * (13) collectible archetypes ONCE into THUMB_SIZE_PX data-URL canvases via a throwaway scene
  * on the main renderer (boot-time allocation, exemptions ledger #5; the
  * render target + scratch canvas are disposed after). PRE-APPROVED LAZY
  * LEVER: if title-tap-to-play exceeds budget on low-end Android, move the
@@ -37,7 +40,7 @@
 import * as THREE from 'three';
 import { EVT, PAYLOADS } from '../core/events.js';
 import { LS_COLLECTION_KEY, COLLECT_TOTAL, THUMB_SIZE_PX } from '../config/tuning.js';
-import { ARCHETYPE_ID_BY_CODE } from '../world/objects.js';
+import { ARCHETYPE_ID_BY_CODE, collectibleCodeForId } from '../world/objects.js';
 import { getSharedObjectMaterial } from '../render/instances.js';
 // Namespace import: DISPLAY_NAME_BY_CODE (string[94], frozen) lands with
 // Stream C's catalog.js — the namespace access keeps this module loadable
@@ -52,8 +55,6 @@ const DISPLAY_NAME_BY_CODE = /** @type {string[]} */ (
   catalogModule.DISPLAY_NAME_BY_CODE !== undefined ? catalogModule.DISPLAY_NAME_BY_CODE : []
 );
 
-/** FROZEN mapping (DESIGN-V3.md Phase-0 appendix): collectible code = 70 + id. */
-const EXTRA_CODE_BASE = 70;
 /** Mask of the ids this build displays (bits 0..COLLECT_TOTAL-1). */
 const KNOWN_MASK = (1 << COLLECT_TOTAL) - 1;
 /** Hard id ceiling (boot assert in cityMap.js: ids unique and < 31). */
@@ -72,13 +73,36 @@ function popcount32(x) {
 }
 
 /**
- * Display name for a frozen collectible id (via the frozen code mapping).
+ * Display name for a frozen collectible id (via the frozen code mapping —
+ * v5: objects.js collectibleCodeForId, ids 0..11 -> codes 70..81, id 12+
+ * -> V5_CODE_BASE 110+; NEVER hand-roll 70 + id).
  * @param {number} id Frozen collectible id.
  * @returns {string} displayNameJa or '' until Stream C's table lands.
  */
 function nameForId(id) {
-  const name = DISPLAY_NAME_BY_CODE[EXTRA_CODE_BASE + id];
+  const name = DISPLAY_NAME_BY_CODE[collectibleCodeForId(id)];
   return typeof name === 'string' ? name : '';
+}
+
+/* Boot DEV-assert (v5): every displayed collectible id must resolve through
+   collectibleCodeForId to a real archetype with a display name — catches any
+   future reintroduction of the broken 70 + id hand-roll (code 82 = 西郷さん像)
+   and any id/total drift between tuning.js and the code tables. */
+if (import.meta.env && import.meta.env.DEV) {
+  for (let id = 0; id < COLLECT_TOTAL; id++) {
+    const code = collectibleCodeForId(id);
+    const archId = ARCHETYPE_ID_BY_CODE[code];
+    const nameJa = DISPLAY_NAME_BY_CODE[code];
+    if (typeof archId !== 'string' || archId.length === 0) {
+      throw new Error(`[collection.js invariant] collectible id ${id} -> code ${code} has no archetype`);
+    }
+    if (DISPLAY_NAME_BY_CODE.length > 0 && (typeof nameJa !== 'string' || nameJa.length === 0)) {
+      throw new Error(`[collection.js invariant] collectible id ${id} -> code ${code} has no display name`);
+    }
+    if (id <= 11 && code !== 70 + id) {
+      throw new Error(`[collection.js invariant] frozen v3 rule broken: id ${id} must map to code ${70 + id}`);
+    }
+  }
 }
 
 /**
@@ -288,7 +312,7 @@ export class Collection {
       gl.setClearColor(0x000000, 0); // transparent card background
 
       for (let id = 0; id < COLLECT_TOTAL; id++) {
-        const archId = ARCHETYPE_ID_BY_CODE[EXTRA_CODE_BASE + id];
+        const archId = ARCHETYPE_ID_BY_CODE[collectibleCodeForId(id)];
         const geo = archId !== undefined ? geos[archId] : undefined;
         if (geo === undefined || geo === null) continue; // pre-Stream-C / unknown id
         mesh.geometry = geo;

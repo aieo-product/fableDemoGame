@@ -114,6 +114,20 @@ const EXTRA_POOL_CLASS = Int8Array.from([
   3, 3, 3, // 90 橋スパン 91 東京タワー 92 shop shell
 ]);
 
+/** First v5 curated code (objects.js V5_CODE_BASE — codes 110..114 append
+ *  AFTER the frozen v4 table; `code - EXTRA_BASE` would index OUT of
+ *  EXTRA_POOL_CLASS for them, so _activate dispatches v5 codes through the
+ *  table below instead). Mirrors catalog.js EXTRA_SIZE_CLASS_BY_CODE. */
+const V5_BASE = 110;
+/** v5 code -> shared size-class pool index (frozen order = V5_ARCHETYPE_IDS):
+ *  0 collectible-small: 110 スタックチャン (collectible id 12);
+ *  1 landmark-mid: 111 ゲームセンター 112 家電量販店 113 メイドカフェ
+ *  114 PCパーツショップビル (6 Akihabara placements — landmark-mid cap 12). */
+const V5_POOL_CLASS = Int8Array.from([
+  0, // 110 stack_chan
+  1, 1, 1, 1, // 111..114 akiba buildings
+]);
+
 /** Release fade / y-drop window (s) — must match terrain.js RELEASE_FADE_S. */
 const RELEASE_FADE_S = 0.6;
 /** Ring-deactivation hysteresis multiplier. */
@@ -689,7 +703,7 @@ export class CuratedSpawner {
       pool = this._getChunkPool(code);
       kind = 4;
     } else {
-      kind = EXTRA_POOL_CLASS[code - EXTRA_BASE];
+      kind = code >= V5_BASE ? V5_POOL_CLASS[code - V5_BASE] : EXTRA_POOL_CLASS[code - EXTRA_BASE];
       pool = this._extraPools[kind];
     }
     // alloc(code): the shared EXTRA pools (render/extraPools.js BatchedMesh

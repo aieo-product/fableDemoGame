@@ -67,6 +67,12 @@
  * Draw calls: +1 ground batch (visible only when any tile is visible) +1
  * river mesh (when water exists) = the 2 ground entries in the honest 68/72
  * ledger. Over-cap lever 1 (merge river into the batch) stays available.
+ *
+ * v5 (謎の溝 fix): the ground batch fades in with TRUE radius — fully
+ * terrain-tinted below OSM_GROUND_FADE_R0, full vertex colors from
+ * OSM_GROUND_FADE_R1 (smoothstep between; constants module-local). Requires
+ * the integrator to late-wire setEnvironment(env) for the live tint; unwired
+ * the layer renders exactly as v4. See the constants block for the rationale.
  */
 
 import * as THREE from 'three';
@@ -122,6 +128,24 @@ const GROUND_LIFT_K = 2e-3;
 /** OSM water surface offset, game m — between parks (0.02) and minor roads
  *  (0.04): ponds/moats over park patches, roads bridge over rivers. */
 const WATER_Y_GAME_M = 0.03;
+
+/* ---- v5 謎の溝 fix: radius-driven ground-layer fade (module-local like
+ * GROUND_LIFT_K — NOT tuning.js). Root cause (confirmed by live run): at the
+ * 2 cm opening the 総武線 rail ribbon (warm brown 0x6b6157) and the dark-grey
+ * road ribbons read as giant flat bands abutting the shop/strip exclusion
+ * clip cuts — the "mystery groove" in the owner's phone screenshots. Fix:
+ * the ground-batch fragment color is mixed toward the LIVE terrain ground
+ * tint by (1 - smoothstep(FADE_R0, FADE_R1, trueRadius)) so ribbons/parks
+ * are invisible through the whole validated opening and fade in CONTINUOUSLY
+ * exactly as the band-3 OSM streetscape arrives (seamlessness law). trueRadius
+ * = ballRadiusSim * worldScale is invariant under the one-frame similarity
+ * rescale, so KeyR pixel-identity holds by construction. One uniform write +
+ * one Color copy per frame (zero alloc); draw calls unchanged; the river mesh
+ * is excluded (env-owned water material — rivers are far from the opening). */
+/** trueRadius (real m) below which the ground batch is fully terrain-tinted. */
+const OSM_GROUND_FADE_R0 = 0.6;
+/** trueRadius (real m) at which the ground batch shows full vertex colors. */
+const OSM_GROUND_FADE_R1 = 3.0;
 
 /* ---- road class table (converter ROAD_CLASS: motorway 0, trunk 1,
  * primary 2, secondary 3, tertiary 4, rail 5) ---- */
@@ -198,6 +222,21 @@ export class OsmGround {
     this._batch = null;
     /** @type {THREE.MeshBasicMaterial|null} Owned ground material. */
     this._groundMat = null;
+    /* ---- v5 radius-driven ground fade (see OSM_GROUND_FADE_R0/R1) ---- */
+    /** Live uniform: 0 = fully terrain-tinted, 1 = full vertex colors.
+     *  Held HERE (not on the shader object) so per-frame writes are valid
+     *  before/after compile. @type {{value: number}} */
+    this._uGroundFade = { value: 1 };
+    /** Live uniform: terrain ground tint (working space), copied per frame
+     *  from env.getGroundColorWorking while fading (palette-crossfade aware).
+     *  @type {{value: THREE.Color}} */
+    this._uGroundTint = { value: new THREE.Color(0x4a4a42) };
+    /** Late-wired Environment (integrator: osmGround.setEnvironment(env) —
+     *  the v4 constructor shape is frozen). null = fade disabled (v4 look).
+     *  @type {{getGroundColorWorking: (t: THREE.Color) => THREE.Color}|null} */
+    this._env = null;
+    /** @type {boolean} DEV: missing-env warning emitted once. */
+    this._warnedNoEnv = false;
     /** @type {THREE.Mesh|null} River/pond/moat mesh (1 draw, shared water material). */
     this._river = null;
     /** @type {DataView|null} Outer shard view (decode source for tile builds). */
@@ -275,6 +314,29 @@ export class OsmGround {
     if (n === 0) return;
 
     const ws = this._scaleMgr.worldScale;
+
+    /* v5 謎の溝 fix: radius-driven ground fade. trueRadius is rescale-
+     * invariant (radiusSim * worldScale), so this is pixel-identical across
+     * KeyR/auto rescale by construction. Zero alloc: one scalar uniform
+     * write + one in-place Color copy. */
+    if (this._groundMat !== null) {
+      if (this._env !== null) {
+        const trueR = ballRadiusSim * ws;
+        let t = (trueR - OSM_GROUND_FADE_R0) / (OSM_GROUND_FADE_R1 - OSM_GROUND_FADE_R0);
+        t = t < 0 ? 0 : t > 1 ? 1 : t;
+        const fade = t * t * (3 - 2 * t); // smoothstep
+        this._uGroundFade.value = fade;
+        if (fade < 1) this._env.getGroundColorWorking(this._uGroundTint.value);
+      } else {
+        this._uGroundFade.value = 1; // unwired: exact v4 look (no fade)
+        if (DEV && !this._warnedNoEnv) {
+          this._warnedNoEnv = true;
+          console.warn(
+            '[osmGround] setEnvironment(env) not wired — v5 ground fade (謎の溝 fix) inactive'
+          );
+        }
+      }
+    }
     const ballGX = (ballPos.x + this._shiftX) * ws;
     const ballGZ = (ballPos.z + this._shiftZ) * ws;
     const ringG = Math.max(fogFarSim * RING_PAD_K * ws, LOAD_RADIUS_MIN_M);
@@ -331,6 +393,20 @@ export class OsmGround {
     }
 
     if (this._batch !== null) this._batch.visible = this._visCount > 0;
+  }
+
+  /**
+   * v5 late-wire hook (integrator, main.js — the v4 constructor signature is
+   * frozen): inject the Environment so the radius-driven ground fade can read
+   * the LIVE terrain ground tint (palette-crossfade aware). Until wired the
+   * fade is inactive (exact v4 rendering).
+   * @param {{getGroundColorWorking: (t: THREE.Color) => THREE.Color}} env
+   */
+  setEnvironment(env) {
+    this._env = env && typeof env.getGroundColorWorking === 'function' ? env : null;
+    if (DEV && this._env === null) {
+      console.warn('[osmGround] setEnvironment: env.getGroundColorWorking(target) missing');
+    }
   }
 
   /**
@@ -512,6 +588,26 @@ export class OsmGround {
         polygonOffsetFactor: -1,
         polygonOffsetUnits: -1,
       });
+      /* v5 ground fade: inject the uGroundFade01/uGroundTint uniform pair.
+       * The uniform OBJECTS live on `this` (written per frame in update());
+       * onBeforeCompile only links them into the program. The default
+       * program-cache key includes onBeforeCompile.toString(), so this
+       * material never collides with other MeshBasicMaterial programs. */
+      const uFade = this._uGroundFade;
+      const uTint = this._uGroundTint;
+      this._groundMat.onBeforeCompile = (shader) => {
+        shader.uniforms.uGroundFade01 = uFade;
+        shader.uniforms.uGroundTint = uTint;
+        shader.fragmentShader = shader.fragmentShader
+          .replace(
+            '#include <common>',
+            '#include <common>\nuniform float uGroundFade01;\nuniform vec3 uGroundTint;'
+          )
+          .replace(
+            '#include <color_fragment>',
+            '#include <color_fragment>\n\tdiffuseColor.rgb = mix(uGroundTint, diffuseColor.rgb, uGroundFade01);'
+          );
+      };
       const batch = new THREE.BatchedMesh(instances, batchVerts, batchIdx, this._groundMat);
       batch.visible = false; // no tiles built yet — never cost an empty draw
       batch.frustumCulled = false;
