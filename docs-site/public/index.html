@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Fable Katamari — AIがつくった塊魂風ゲーム、制作の物語</title>
-<meta name="description" content="AI（Claude / Fable 5）がマルチエージェントワークフロー ultracode で設計から公開まで一気通貫でつくったブラウザゲーム「Fable Katamari」。v1→v2→v3 の進化の物語と仕組みを、エンジニアでなくても楽しめる形で紹介します。">
+<meta name="description" content="AI（Claude / Fable 5）がマルチエージェントワークフロー ultracode で設計から公開まで一気通貫でつくったブラウザゲーム「Fable Katamari」。v1→v5 の進化の物語と仕組みを、エンジニアでなくても楽しめる形で紹介します。">
 <meta property="og:title" content="Fable Katamari — 転がして、世界を呑み込め">
 <meta property="og:description" content="AIが設計から公開まで全部つくった塊魂風ブラウザゲーム、制作の全記録。">
 <meta property="og:type" content="website">
@@ -36,10 +36,10 @@
   <a class="cta" href="https://fable-katamari.pages.dev" target="_blank" rel="noopener">▶ いますぐ遊ぶ</a>
   <p class="cta-note">fable-katamari.pages.dev ／ PC・スマホ対応、インストール不要</p>
   <div class="stats">
-    <div class="stat"><b>3</b><small>バージョン<br>(v1→v2→v3)</small></div>
-    <div class="stat"><b>126体</b><small>動員したAI<br>エージェント</small></div>
-    <div class="stat"><b>1,366万</b><small>消費トークン<br>(約)</small></div>
-    <div class="stat"><b>12時間</b><small>総制作時間<br>(約)</small></div>
+    <div class="stat"><b>5</b><small>バージョン<br>(v1→v5)</small></div>
+    <div class="stat"><b>150体+</b><small>動員したAI<br>エージェント</small></div>
+    <div class="stat"><b>1,900万+</b><small>消費トークン<br>(約)</small></div>
+    <div class="stat"><b>19時間</b><small>総制作時間<br>(約)</small></div>
   </div>
 </header>
 
@@ -318,8 +318,8 @@
 
 <!-- ================= TIMELINE ================= -->
 <section id="timeline" class="reveal">
-  <h2>v1 → v2 → v3 進化の物語</h2>
-  <p>3つのバージョンは、毎回オーナーの新しい注文から始まりました。まずは全体図です。</p>
+  <h2>v1 → v2 → v3 → v4 → v5 進化の物語</h2>
+  <p>5つのバージョンは、毎回オーナーの新しい注文から始まりました。まずは全体図です。</p>
 
   <div class="table-scroll">
     <table>
@@ -328,6 +328,8 @@
         <tr><td><b>v1</b></td><td>技術の証明</td><td>「シームレスに成長する塊魂を、重くならないように」</td><td>500m到達</td><td>約2.5時間</td></tr>
         <tr><td><b>v2</b></td><td>演出とバズ</td><td>「ゴールは月に変更。クオリティアップ。バズ狙い」</td><td>月と融合</td><td>約3時間</td></tr>
         <tr><td><b>v3</b></td><td>作品化</td><td>「箱庭の東京。スマホ対応。アヒルの実況つき」</td><td>東京スカイツリー</td><td>約6.8時間</td></tr>
+        <tr><td><b>v4</b></td><td>リアル東京</td><td>「地図データで本物の街並みを。ボクセル風でいい」</td><td>実在の東京14,563棟</td><td>約5時間</td></tr>
+        <tr><td><b>v5</b></td><td>実プレイの声</td><td>「最初のステージが何にも見えない」+ 要望5点</td><td>地球が見える宇宙へ</td><td>約2時間</td></tr>
       </tbody>
     </table>
   </div>
@@ -567,13 +569,121 @@
       </details>
     </article>
 
+    <!-- ===== v4 ===== -->
+    <article class="tl-item reveal">
+      <div class="tl-badge">v4</div>
+      <h3>「本物の地図データで、リアル東京を」<span class="tl-theme">所要 約5時間</span></h3>
+      <div class="bubble">
+        <span class="who">オーナーの指示（要旨）</span>
+        <p><strong>GoogleMapのデータを使って街並みをゲームに反映</strong>してほしい。テクスチャは重いので、プリミティブな<strong>ボクセル風でいい</strong>。あわせてキャラクターデータの品質も上げること。</p>
+      </div>
+      <p>v3の東京は「それっぽく手作業で作った箱庭」でした。v4はそれを<strong>本物の地図データから生成した、実在の東京</strong>に置き換えます。ただし最初の関門は技術ではなく法律でした。Google Mapsの地図データは、利用規約で「加工して別のデータセットを作って配ること」が禁止されています。そこでAIチームが選んだのが <strong>OpenStreetMap（OSM）</strong>——世界中の有志が育てている「みんなでつくる地図」です。出典を表示するなどのルール（ODbLライセンス）を守れば、合法に使えます。</p>
+      <p>こうして秋葉原を中心とした実寸半径2.5kmのエリア（+渋谷・浅草）から、<strong>実在の建物14,563棟</strong>が実際の位置・実際の高さでボクセルのビルになり、全部巻き込めるようになりました。神田川も隅田川も皇居のお濠も上野公園も、本物の形のまま地面に描かれます。驚くべきはデータの軽さで、東京1区分の建物・道路・川・公園を全部詰めて<strong>たった285KB</strong>（圧縮後）——スマホ写真1枚の10分の1ほどです。建物を「位置・サイズ・向き・色」のわずか10〜12バイトの数値に圧縮する自前バイナリ形式を設計したからです。</p>
+
+      <h4>制作中の見どころエピソード</h4>
+      <ul>
+        <li><strong>批評AIが自分で地図APIに問い合わせた</strong>: 設計案には「対象エリアの建物は約4万棟」という見積もりが書かれていました。敵対的批評エージェントはこの数字を<strong>信用せず、自分でOpenStreetMapの集計APIにカウントクエリを投げて実測</strong>。結果は58,155棟——設計見積もりの約1.5倍で、データ容量からメモリ予算まで下流の計算が全部狂っていることを暴きました。改訂版は実測値を正とし、「数字は散文に書かず、ビルド時に毎回API実測と突き合わせて±20%を超えたら出荷を止める」検証ゲートまで組み込みました。</li>
+        <li><strong>3回の中断を挟んで完走</strong>: v4実装は大工程で、セッション切れ・利用上限到達で<strong>3回も止まりました</strong>（うち1回は約10時間の停止）。それでも各フェーズの成果がチェックポイントとして保存されているため、再開のたびに完了済みの作業はキャッシュから即時返却され、<strong>二重実行はゼロ</strong>。深夜に止まって翌日再開しても、何ひとつやり直しになりませんでした。</li>
+        <li><strong>道が狭すぎて遊べない問題</strong>: 実在の東京の路地は、1/5スケールにするとボールより狭い場所だらけ。そのままでは「本物だけど詰むマップ」になります。ビルド時に道路沿いの建物を自動で少し後退させる「クリアランス焼き込み」を行い、さらに<strong>ボールが実際に通れる範囲をシミュレーションして「95%以上の場所に到達可能」を出荷条件</strong>にしました。</li>
+      </ul>
+
+      <div class="shots">
+        <figure><img src="img/v4-marunouchi.png" alt="v4 丸の内 — 実在のビル群を転がる" loading="lazy" width="500" height="278"><figcaption>丸の内 — 東京駅周辺の実在ビル群</figcaption></figure>
+        <figure><img src="img/v4-ueno.png" alt="v4 上野 — 実データの街並み" loading="lazy" width="500" height="278"><figcaption>上野 — 不忍池も公園も本物の形</figcaption></figure>
+      </div>
+
+      <details class="acc">
+        <summary>OSMパイプライン — 地図データが285KBのゲームデータになるまで</summary>
+        <div class="acc-body">
+          <p>ビルド時の3段パイプライン（<code>scripts/osm/</code>）が、生の地図データを出荷バイナリへ変換します。</p>
+          <ol>
+            <li><strong>取得</strong>（<code>osm:fetch</code>）: Overpass API へ約115リクエスト（1km四方42セル、再開可能・レート制限対応）。取得した生データ7.3MB/124ファイルはリポジトリにコミットされます。</li>
+            <li><strong>変換</strong>（<code>osm:build</code>）: 重複除去 → 飛び地ポリゴンの輪っか組み立て → 座標投影（水平1:5・高さ1:2.5）→ 建物の外接矩形化 → <strong>ボクセル量子化</strong>（位置5cm・サイズ25cm刻み）→ 長屋の結合（14,546件）→ 道路クリアランス焼き込み → 帯域別間引き → 1棟10〜12バイトの自前バイナリ「FKT4」へ。決定論的で、再実行するとバイト単位で同一の出力になります。</li>
+            <li><strong>検証</strong>（<code>osm:verify</code>）: 容量予算・建物数のAPI実測±20%・重複ゼロ・到達可能性95%以上・ランドマーク間の実距離照合——全部に合格しないとデプロイできません（predeployゲート）。</li>
+          </ol>
+          <p>出荷データは建物14,563棟+道路12,980本+水面/公園1,478面で<strong>合計約285KB gz</strong>（ハード上限1,536KBの2割以下）。実行時は型付き配列に一発デコードし、1棟あたりのJSオブジェクトは作りません（ゼロアロケーション法の継続）。</p>
+        </div>
+      </details>
+
+      <details class="acc">
+        <summary>ODbLライセンス対応 — 「出典表示」だけでは足りない</summary>
+        <div class="acc-body">
+          <p>OpenStreetMapのライセンス（ODbL 1.0）は出典表示だけでなく、<strong>加工したデータベースを作ったらそれも公開する義務</strong>（derivative database条項）があります。v4ではこれをリリースゲート（全項目必須のチェックリスト）にしました。</p>
+          <ul>
+            <li>ゲーム内のタイトル画面とリザルト画面に「© OpenStreetMap contributors」のリンクを常時表示（スクリーンショットを撮っても必ず写る位置）</li>
+            <li>マニフェストにライセンスリンクと抽出日時（2026-06-11）を記録</li>
+            <li>公開リポジトリの <code>data/osm-raw/</code>（生データ）と <code>scripts/osm/</code>（再現可能な変換パイプライン）を、ODbL 4.4(b) の派生データベース提供として明示的に指定</li>
+          </ul>
+          <p>そもそもGoogle Mapsではなく OSM を選んだ理由がここにあります。Google Maps Platform の規約は地図データの派生データセット化・再配布を禁止しており、「地図から生成したゲームデータを静的サイトとして配る」こと自体ができません。<strong>データソースの選定は法務判断から</strong>——設計ログの冒頭に明記されています。</p>
+        </div>
+      </details>
+
+      <details class="acc">
+        <summary>BatchedMeshプール — 14,563棟を数回の描画命令で</summary>
+        <div class="acc-body">
+          <p>建物が1万棟を超えても、描画命令（ドローコール）の上限72回は据え置きです。v3でランドマーク用に導入した <code>BatchedMesh</code>（異種形状を1回の描画命令でまとめて描く仕組み）のアダプタを拡張し、OSM建物用に<strong>詳細プール2,048スロット+大型プール1,024スロットのわずか2バッチ</strong>を追加。16種のボクセル建物アーキタイプ（民家・雑居ビル・オフィスタワー・寺社…）がここに同居します。</p>
+          <p>面白いのは安全設計です。帯域ごとの生存上限の合計がプール容量を超えないことを<strong>起動時にアサート</strong>し（数学的に枯渇不可能）、さらに実行時には「ストア全体の生存数が予算に近づいたらOSM建物の出現を一時停止する」入場制限（admission control）を入れました。混雑時には遠景の建物から自然に間引かれる——「境界では OSM が先に薄くなる」が仕様として文書化されています。地面の道路・川・公園レイヤも頂点カラーの BatchedMesh 1枚+川メッシュ1枚で、増えたドローコールは合計でも数回。実測は最悪地点（丸の内・半径40m時）でも60/72でした。</p>
+        </div>
+      </details>
+    </article>
+
+    <!-- ===== v5 ===== -->
+    <article class="tl-item reveal">
+      <div class="tl-badge">v5</div>
+      <h3>スマホ実プレイから生まれた磨き込み<span class="tl-theme">所要 約2時間</span></h3>
+      <div class="bubble">
+        <span class="who">オーナーの指示（スマホで遊んだ感想）</span>
+        <p>「<strong>最初のステージが何にも見えない</strong>、カメラ位置おかしくない？」——そして追加要望：「謎の溝が見える」「最初どこへ行けばいいか誘導がほしい」「スタックチャンを出して」「秋葉原らしい建物がほしい」「開始地点は千石電商っぽく」「最後は<strong>地球が見える</strong>エンディングに」</p>
+      </div>
+      <p>v4公開後、オーナーが自分のスマホで遊んでみたら——<strong>開始直後の画面に何も見えない</strong>。AIチームの全自動検証はすり抜けたのに、人間が遊んだら一発で見つかるバグでした。調べてみると原因は笑ってしまうほど「リアル東京」ならではのもの。ゲームの開始地点（秋葉原の電子パーツ店）の真上を、<strong>実在のJR総武線の高架がちょうど通っていた</strong>のです。v4で取り込んだ本物の線路データが実座標に忠実に引かれた結果、2cmのボールから見れば線路のリボンが「天井」になり、空も街も覆い隠していました。建物は開始地点周辺から除外する仕組みがあったのに、道路・線路のリボンだけが素通りしていた——本物の地理データを使ったからこそ起きた、世界でいちばん律儀なバグです。</p>
+      <p>修正とあわせて、オーナーの要望を6体のエージェント・約100分で全部実装しました。</p>
+      <ul>
+        <li><strong>謎の溝の解消</strong>: 開始時に見えていた灰色の帯の正体も、実は本物の道路・線路レイヤでした。ボールが小さいうちは地面レイヤをフェードで消し、大きくなるにつれて街路が浮かび上がる「半径連続フェード」に。</li>
+        <li><strong>最初の誘導</strong>: 開始30秒間だけ、いちばん近いパーツの方向を🔩矢印で案内。1個でも巻き込んだら黙って退場します。</li>
+        <li><strong>スタックチャン</strong>: 手のひらサイズの実在コミュニケーションロボットが、13個目のコレクションとして棚の上に。</li>
+        <li><strong>アキバらしい建物</strong>: ゲームセンター・家電量販店・メイドカフェ・PCパーツビルの4種6棟を秋葉原エリアに追加。</li>
+        <li><strong>センゴク電子</strong>: 開始地点の店名を千石電商風に改名。検証してみると、現実の千石電商の位置はゲーム内の店からわずか36mで、<strong>改名するだけで地理的にほぼ正直</strong>と判明（アンカー座標は動かさずに済みました）。</li>
+        <li><strong>地球エンディング</strong>: スカイツリーに到達した後の昇天シーンで、空が宇宙の黒へ溶け、眼下に<strong>夜の地球</strong>——日本列島の街明かりと星空が広がるようになりました。ドナックの台詞も「うわぁ…地球が見えるよ…！東京の光、きれいだね」に。</li>
+      </ul>
+
+      <div class="shots shots-tall">
+        <figure><img src="img/v5-opening.png" alt="v5 開幕 — センゴク電子の棚の上、視界クリア" loading="lazy" width="369" height="800"><figcaption>修正後の開幕 — 視界クリア、🔩誘導つき</figcaption></figure>
+        <figure><img src="img/v5-akiba.png" alt="v5 秋葉原 — ゲームセンターやメイドカフェ" loading="lazy" width="369" height="800"><figcaption>アキバらしい建物が並ぶ電気街</figcaption></figure>
+        <figure><img src="img/v5-earth-ending.png" alt="v5 地球エンディング — 夜の地球と星空" loading="lazy" width="369" height="800"><figcaption>新エンディング — 夜の地球と星空</figcaption></figure>
+      </div>
+
+      <details class="acc">
+        <summary>半径連続フェードの仕組み — 「消す」のではなく「半径の関数にする」</summary>
+        <div class="acc-body">
+          <p>開幕不可視バグの原因は3つ重なっていました。(1) 地面レイヤの浮かせ量が霧距離の下限に引きずられ、開始時はボール半径の90%もの高さに浮いていた。(2) 道路の重なり順を解決するためのYオフセット（0.06ゲームm）が、2cmボールにとっては半径の3倍の壁だった。(3) 総武線高架のリボンがスポーン直上を通過していた。</p>
+          <p>v5の修正は、このサイトで何度も登場した<strong>シームレス法則</strong>そのままです。浮かせ量とオフセットは「ボール半径の10%」を上限にクランプし（半径の連続関数）、地面レイヤ全体には実寸半径0.6m→3.0mで滑らかに現れる<code>smoothstep</code>フェードをシェーダに注入。フェードの入力は <code>simRadius × worldScale</code>（実寸半径）なので、リスケールをまたいでも値が変わらず、<strong>強制リスケール前後のピクセル一致検証も1ulp（浮動小数点の最小刻み）以内</strong>で保たれました。閾値でパッと消すのではなく連続関数にする——v1から続く憲法が、v5のバグ修正でも効いています。</p>
+        </div>
+      </details>
+
+      <details class="acc">
+        <summary>リボン除外クリップ+検証ゲート — 同じバグを二度と起こさないために</summary>
+        <div class="acc-body">
+          <p>総武線リボン問題の本修正は、実行時の小細工ではなく<strong>データパイプライン側</strong>に入れました。建物にだけ適用されていた「ショップ・開始街路の除外矩形」を道路・鉄道リボンにも適用し、変換時に除外ゾーンと交差するリボンをクリップします。</p>
+          <p>そして v4 で作った検証スクリプト <code>osm:verify</code> に「<strong>除外ゾーン内にリボンの頂点が1つでもあれば出荷失敗</strong>」という再発ゲートを追加。デプロイ前に必ず走る自動チェックなので、今後データを再取得・再生成しても、開始地点に何かが覆いかぶさった状態では二度と本番に出られません。バグ修正を「直す」で終わらせず「再発を構造的に不可能にする」——v4の±20%カウントゲートと同じ思想です。</p>
+        </div>
+      </details>
+
+      <details class="acc">
+        <summary>コレクション13個目の互換性 — 昔のセーブデータを壊さない</summary>
+        <div class="acc-body">
+          <p>スタックチャンは13個目のコレクションですが、既存プレイヤーのブラウザには「12個中どれを見つけたか」を12ビットの整数で記録したセーブデータが残っています。v5ではコレクションIDを<strong>append-only（末尾追記のみ、再利用・並べ替え禁止）</strong>の契約どおりID 12として追加し、オブジェクトコード表も94種→110種→115種と末尾にだけ伸ばしました。古いセーブはそのまま「12/13発見済み」として読み込まれ、スタックチャンを取ると13ビット目だけが立ちます（未知の上位ビットも保存する前方互換つき）。</p>
+          <p>このとき敵対的チェックが、実装前に本物の地雷を見つけています。リザルト画面のコードに「ID+70」という<strong>古い式がハードコード</strong>されており、そのままならID 12のスタックチャンを取った瞬間、図鑑に<strong>西郷さん像</strong>が表示されるところでした。ID→コード変換を単一の関数に集約し、起動時に全IDを検証するアサートも追加。さらに統合検証では「13個目のセルが図鑑グリッド（4×3）からはみ出す」CSS問題と、リザルトの「コレクション 13/12」という表示バグも捕まえて修正しています。</p>
+        </div>
+      </details>
+    </article>
+
   </div>
 </section>
 
 <!-- ================= NUMBERS ================= -->
 <section id="numbers" class="reveal">
   <h2>数字で見る制作</h2>
-  <p>約1,366万トークンという数字は、おおざっぱに言えば<strong>文庫本100冊分を超える文章量の読み書き</strong>に相当します。126体のエージェントが、それだけの量の設計書・コード・レビュー・反証・検証レポートを約12時間で書き、読み、突き合わせた——その全記録が作業ログとして残っています。</p>
+  <p>約1,900万トークンという数字は、おおざっぱに言えば<strong>文庫本140冊分を超える文章量の読み書き</strong>に相当します。延べ150体を超えるエージェントが、それだけの量の設計書・コード・レビュー・反証・検証レポートを約19時間で書き、読み、突き合わせた——その全記録が作業ログとして残っています。</p>
 
   <h3>フェーズ別の実行統計</h3>
   <div class="table-scroll">
@@ -595,7 +705,14 @@
         <tr><td></td><td>レビュー（中断→再開を含む）</td><td class="num">29</td><td class="num">約356.3万</td><td class="num">約235分</td></tr>
         <tr><td></td><td>デプロイ+本番検証</td><td class="num">1</td><td class="num">—</td><td class="num">約10分</td></tr>
         <tr><td></td><td><b>v3 小計</b></td><td class="num"><b>40</b></td><td class="num"><b>約607万</b></td><td class="num"><b>約6.8時間</b></td></tr>
-        <tr><td></td><td><b>総計</b></td><td class="num"><b>126</b></td><td class="num"><b>約1,366万</b></td><td class="num"><b>約12時間超</b></td></tr>
+        <tr><td><b>v4</b></td><td>設計（設計→批評→改訂、批評がOverpass実測）</td><td class="num">3</td><td class="num">約40万</td><td class="num">約38分</td></tr>
+        <tr><td></td><td>実装（契約+パイプライン+3並列+統合、中断3回を再開）</td><td class="num">延べ18枠</td><td class="num">約312万</td><td class="num">約4時間</td></tr>
+        <tr><td></td><td>デプロイ+本番検証</td><td class="num">1</td><td class="num">—</td><td class="num">約10分</td></tr>
+        <tr><td></td><td><b>v4 小計</b></td><td class="num"><b>約22</b></td><td class="num"><b>約352万</b></td><td class="num"><b>約5時間</b></td></tr>
+        <tr><td><b>v5</b></td><td>開幕バグ修正+ポリッシュ（計画→敵対的チェック→3並列→統合検証）</td><td class="num">6</td><td class="num">約98万</td><td class="num">約100分</td></tr>
+        <tr><td></td><td><b>v5 小計</b></td><td class="num"><b>6</b></td><td class="num"><b>約98万</b></td><td class="num"><b>約2時間</b></td></tr>
+        <tr><td></td><td>付随作業（作業ログ・Issue・本サイトの生成）</td><td class="num">—</td><td class="num">約80万</td><td class="num">—</td></tr>
+        <tr><td></td><td><b>総計</b></td><td class="num"><b>150体+</b></td><td class="num"><b>約1,900万</b></td><td class="num"><b>約19時間</b></td></tr>
       </tbody>
     </table>
   </div>
@@ -633,18 +750,18 @@
   <h3>作品そのものの数字</h3>
   <div class="table-scroll">
     <table>
-      <thead><tr><th></th><th>v1</th><th>v2</th><th>v3</th></tr></thead>
+      <thead><tr><th></th><th>v1</th><th>v2</th><th>v3</th><th>v4</th><th>v5</th></tr></thead>
       <tbody>
-        <tr><td>ゴール</td><td>500m到達</td><td>月と融合</td><td>東京スカイツリー(634m)</td></tr>
-        <tr><td>オブジェクトの種類</td><td>48</td><td>60</td><td>94</td></tr>
-        <tr><td>手作業配置</td><td>0（全自動生成）</td><td>0</td><td>411箇所</td></tr>
-        <tr><td>バンドルサイズ(gzip)</td><td>154KB</td><td>173KB</td><td>205KB</td></tr>
-        <tr><td>描画命令の上限</td><td>55回</td><td>60回</td><td>72回</td></tr>
-        <tr><td>外部アセット</td><td>ゼロ</td><td>ゼロ</td><td>ドナックWebP 8枚(20KB)のみ</td></tr>
+        <tr><td>ゴール</td><td>500m到達</td><td>月と融合</td><td>東京スカイツリー(634m)</td><td>同左</td><td>同左+地球の見える宇宙へ</td></tr>
+        <tr><td>オブジェクトの種類</td><td>48</td><td>60</td><td>94</td><td>110</td><td>115</td></tr>
+        <tr><td>手作業配置</td><td>0（全自動生成）</td><td>0</td><td>411箇所</td><td>449箇所 + <strong>実在ビル14,563棟</strong></td><td>520箇所 + 実在ビル14,563棟</td></tr>
+        <tr><td>バンドルサイズ(gzip)</td><td>154KB</td><td>173KB</td><td>205KB</td><td>219KB + 東京データ285KB</td><td>224KB + 東京データ285KB</td></tr>
+        <tr><td>描画命令の上限</td><td>55回</td><td>60回</td><td>72回</td><td>72回（実測最悪60）</td><td>72回</td></tr>
+        <tr><td>外部アセット</td><td>ゼロ</td><td>ゼロ</td><td>ドナックWebP 8枚(20KB)のみ</td><td>+ OSM地図データ(ODbL)</td><td>同左</td></tr>
       </tbody>
     </table>
   </div>
-  <p>3Dモデル・効果音・BGM・背景は、v3のドナック画像を除きすべてコードから実行時に生成されています。</p>
+  <p>3Dモデル・効果音・BGM・背景は、v3のドナック画像とv4のOpenStreetMap由来データを除き、すべてコードから実行時に生成されています。</p>
 </section>
 
 <!-- ================= LINKS ================= -->

@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>設計書 — Fable Katamari 統合アーキテクチャ</title>
-<meta name="description" content="Fable Katamari の確定設計（DESIGN / DESIGN-V2 / DESIGN-V3）をエンジニア向けに統合した設計ドキュメント。スケールシステム、自作物理、レンダリング、ワールド生成、フィナーレ状態機械など。">
+<meta name="description" content="Fable Katamari の確定設計（DESIGN / DESIGN-V2 / DESIGN-V3 / DESIGN-V4）をエンジニア向けに統合した設計ドキュメント。スケールシステム、自作物理、レンダリング、ワールド生成、OSMリアル東京、フィナーレ状態機械など。">
 <link rel="stylesheet" href="style.css">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='13' fill='%23ff9d4d'/%3E%3Ccircle cx='11' cy='11' r='4' fill='%23ffe9a8'/%3E%3C/svg%3E">
 </head>
@@ -27,11 +27,11 @@
 <header class="hero" style="padding-bottom:0">
   <p class="kicker" style="margin:0 0 10px">DESIGN DOCUMENT</p>
   <h1 style="font-size:clamp(28px,6vw,44px)">設計書 — 統合アーキテクチャ</h1>
-  <p class="tagline">DESIGN / DESIGN-V2 / DESIGN-V3 をエンジニア向けに統合した一次資料</p>
+  <p class="tagline">DESIGN / DESIGN-V2 / DESIGN-V3 / DESIGN-V4 をエンジニア向けに統合した一次資料</p>
 </header>
 
 <div class="doc-meta reveal">
-  <p>本ページは v1（基盤）/ v2（月アップデート）/ v3（箱庭東京アップデート）の確定設計（<a href="https://github.com/aieo-product/fableDemoGame/blob/main/docs/DESIGN.md" target="_blank" rel="noopener">docs/DESIGN.md</a> / <a href="https://github.com/aieo-product/fableDemoGame/blob/main/docs/DESIGN-V2.md" target="_blank" rel="noopener">DESIGN-V2.md</a> / <a href="https://github.com/aieo-product/fableDemoGame/blob/main/docs/DESIGN-V3.md" target="_blank" rel="noopener">DESIGN-V3.md</a>）を統合したものです。各バージョンの設計は ultracode ワークフロー（3視点並列提案→審査統合 / 設計→敵対的批評→改訂）で確定しています。</p>
+  <p>本ページは v1（基盤）/ v2（月アップデート）/ v3（箱庭東京アップデート）/ v4（リアル東京 OSM）/ v5（ポリッシュ）の確定設計（<a href="https://github.com/aieo-product/fableDemoGame/blob/main/docs/DESIGN.md" target="_blank" rel="noopener">docs/DESIGN.md</a> / <a href="https://github.com/aieo-product/fableDemoGame/blob/main/docs/DESIGN-V2.md" target="_blank" rel="noopener">DESIGN-V2.md</a> / <a href="https://github.com/aieo-product/fableDemoGame/blob/main/docs/DESIGN-V3.md" target="_blank" rel="noopener">DESIGN-V3.md</a> / <a href="https://github.com/aieo-product/fableDemoGame/blob/main/docs/DESIGN-V4.md" target="_blank" rel="noopener">DESIGN-V4.md</a>）を統合したものです。各バージョンの設計は ultracode ワークフロー（3視点並列提案→審査統合 / 設計→敵対的批評→改訂）で確定しています。v5 は実プレイフィードバック起点のポリッシュで、計画→敵対的チェック→3並列実装で確定（13章・14章参照）。</p>
   <p><strong>技術スタック</strong>: Three.js r177（固定）+ Vite / 純粋静的サイト（Cloudflare Pages）/ ランタイムアセットほぼゼロ（ジオメトリ・テクスチャ・音声をすべてコード生成）/ 約30個の小さなESモジュール + JSDoc型 + 単一イベントバス。</p>
 </div>
 
@@ -46,7 +46,7 @@
         <tr><td><b>ゼロアロケーション</b></td><td>ホットパスでのフレーム毎のGCごみは0バイト（WebAudioのみ有界例外 ≦60ノード/秒）</td></tr>
         <tr><td><b>固定60Hz</b></td><td>アキュムレータ式固定タイムステップ、最大3サブステップ</td></tr>
         <tr><td><b>決定論スポーン</b></td><td>シード付きPRNGで同シード=同世界（チャンク内容はシードの純関数）</td></tr>
-        <tr><td><b>ドローコール台帳</b></td><td>上限をコメント付き台帳で管理（v1: 55 → v2: 60 → v3: 72）</td></tr>
+        <tr><td><b>ドローコール台帳</b></td><td>上限をコメント付き台帳で管理（v1: 55 → v2: 60 → v3: 72 → v4/v5: 72据え置き、v4台帳68）</td></tr>
       </tbody>
     </table>
   </div>
@@ -702,34 +702,115 @@ ballGroup.scale *= S                  // くっ付き済みオブジェクトは
   <h2>12. バージョン差分早見表</h2>
   <div class="table-scroll">
     <table>
-      <thead><tr><th>領域</th><th>v1（基盤）</th><th>v2（月アップデート）</th><th>v3（箱庭東京）</th></tr></thead>
+      <thead><tr><th>領域</th><th>v1（基盤）</th><th>v2（月アップデート）</th><th>v3（箱庭東京）</th><th>v4（リアル東京 OSM）</th><th>v5（ポリッシュ）</th></tr></thead>
       <tbody>
-        <tr><td><b>ワールド</b></td><td>無限平面・決定論チャンクのみ</td><td>同左 + 巻き込めないランドマーク12種（アーキタイプ8→10/ティア）</td><td><strong>有限3.6×3.8km東京</strong>・ゾーンマスク + CuratedSpawner（FLAG_CURATED・動的リバンディング）</td></tr>
-        <tr><td><b>スケール</b></td><td>6ティア 5cm→750m・500mでWINバナー</td><td>同ティア・420m月コール→500m降臨</td><td><strong>7ティア 2cm→</strong>・380mコール→420mアーム→<strong>スカイツリー634m接触</strong></td></tr>
-        <tr><td><b>ゴール</b></td><td>ScaleManager の WIN ラッチ</td><td><strong>フィナーレ状態機械</strong>（月降下→着地→接触→合体→昇天）</td><td>同機械を再テーマ（降下削除・固定ゴール・シルエット⇔メッシュハンドオフ・基部恒久コライダ）</td></tr>
-        <tr><td><b>成長</b></td><td><code>cbrt(R³+K·r³)</code> 一律</td><td>同左（K=10に調整）</td><td><strong>growthKForObjR テーパー</strong>（K=10→床2、ランドマーク/コレクティブル除外）+ 帯別密度</td></tr>
-        <tr><td><b>操作</b></td><td>WASD+タッチジョイスティック</td><td><strong>+ダッシュ</strong>（ゲージ式、Space/ボタン）</td><td>同左（ジョイスティック出現域・透明度を調整）</td></tr>
-        <tr><td><b>スコア</b></td><td>なし</td><td><strong>タイム/スコア/コンボ/レア/ランクS–D/X共有/自己ベスト</strong></td><td>ランク実測リチューン（S290）+ ランドマークボーナス + コレクション数</td></tr>
-        <tr><td><b>収集</b></td><td>なし</td><td>ランダムレア（金ティント、スコアのみ）</td><td><strong>コレクション図鑑12種</strong>（凍結ID・サムネイル・周回永続）+ ランダムレア併存</td></tr>
-        <tr><td><b>音</b></td><td>合成SEのみ</td><td><strong>+合成BGM</strong>（ボサポップ・ティアレイヤ解放・2クロックスケジューラ）+ ミュート</td><td>7ティア再キー + ランドマーク/コレクトSE</td></tr>
-        <tr><td><b>空・遠景</b></td><td>グラデーションドーム+フォグ</td><td><strong>太陽/月/星/雲のスカイシェーダ + 遠景シルエットリング + 夜フェード</strong></td><td>スカイツリーシルエットスロット + 東京湾の水面/岸壁 + 富士山遠景</td></tr>
-        <tr><td><b>UI</b></td><td>HUD+タイトル/WIN</td><td>タイマー/スコア/ゲージ/トースト/月矢印/リザルト段階表示</td><td><strong>モバイルファースト全面書き直し</strong>（バンドマトリクス・ダッシュリング・セーフエリア）+ 巻き込み名フロート + 図鑑グリッド</td></tr>
-        <tr><td><b>キャラ</b></td><td>なし</td><td>なし</td><td><strong>ドナック実況</strong>（webp8枚・44行・優先度+クールダウン）</td></tr>
-        <tr><td><b>描画上限</b></td><td>55（典型~38）</td><td>60（最悪56）</td><td>72（最悪64、<strong>BatchedMesh</strong> EXTRAプール+4を含む）</td></tr>
-        <tr><td><b>物理</b></td><td>自作400行・空間ハッシュ3面</td><td>不変</td><td>+ CityTerrain（ショップ壁/棚・スカイツリー基部・境界ソフト減速）</td></tr>
-        <tr><td><b>永続化</b></td><td>なし（?seed= URLのみ）</td><td>best / mute（v2キー）</td><td>best / mute / <strong>collection</strong> / donackOff（v3キー、図鑑はappend-only契約）</td></tr>
-        <tr><td><b>例外台帳</b></td><td>—</td><td>WebAudio有界アロケーション・月の fog:false・月メッシュ1280tris</td><td>+ ドナックwebp・スカイツリー fog:false~1400tris・ブートサムネイル描画・ショップ地形リリース</td></tr>
+        <tr><td><b>ワールド</b></td><td>無限平面・決定論チャンクのみ</td><td>同左 + 巻き込めないランドマーク12種（アーキタイプ8→10/ティア）</td><td><strong>有限3.6×3.8km東京</strong>・ゾーンマスク + CuratedSpawner（FLAG_CURATED・動的リバンディング）</td><td>カバレッジ内は<strong>OSM実建物14,563棟</strong>（OsmSpawner・FLAG_OSM=32・admission制御）+ 実道路/河川/公園の地表レイヤ</td><td>同v4 + アキバ建物6棟・除外矩形をリボンにも適用</td></tr>
+        <tr><td><b>スケール</b></td><td>6ティア 5cm→750m・500mでWINバナー</td><td>同ティア・420m月コール→500m降臨</td><td><strong>7ティア 2cm→</strong>・380mコール→420mアーム→<strong>スカイツリー634m接触</strong></td><td>同v3（座標は実地理 水平1:5/高さ1:2.5）</td><td>同v4</td></tr>
+        <tr><td><b>ゴール</b></td><td>ScaleManager の WIN ラッチ</td><td><strong>フィナーレ状態機械</strong>（月降下→着地→接触→合体→昇天）</td><td>同機械を再テーマ（降下削除・固定ゴール・シルエット⇔メッシュハンドオフ・基部恒久コライダ）</td><td>同v3</td><td>昇天が<strong>宇宙の地球エンディング</strong>へ（EarthView・GOAL_ASCEND_S 7.0）</td></tr>
+        <tr><td><b>成長</b></td><td><code>cbrt(R³+K·r³)</code> 一律</td><td>同左（K=10に調整）</td><td><strong>growthKForObjR テーパー</strong>（K=10→床2、ランドマーク/コレクティブル除外）+ 帯別密度</td><td>同v3 + OSM帯のKEEP_K間引き（データ側ペーシングレバー）</td><td>同v4</td></tr>
+        <tr><td><b>操作</b></td><td>WASD+タッチジョイスティック</td><td><strong>+ダッシュ</strong>（ゲージ式、Space/ボタン）</td><td>同左（ジョイスティック出現域・透明度を調整）</td><td>同v3</td><td>同v3 + 開幕オンボーディング🔩誘導</td></tr>
+        <tr><td><b>スコア</b></td><td>なし</td><td><strong>タイム/スコア/コンボ/レア/ランクS–D/X共有/自己ベスト</strong></td><td>ランク実測リチューン（S290）+ ランドマークボーナス + コレクション数</td><td>同v3（実測±15%内、再アンカーなし）</td><td>同v4</td></tr>
+        <tr><td><b>収集</b></td><td>なし</td><td>ランダムレア（金ティント、スコアのみ）</td><td><strong>コレクション図鑑12種</strong>（凍結ID・サムネイル・周回永続）+ ランダムレア併存</td><td>同v3</td><td><strong>13種</strong>（スタックチャン追記、append-only・旧セーブ互換）</td></tr>
+        <tr><td><b>音</b></td><td>合成SEのみ</td><td><strong>+合成BGM</strong>（ボサポップ・ティアレイヤ解放・2クロックスケジューラ）+ ミュート</td><td>7ティア再キー + ランドマーク/コレクトSE</td><td>同v3</td><td>同v3</td></tr>
+        <tr><td><b>空・遠景</b></td><td>グラデーションドーム+フォグ</td><td><strong>太陽/月/星/雲のスカイシェーダ + 遠景シルエットリング + 夜フェード</strong></td><td>スカイツリーシルエットスロット + 東京湾の水面/岸壁 + 富士山遠景</td><td>同v3 + OSM河川を共有水面マテリアルへ</td><td>+ 宇宙フェード（setSpaceFade01）・夜の地球・星シェル</td></tr>
+        <tr><td><b>UI</b></td><td>HUD+タイトル/WIN</td><td>タイマー/スコア/ゲージ/トースト/月矢印/リザルト段階表示</td><td><strong>モバイルファースト全面書き直し</strong>（バンドマトリクス・ダッシュリング・セーフエリア）+ 巻き込み名フロート + 図鑑グリッド</td><td>+ OSMクレジット（タイトル/リザルト）+ データ取得進捗行</td><td>+ 🔩パーツ矢印（kindフィールド）+ 13セル図鑑グリッド</td></tr>
+        <tr><td><b>キャラ</b></td><td>なし</td><td>なし</td><td><strong>ドナック実況</strong>（webp8枚・44行・優先度+クールダウン）</td><td>同v3</td><td>45行（スタックチャン+地球の台詞、'start'/'ascension'リテキスト）</td></tr>
+        <tr><td><b>描画上限</b></td><td>55（典型~38）</td><td>60（最悪56）</td><td>72（最悪64、<strong>BatchedMesh</strong> EXTRAプール+4を含む）</td><td>72（台帳68: +OSMプール2+地表1+河川1、実測60）</td><td>72（フィナーレ時のみ+2で最悪70）</td></tr>
+        <tr><td><b>物理</b></td><td>自作400行・空間ハッシュ3面</td><td>不変</td><td>+ CityTerrain（ショップ壁/棚・スカイツリー基部・境界ソフト減速）</td><td>同v3（OSM建物は静的球として既存経路に乗る）</td><td>同v4</td></tr>
+        <tr><td><b>永続化</b></td><td>なし（?seed= URLのみ）</td><td>best / mute（v2キー）</td><td>best / mute / <strong>collection</strong> / donackOff（v3キー、図鑑はappend-only契約）</td><td>同v3</td><td>collection 13ビット（0xFFF→0x1FFF、未知上位ビット保存）</td></tr>
+        <tr><td><b>例外台帳</b></td><td>—</td><td>WebAudio有界アロケーション・月の fog:false・月メッシュ1280tris</td><td>+ ドナックwebp・スカイツリー fog:false~1400tris・ブートサムネイル描画・ショップ地形リリース</td><td>+ 東京データ285KB(ODbL帰属必須)・unitBox軸整列法線制約</td><td>+ EarthView透明パス（depthTest:false・fog:false）</td></tr>
       </tbody>
     </table>
   </div>
   <p class="note">シード互換性: ストライドや密度・ドロー列が変わるため、<strong>v1/v2のシードURLは v3 では別の世界</strong>を生む。同一ビルド内では従来どおり同シード=同世界（レア・ランドマーク配置含む）。</p>
 </section>
 
+<!-- ============ 13. v4 osm ============ -->
+<section id="v4-osm" class="reveal">
+  <h2>13. v4 リアル東京（OSM）</h2>
+  <h4>何を / なぜ</h4>
+  <p>v3の手作業の箱庭を、<strong>OpenStreetMap由来の実在の東京</strong>で上書きするピュアデルタ。Google Maps Platform は規約上の派生データセット禁止により不採用とし、OSM（ODbL）を採用。全bindingな不変条件（リスケールのピクセル同一性・シームレスネス法・ゼロアロケーション・DRAW_CALL_CAP 72）は据え置きのまま、明示的に定義されたカバレッジ幾何（秋葉原アンカーの詳細ディスク r=500 game m + 渋谷・浅草パッチ矩形）の内側で、手続き生成の帯域3/4フィルを<strong>吸収可能な実建物 14,563棟</strong>（FLAG_OSM=32、コード94..109、16ボクセルアーキタイプ）に置き換える。設計は設計→敵対的批評→改訂の3段で確定し、批評エージェントは設計の数値を信用せず<strong>自らOverpassへカウントクエリを再実行</strong>して全予算を実測値（詳細エリア建物58,155棟=設計の1.5倍）から再導出させた。</p>
+
+  <h4>データパイプライン（ビルド時・<code>scripts/osm/</code>）</h4>
+  <div class="table-scroll">
+    <table>
+      <thead><tr><th>段</th><th>スクリプト</th><th>内容</th></tr></thead>
+      <tbody>
+        <tr><td><b>取得</b></td><td><code>fetch-osm.mjs</code></td><td>再開可能なOverpass GETプロトコル（UAヘッダ必須・/api/statusスロットポーリング・429はretry-afterでリトライ回数を消費しない・セルごとアトミック書き込み）。1km四方42セル・約115リクエスト。タグ削減済み生データ 7.3MB/124ファイルをコミット</td></tr>
+        <tr><td><b>変換</b></td><td><code>build-tokyo-bin.mjs</code></td><td>束縛された変換順: グローバル(type,id)重複除去（tower優先）→ マルチポリゴン外輪組み立て → 投影（水平1:5・高さ1:2.5）→ カバレッジ重心クリップ → 除外ゾーン → 凸包+回転キャリパOBB → 接尾辞安全な高さパース → <strong>ボクセル量子化</strong>（0.05/0.25m刻み）→ 長屋マージ（14,546件）→ <strong>クリアランス焼き込み</strong>（未出荷のresidential道路も使い、道路回廊へ食い込むOBBを最大30%インセット/ドロップ: 13,367インセット・14,319ドロップ）→ 帯域+KEEP_K間引き → 最終再クリップ → FKT4 v1シャード+マニフェスト。決定論的（再実行でバイト同一）</td></tr>
+        <tr><td><b>検証</b></td><td><code>verify-tokyo-data.mjs</code></td><td>predeployゲート: 容量予算 / EXPECTED_COUNTS（フェッチ時の<code>out count;</code>再実測）±20% / 重複・カバレッジ外・除外違反ゼロ / POLY u16証明 / 二重実行バイト同一 / ランドマーク実距離グラウンドトゥルース / <strong>ナビゲビリティ</strong>（0.5mラスタ・ボール半径侵食フラッドフィル、連結率≧95%ゲート: r=1で100.0%、r=3で96.7% PASS）</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>出荷データ: 建物14,563棟（帯域ヒストグラム [—,—,102→288,13020,1437,4]）+ 道路12,980レコード/387タイル + 水面・公園ポリゴン1,478レコード/353タイル = <strong>core 105KB + outer 181KB ≈ 285KB gz</strong>（ハードキャップ1,536KBの2割以下）。建物レコードは詳細10B/タワー12Bの自前リトルエンディアンバイナリで、実行時は型付き配列へ一発デコード（レコード単位のJSオブジェクトなし=ゼロアロケーション法の継続）。</p>
+
+  <h4>ランタイム統合</h4>
+  <ul>
+    <li><strong>OsmWorld</strong>（<code>world/osmWorld.js</code>）: 2シャード並列fetch+ストリーミング進捗表示 → ワンパスデコード → タイルインデックス（帯域ソート済みレコード+bandStart）。<strong>デッドラインラッチ</strong>: ティア2到達時に未readyなら <code>abortAndFail()</code>（AbortControllerで取得中断・恒久failed・遅延データ破棄）で手続き生成へワンウェイフォールバック — 「空の街並みウィンドウ」と「二重フィル」を両方排除（<code>?osmdelay=ms</code> でレース再現可能）。</li>
+    <li><strong>OsmSpawner</strong>（<code>world/osmSpawner.js</code>）: curatedのオリジン/スケールパターン逐語再利用。フレームあたり≦64スロット操作、最近傍タイル優先の帯域別アクティベーション、帯域別生存上限 <code>OSM_ALIVE_CAP {b2:192, b3:1536, b4:768, b5:128}</code>。<strong>ハード入場制御</strong>: <code>store.aliveCount() &gt; ALIVE_TOTAL_BUDGET(4096) − 128</code> の間はアクティベーション全停止 — カバレッジ境界またぎの最悪ケースを静的算術でなく実行時で抑止（「境界ではOSMが先に薄くなる」は文書化された仕様）。境界に300フレーム駐車して alive&lt;4096 を確認する束縛テスト付き。</li>
+    <li><strong>BatchedMeshプール</strong>（<code>render/osmPools.js</code>）: 詳細2,048+大型1,024の2バッチ。プール所属は帯域で固定し、<code>Σ OSM_ALIVE_CAP[member] ≦ 容量</code>（1728≦2048 / 896≦1024）をブートアサート — スロット枯渇を確率でなく構造で不可能化。unitBoxジオメトリは<strong>軸整列法線</strong>制約をブートアサート（BatchedMeshは逆転置を適用しないため非一様スケールで法線が壊れる斜め面を禁止）。</li>
+    <li><strong>地表レイヤ</strong>（<code>render/osmGround.js</code>）: 道路/鉄道/公園=頂点カラーBatchedMesh 1枚 + 河川=env共有水面マテリアル1枚（計+2ドロー、台帳は正直に68/72）。コプレーナZファイトはconvert焼き込みのYレイヤオフセット（公園+0.02/細街路+0.04/幹線+0.06 game m、相似変換でスケールしリスケール同一性を保持）で解決。≦2タイルビルド/フレーム、フォグ距離連動のリング常駐、細街路LOD。</li>
+    <li><strong>モデル品質パス</strong>: ヒーロー12種の三角形上限350→600、頂点AOベイク、共有マテリアルへの onBeforeCompile リムライト注入（fog前に注入しシームレスネス法に適合）——いずれも独立キルスイッチ付き3コミットに分離し、A/Bスクリーンショットシートでオーナー承認をマップレビューから分離。</li>
+  </ul>
+
+  <h4>地理マッピング</h4>
+  <ul>
+    <li><strong>単一の地理的真実</strong>: <code>scripts/osm/geo.mjs</code> がアンカー（秋葉原 35.69870, 139.76930）・投影・カバレッジ幾何・除外ゾーンのすべてを所有。<code>cityMap.js</code> のカバレッジ矩形はビット同一の式で計算し、貼り付けた倍精度クロスチェック定数と<strong>完全一致をアサート</strong>（Node専用のgeo.mjsをブラウザへimportせずに単一ソースを保証）。</li>
+    <li><strong>縮尺</strong>: 水平1:5・高さ1:2.5。v3のMAP_BOUNDS・ランドマークはしご・吸収65%則はすべて据え置き。</li>
+    <li><strong>ランドマーク照合（手算術の禁止）</strong>: 批評がレインボーブリッジの手打ち表に2.6倍の誤りを発見 → 全ランドマークをOSM要素IDで一度だけ解決してコミットし、ドキュメント表は生成出力、バリデータがランドマーク間の<strong>実距離</strong>をグラウンドトゥルースと照合（橋はrelation 18497742の主塔2本から実測840m→167.9 game m）。v3の地区ゾーン・クラスタは「照合済みランドマーク − v3手置きランドマーク」の差分ベクトルで一括平行移動し、ショップ・開始街路・出口導線は<strong>バイト同一</strong>のまま（開幕1分の無回帰ゲート）。</li>
+  </ul>
+
+  <h4>ODbLコンプライアンス（リリースゲート・全項目必須）</h4>
+  <ul>
+    <li>ゲーム内帰属: タイトル・リザルト両画面に「© OpenStreetMap contributors」→ openstreetmap.org/copyright リンク（リザルトの段階リビールの外に置き、スクリーンショット構図に必ず入る）</li>
+    <li>マニフェストにライセンスリンク+抽出日時（extractionDate 2026-06-11）を記録、READMEにODbL節</li>
+    <li><strong>派生データベース提供義務（ODbL 4.4(b)）</strong>: 公開リポジトリの <code>data/osm-raw/</code>（タグ削減済み生レスポンス）+ <code>scripts/osm/</code>(再現可能パイプライン) を明示的に指定</li>
+    <li><code>npm run osm:verify</code> がODbLフィールドの存在を含めてpredeployで強制</li>
+  </ul>
+  <p class="note">関連: <code>scripts/osm/geo.mjs</code> <code>fetch-osm.mjs</code> <code>build-tokyo-bin.mjs</code> <code>verify-tokyo-data.mjs</code> / <code>src/world/osmWorld.js</code> <code>osmSpawner.js</code> / <code>src/render/osmPools.js</code> <code>osmGround.js</code> / <code>docs/DESIGN-V4.md</code></p>
+</section>
+
+<!-- ============ 14. v5 polish ============ -->
+<section id="v5-polish" class="reveal">
+  <h2>14. v5 ポリッシュ</h2>
+  <h4>何を / なぜ</h4>
+  <p>オーナーのスマホ実プレイ起点のフィードバック対応。①開幕不可視バグ（v4の地表レイヤが2cmボールを覆っていた——浮かせ量がフォグ下限で半径の90%、道路Yオフセットが半径の3倍、そして<strong>実在のJR総武線高架リボンがスポーン直上を通過</strong>。除外ゾーンが建物のみ適用でリボン素通し）のホットフィックス、②要望5点（誘導・スタックチャン・アキバ建物・センゴク電子・地球エンディング）の実装。6エージェント・約97.7万トークン・約100分、計画フェーズの敵対的チェックが実装前に4件のショーストッパーを検出した。</p>
+
+  <h4>オンボーディングシステム（<code>game/onboarding.js</code> 新規）</h4>
+  <ul>
+    <li>フィナーレの🗼矢印機構を再利用: 10Hzで <code>EVT.GOAL_GUIDE</code> を emit し、ペイロードに動的 <code>kind</code> フィールド（誘導中='parts' → HUDが矢印グリフを🔩へ差し替え、引退時の最終emitで'goal'へ復元 — finaleはkindを書かないため共有ペイロードがその後も正しく読める）。</li>
+    <li>実メートルでauthoredされたウェイポイント列（棚→ゲート→側溝）をライブworldScaleで変換して案内。<strong>初回吸収 or 30秒経過 or フィナーレ非idle</strong>で恒久引退、REBASEで即時無効化（座標変換の妥当性が壊れるため）。GAME_STARTで再アーム。</li>
+    <li>あわせて開幕密度を補強: 開始点を囲む5列×8個のT0パーツリング+出口レーン3列（v5専用の独立rngストリーム mulberry32(0x56355041) で生成、<strong>v4の449配置はバイト同一を証明</strong>）。</li>
+  </ul>
+
+  <h4>地表レイヤの半径連続フェード</h4>
+  <ul>
+    <li>地表BatchedMeshのマテリアルへ onBeforeCompile でユニフォーム対 <code>uGroundFade01/uGroundTint</code> を注入し、<code>diffuseColor.rgb = mix(uGroundTint, diffuseColor.rgb, uGroundFade01)</code>。フェード = <code>smoothstep(0.6, 3.0)</code> on <strong>trueRadius = radiusSim × worldScale</strong> — 実寸半径の関数なのでリスケール不変（KeyRピクセル一致は1ulpで成立、実測差1.7e-16）。地色はenvの生きたパレット（クロスフェード追従）から取得。</li>
+    <li>浮かせ量/Yオフセットは<strong>ボール半径10%上限のクランプ</strong>（半径連続）。フェード定数はモジュールローカル（tuning.js非搭載、GROUND_LIFT_K前例に従う）。</li>
+    <li>パイプライン側の本修正: 道路/鉄道リボンをショップ・開始街路の除外矩形からクリップし、<code>osm:verify</code> に再発ゲート（除外ゾーン内リボン頂点=出荷失敗）を追加。</li>
+  </ul>
+
+  <h4>コレクション拡張（append-onlyの実践）</h4>
+  <ul>
+    <li>コード表 <strong>110→115</strong>: <code>V5_CODE_BASE=110</code>（スタックチャン110 / ゲーセン111 / 家電量販112 / メイドカフェ113 / PCパーツビル114）。ID→コード変換は <code>objects.js collectibleCodeForId(id)</code>（id≦11→70+id、id 12+→110+）に<strong>単一集約</strong> — 敵対的チェックが screens.js:465 の <code>70+id</code> ハードコード（id 12が西郷さん像として表示される）を実装前に検出した。</li>
+    <li><code>COLLECT_TOTAL=13</code>。localStorageマスクは 0xFFF→0x1FFF のOR追記、旧12bitセーブは12/13として読み込み、未知上位ビット保存（11章の前方互換契約どおり）。図鑑グリッドは <code>.collect-cell:nth-child(13)</code> で13セル目を中央寄せ（両ブレークポイント対応）。</li>
+    <li>統合検証がさらに2件捕捉: <code>curated.js</code> のプールクラス表がv5コードで範囲外読み（<strong>不可視だが衝突する</strong>配置になるショーストッパー）と、アキバ建物の colorHex −1 がグレーパレットへフォールバックしてレインボー看板が灰色に洗われる問題。</li>
+  </ul>
+
+  <h4>宇宙-地球エンディング（<code>render/earthView.js</code> 新規）</h4>
+  <ul>
+    <li>プロシージャル夜の地球（単位球48×32・2,976tris、シード付き値ノイズ大陸、海岸バイアス+日本弧ブーストの都市光頂点）+ 星シェル700点。共有uTime 1個で頂点属性のきらめきを駆動（フレームあたりユニフォーム書き込み1+スカラー2、アロケーションゼロ）。</li>
+    <li><strong>レンダリングの要点 — 透明パスのペイント順トリック</strong>: 両メッシュとも <code>transparent / depthTest:false / depthWrite:false / fog:false</code> で、不透明ワールド全体の<strong>後</strong>に renderOrder（blobShadow 1 &lt; 星 4 &lt; 地球 5 &lt; スパークル 10）どおりペイントされる。不透明な地面・建物のデプスに遮蔽されないため「完全にフォグに沈んだ夜のジオラマの下に地球が見える」が、<strong>ワールドメッシュに一切触れずに</strong>成立する（フィナーレ専用+2ドロー、最悪台帳70/72）。</li>
+    <li>env側は <code>setSpaceFade01(k)</code> で天頂を宇宙の黒へ（仰角加重——夜フォグの地平線帯が大気のリムとして読める）。finaleのascensionが進行度で持ち上げ（カメラ距離係数14→30）、寸法はすべて凍結ボール半径rの無次元倍数（地球半径45r・星シェル160r）。<code>GOAL_ASCEND_S</code> 5.0→7.0。</li>
+  </ul>
+  <p class="note">関連: <code>src/game/onboarding.js</code> <code>src/render/earthView.js</code> <code>src/render/osmGround.js</code> <code>src/game/finale.js</code> <code>src/world/objects.js</code> <code>src/config/cityMap.js</code> / 一次記録: <a href="https://github.com/aieo-product/fableDemoGame/blob/main/docs/worklog/14-v5-polish.md" target="_blank" rel="noopener">docs/worklog/14-v5-polish.md</a></p>
+</section>
+
 <!-- ============ refs ============ -->
 <section class="reveal">
   <h2>参考資料</h2>
   <ul>
-    <li>確定設計書: <a href="https://github.com/aieo-product/fableDemoGame/blob/main/docs/DESIGN.md" target="_blank" rel="noopener">docs/DESIGN.md</a> / <a href="https://github.com/aieo-product/fableDemoGame/blob/main/docs/DESIGN-V2.md" target="_blank" rel="noopener">DESIGN-V2.md</a> / <a href="https://github.com/aieo-product/fableDemoGame/blob/main/docs/DESIGN-V3.md" target="_blank" rel="noopener">DESIGN-V3.md</a></li>
+    <li>確定設計書: <a href="https://github.com/aieo-product/fableDemoGame/blob/main/docs/DESIGN.md" target="_blank" rel="noopener">docs/DESIGN.md</a> / <a href="https://github.com/aieo-product/fableDemoGame/blob/main/docs/DESIGN-V2.md" target="_blank" rel="noopener">DESIGN-V2.md</a> / <a href="https://github.com/aieo-product/fableDemoGame/blob/main/docs/DESIGN-V3.md" target="_blank" rel="noopener">DESIGN-V3.md</a> / <a href="https://github.com/aieo-product/fableDemoGame/blob/main/docs/DESIGN-V4.md" target="_blank" rel="noopener">DESIGN-V4.md</a></li>
     <li>全作業ログ（各フェーズの意思決定・レビュー結果）: <a href="https://github.com/aieo-product/fableDemoGame/tree/main/docs/worklog" target="_blank" rel="noopener">docs/worklog/</a></li>
     <li>制作の物語（非エンジニア向け）: <a href="index.html">ストーリーページ</a></li>
     <li>プレイ: <a href="https://fable-katamari.pages.dev" target="_blank" rel="noopener">fable-katamari.pages.dev</a></li>
