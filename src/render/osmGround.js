@@ -179,6 +179,15 @@ export class OsmGround {
      *  group lift; rescale-covariant (scaled by S in _onRescale so the
      *  between-updates transform stays exact). */
     this._lastFogFarSim = 0;
+    /** Last ball radius (sim units) from update() — caps the group lift AND
+     *  squashes the baked y-offsets so the ground layer can never rise
+     *  above a small ball (at the 2 cm start the FOG_FAR_MIN_M floor makes
+     *  fogFarSim*GROUND_LIFT_K ≈ 0.9r and the baked 0.06 game-m road
+     *  offset ≈ 3r — together an opaque ceiling over the whole shop).
+     *  Both clamps are CONTINUOUS in radius (seamlessness law); at r ≥
+     *  ~0.6 game m they are inactive and v4 behavior is unchanged.
+     *  Rescale-covariant (scaled by S in _onRescale). */
+    this._lastBallRadiusSim = 0;
 
     /** @type {boolean} Ground index built (one-shot after osmWorld.ready). */
     this._indexed = false;
@@ -216,6 +225,7 @@ export class OsmGround {
       this._shiftX *= p.S;
       this._shiftZ *= p.S;
       this._lastFogFarSim *= p.S; // fog far is a sim length — rescale-covariant
+      this._lastBallRadiusSim *= p.S; // ball radius likewise
       this._applyTransform();
     };
     bus.on(EVT.RESCALE, this._onRescale);
@@ -243,9 +253,10 @@ export class OsmGround {
    * @param {THREE.Vector3} ballPos Ball position, SIM units.
    * @param {number} fogFarSim Floored fog far, SIM units (env.fogFarSim).
    */
-  update(dt, ballPos, fogFarSim) {
+  update(dt, ballPos, fogFarSim, ballRadiusSim = 0) {
     void dt;
     this._lastFogFarSim = fogFarSim;
+    this._lastBallRadiusSim = ballRadiusSim;
     this._applyTransform();
 
     if (!this._indexed) {
@@ -354,13 +365,26 @@ export class OsmGround {
   /* Internals                                                            */
   /* ------------------------------------------------------------------ */
 
-  /** group transform = PURE FUNCTION of (worldScale, shift, fogFarSim) —
-   *  all rescale-covariant inputs (the rescale law). The y term is the
-   *  depth-safe lift above the env ground plane (GROUND_LIFT_K). */
+  /** group transform = PURE FUNCTION of (worldScale, shift, fogFarSim,
+   *  ballRadiusSim) — all rescale-covariant inputs (the rescale law).
+   *  The y position is the depth-safe lift above the env ground plane,
+   *  capped at 10% of the ball radius; the y SCALE squashes the baked
+   *  game-meter offsets so the tallest layer (OSM_GROUND_Y_MAJOR) never
+   *  exceeds 10% of the ball radius. Both caps are continuous in radius
+   *  and inactive at r >= ~0.6 game m (ground is flat, normals point up —
+   *  non-uniform y scale is safe). */
   _applyTransform() {
-    const inv = 1 / this._scaleMgr.worldScale;
-    this.group.scale.setScalar(inv);
-    this.group.position.set(-this._shiftX, this._lastFogFarSim * GROUND_LIFT_K, -this._shiftZ);
+    const ws = this._scaleMgr.worldScale;
+    const inv = 1 / ws;
+    const r = this._lastBallRadiusSim;
+    const lift =
+      r > 0
+        ? Math.min(this._lastFogFarSim * GROUND_LIFT_K, r * 0.1)
+        : this._lastFogFarSim * GROUND_LIFT_K;
+    const yMaxSim = OSM_GROUND_Y_MAJOR * inv; // tallest baked offset, sim
+    const ySquash = r > 0 && yMaxSim > 0 ? Math.min(1, (r * 0.1) / yMaxSim) : 1;
+    this.group.scale.set(inv, inv * ySquash, inv);
+    this.group.position.set(-this._shiftX, lift, -this._shiftZ);
   }
 
   /**

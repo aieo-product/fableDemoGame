@@ -159,6 +159,89 @@ function obbCorners(o) {
   }
   return out;
 }
+/**
+ * Liang-Barsky: parametric interval [t0,t1] of segment a->b INSIDE an
+ * axis-aligned rect, or null when disjoint (clamped to [0,1]).
+ */
+function segRectInsideInterval(a, b, rect) {
+  const dx = b.x - a.x;
+  const dz = b.z - a.z;
+  let t0 = 0;
+  let t1 = 1;
+  if (Math.abs(dx) < 1e-12) {
+    if (a.x < rect.x0 || a.x > rect.x1) return null;
+  } else {
+    let ta = (rect.x0 - a.x) / dx;
+    let tb = (rect.x1 - a.x) / dx;
+    if (ta > tb) { const tmp = ta; ta = tb; tb = tmp; }
+    t0 = Math.max(t0, ta);
+    t1 = Math.min(t1, tb);
+  }
+  if (Math.abs(dz) < 1e-12) {
+    if (a.z < rect.z0 || a.z > rect.z1) return null;
+  } else {
+    let ta = (rect.z0 - a.z) / dz;
+    let tb = (rect.z1 - a.z) / dz;
+    if (ta > tb) { const tmp = ta; ta = tb; tb = tmp; }
+    t0 = Math.max(t0, ta);
+    t1 = Math.min(t1, tb);
+  }
+  if (t0 > t1 || t1 <= 0 || t0 >= 1) return null;
+  return [Math.max(0, t0), Math.min(1, t1)];
+}
+
+/**
+ * Clip a road/rail polyline so its rendered RIBBON (half-width halfW,
+ * square caps extending halfW past segment ends) never intrudes into any
+ * rect exclusion. Rects are inflated by halfW for the width; kept portions
+ * are additionally pulled back by halfW along the segment for the caps.
+ * Returns an array of >=2-point sub-polylines (possibly empty).
+ *
+ * WHY (v4 hotfix): exclusions were applied to building OBBs only — the
+ * 総武線 rail viaduct ribbons pass directly over the shop ball-start and
+ * painted the whole 2 cm opening view brown (issue: invisible first stage).
+ */
+function clipPolylineOutsideRects(pts, halfW, rects) {
+  let pieces = [pts];
+  for (const rect of rects) {
+    const inf = { x0: rect.x0 - halfW, x1: rect.x1 + halfW, z0: rect.z0 - halfW, z1: rect.z1 + halfW };
+    const next = [];
+    for (const piece of pieces) {
+      let cur = [];
+      const flush = () => {
+        if (cur.length >= 2) next.push(cur);
+        cur = [];
+      };
+      for (let i = 1; i < piece.length; i++) {
+        const a = piece[i - 1];
+        const b = piece[i];
+        const iv = segRectInsideInterval(a, b, inf);
+        if (iv === null) {
+          if (cur.length === 0) cur.push(a);
+          cur.push(b);
+          continue;
+        }
+        const len = Math.hypot(b.x - a.x, b.z - a.z);
+        const pad = len > 1e-9 ? halfW / len : 1;
+        const tHead = iv[0] - pad;
+        const tTail = iv[1] + pad;
+        if (tHead > 0) {
+          if (cur.length === 0) cur.push(a);
+          cur.push({ x: a.x + (b.x - a.x) * tHead, z: a.z + (b.z - a.z) * tHead });
+        }
+        flush();
+        if (tTail < 1) {
+          cur.push({ x: a.x + (b.x - a.x) * tTail, z: a.z + (b.z - a.z) * tTail });
+          cur.push(b);
+        }
+      }
+      flush();
+    }
+    pieces = next;
+  }
+  return pieces;
+}
+
 /** Does OBB intersect exclusion shape (rect or circle)? Conservative exact-ish. */
 function obbIntersectsExclusion(o, ex) {
   const corners = obbCorners(o);
@@ -473,6 +556,11 @@ function main() {
   const KEY_BY_LM_ID = { 3: 'radio_kaikan', 4: 'shibuya109', 7: 'tokyo_station', 8: 'diet', 6: 'dome', 2: 'kaminarimon' };
   for (const ld of LANDMARKS) { const k = KEY_BY_LM_ID[ld.landmarkId]; if (k) dioramaRByKey[k] = ld.dioramaR; }
   const exclusions = buildExclusions({ rec, dioramaRByKey, shopRect: SHOP.interior });
+  /* Ground-occluding RECT exclusions also clip road/rail ribbons (step 11a)
+   * — the shop interior and the curated 中央通り strip must keep a clean
+   * floor. Landmark CIRCLES stay road-permissive on purpose: real streets
+   * passing 雷門/東京駅 etc. look right and never occlude the opening. */
+  const roadExclusionRects = exclusions.filter((e) => e.kind === 'rect');
 
   let totalArea = 0, decompArea = 0;
   const survivors = [];
@@ -870,8 +958,15 @@ function main() {
   for (const r of shippedRoads) {
     const mid = r.pts[Math.floor(r.pts.length / 2)];
     const eps = inCoverage(mid.x, mid.z) ? DP_EPS_IN : DP_EPS_OUT;
-    let pts = dpSimplify(r.pts, eps);
-    if (pts.length < 2) continue;
+    const simplified = dpSimplify(r.pts, eps);
+    if (simplified.length < 2) continue;
+    // v4 hotfix: clip the rendered ribbon out of the ground-occluding
+    // exclusion rects (shop interior / curated strip) BEFORE tiling.
+    // +0.25 game m safety: the bin quantizes verts to 0.1 m tile-local, so a
+    // kept endpoint exactly on the inflated boundary can round back inside.
+    const clipHalfW = (ROAD_WIDTH_REAL[r.cls] * OSM_HORIZ_K) / 2 + 0.25;
+    const pieces = clipPolylineOutsideRects(simplified, clipHalfW, roadExclusionRects);
+    for (const pts of pieces) {
     // split at ground-tile boundaries
     const sections = [];
     let cur = [pts[0]];
@@ -912,6 +1007,7 @@ function main() {
       }
       if (sec.length >= 2) roadPush(sec);
     }
+    } // end pieces loop (exclusion-clipped sub-polylines)
     function roadPush(secPts) {
       const midp = { x: (secPts[0].x + secPts[secPts.length - 1].x) / 2, z: (secPts[0].z + secPts[secPts.length - 1].z) / 2 };
       const tx = Math.floor(midp.x / GROUND_TILE), tz = Math.floor(midp.z / GROUND_TILE);

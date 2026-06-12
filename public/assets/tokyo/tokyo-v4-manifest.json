@@ -2,7 +2,7 @@
   "version": 1,
   "shardGzBytes": {
     "core": 106108,
-    "outer": 185663
+    "outer": 185279
   },
   "perBandCounts": {
     "band2": 288,
@@ -46,7 +46,7 @@
     "towerTiles": 71,
     "roadTiles": 387,
     "polyTiles": 353,
-    "roadRecords": 12980,
+    "roadRecords": 12929,
     "polyRecords": 1478,
     "maxDetailPerTile": 317,
     "maxPolyN": 63,

@@ -235,6 +235,40 @@ const report = JSON.parse(readFileSync(join(RAW_DIR, 'build-report.json'), 'utf8
   }
   if (!bad) pass(`exclusion zones empty (${exclusions.length} zones)`);
   else fail(`${bad} shipped records intrude into exclusion zones`);
+
+  /* v4 hotfix regression gate: road/rail RIBBONS must also respect the
+   * ground-occluding RECT exclusions (shop interior / curated strip) —
+   * buildings-only checking let the 総武線 viaduct paint the 2 cm opening
+   * view brown. Ribbon test: any sample point along a segment within
+   * halfW (+cap) of an inflated rect is a violation. Landmark circles are
+   * deliberately road-permissive. */
+  const rectZones = exclusions.filter((e) => e.kind === 'rect');
+  let badRoads = 0;
+  for (const r of outer.roads) {
+    const halfW = r.width / 2;
+    let hit = false;
+    for (const ex of rectZones) {
+      const x0 = ex.x0 - halfW;
+      const x1 = ex.x1 + halfW;
+      const z0 = ex.z0 - halfW;
+      const z1 = ex.z1 + halfW;
+      for (let i = 0; i + 1 < r.pts.length && !hit; i++) {
+        const a = r.pts[i];
+        const b = r.pts[i + 1];
+        const steps = Math.max(2, Math.ceil(Math.hypot(b.x - a.x, b.z - a.z) / 0.5));
+        for (let s = 0; s <= steps; s++) {
+          const t = s / steps;
+          const px = a.x + (b.x - a.x) * t;
+          const pz = a.z + (b.z - a.z) * t;
+          if (px >= x0 && px <= x1 && pz >= z0 && pz <= z1) { hit = true; break; }
+        }
+      }
+      if (hit) break;
+    }
+    if (hit) badRoads++;
+  }
+  if (!badRoads) pass(`road/rail ribbons clear of rect exclusions (${outer.roads.length} road records)`);
+  else fail(`${badRoads} road/rail records' ribbons intrude into rect exclusion zones`);
 }
 
 /* ---- 6. POLY u16 ceiling ---- */

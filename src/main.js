@@ -878,7 +878,9 @@ function frame(now) {
   }
   env.update(frameDt, ballPhys.state);
   // v4 (step 6, BINDING): OSM ground tile streaming AFTER env (fresh fog).
-  osmGround.update(frameDt, ballPhys.state.pos, env.fogFarSim);
+  // ballRadiusSim caps the ground lift/offsets so the road layer can never
+  // rise above a tiny ball (the invisible-opening-stage hotfix).
+  osmGround.update(frameDt, ballPhys.state.pos, env.fogFarSim, ballPhys.state.radiusSim);
   backdrop.update(frameDt, ballPhys.state, renderer.camera);
   effects.update(frameDt, ballPhys.state);
 
